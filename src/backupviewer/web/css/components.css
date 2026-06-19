@@ -316,14 +316,44 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .ov-chip .k { color: var(--sub); }
 .ov-chip .v { color: var(--accent); font-weight: 600; }
 
-/* MH valves overview tile: compact, clickable "what signal grips what" rows */
-.mh-ov-row { display: flex; flex-direction: column; gap: 0.05rem; padding: 0.28rem 0.2rem;
-  cursor: pointer; border-radius: 5px; font-size: 0.82rem; }
-.mh-ov-row:hover { background: var(--bg2); }
-.mh-ov-row + .mh-ov-row { border-top: 1px solid color-mix(in srgb, var(--sub-alt) 22%, transparent); }
-.mh-ov-name { color: var(--accent); font-weight: 600; }
-.mh-ov-sigs { color: var(--text); font-size: 0.78rem; font-variant-numeric: tabular-nums; }
-.mh-ov-open { display: inline-block; margin-top: 0.5rem; font-size: 0.78rem; }
+/* MH valves tab: gripper NAME shown verbatim (it's a robot comment) - selectable,
+   mixed-case, larger, colored (overrides the lowercase/dim/no-select card title);
+   the colored tool line; and the magnet register VTable host. */
+.card.mhv-valve > h3 { text-transform: none; user-select: text; color: var(--accent); font-size: 1rem; }
+.card.mhv-valve > h3 .count { font-size: 0.75rem; }
+.mhv-tool-line { font-size: 1rem; font-weight: 600; color: var(--accent); margin: 0.1rem 0 0.7rem; }
+.mhv-reg-vt { height: 16rem; margin: 0.2rem 0 0.4rem; }
+
+/* combined overview "mh valves" card: collapsible Magnet + valve entries -
+   colored headers, plain values, lit (.pill.on) DI/DO/R pills */
+.mhv-ov-entry { border-top: 1px solid color-mix(in srgb, var(--sub-alt) 22%, transparent); }
+.mhv-ov-entry:first-child { border-top: 0; }
+.mhv-ov-head { display: flex; align-items: baseline; gap: 0.4rem; padding: 0.3rem 0.1rem; cursor: pointer; }
+.mhv-ov-name { color: var(--accent); font-weight: 600; user-select: text; }
+.mhv-ov-type { margin-left: auto; color: var(--sub); font-size: 0.75rem; }
+.mhv-ov-body { padding: 0.05rem 0 0.4rem 1.1rem; }
+.mhv-ov-sec { color: var(--accent); font-size: 0.72rem; text-transform: lowercase;
+  letter-spacing: 0.03em; margin: 0.35rem 0 0.15rem; }
+.mhv-ov-reg, .mhv-ov-sig { display: flex; align-items: baseline; gap: 0.5rem; padding: 0.12rem 0.1rem;
+  font-size: 0.8rem; font-variant-numeric: tabular-nums; text-decoration: none; }
+.mhv-ov-reg:hover, .mhv-ov-sig:hover { background: var(--bg2); border-radius: 5px; }
+.mhv-ov-reglabel, .mhv-ov-siglabel { color: var(--accent); user-select: text; }
+.mhv-ov-regval { margin-left: auto; color: var(--text); user-select: text; }
+.mhv-ov-sig .pill { margin-left: auto; }
+
+/* MH valves tab: per-valve resolved-signal groups + magnet program pills */
+.mhv-sigs { margin-top: 0.5rem; }
+.mhv-sig-group + .mhv-sig-group { margin-top: 0.45rem; }
+.mhv-sig-head { font-size: 0.72rem; text-transform: lowercase; color: var(--sub);
+  letter-spacing: 0.02em; margin-bottom: 0.15rem; }
+.mhv-sig { display: grid; grid-template-columns: 5.5rem 1fr auto; gap: 0.4rem; align-items: baseline;
+  padding: 0.18rem 0.25rem; border-radius: 5px; font-size: 0.8rem; text-decoration: none;
+  color: var(--text); font-variant-numeric: tabular-nums; }
+.mhv-sig:hover { background: var(--bg2); }
+.mhv-sig-role { color: var(--sub); font-size: 0.74rem; }
+.mhv-sig-name { color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mhv-sig-io { color: var(--sub-alt); }
+.mhv-prog-list { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.6rem; }
 
 .ov-dash {
   display: grid;
@@ -687,7 +717,7 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .sr-name, .sr-hit .tx,
 .cmp-name, .cmp-a, .cmp-b, .cmp-summary,
 .frame-card h3, .frame-card .frame-sub, .frame-card .cfg,
-.mh-ov-name, .mh-ov-sigs, .sysvar-title,
+.sysvar-title,
 .hero .robot-name, .hero-sub, .ov-chip .v {
   user-select: text;
 }

@@ -151,6 +151,71 @@
     return body;
   }
 
+  /* ---- mh valves + magnet: collapsible entries for the combined overview card ----
+     headers are colored, values plain, and DI/DO/R designations are lit pills
+     (the same .pill.on used by running/mastered). */
+  function titleCase(s) {
+    return String(s || "").replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+  }
+
+  function ovEntry(nameHtml, bodyEl) {
+    var node = BV.el("div", { class: "mhv-ov-entry" });
+    var head = BV.el("div", { class: "mhv-ov-head" }, nameHtml);
+    node.appendChild(head);
+    node.appendChild(bodyEl);
+    BV.collapsible(node, head, bodyEl, { open: false });
+    return node;
+  }
+
+  function ovRegRows(regs) {
+    var wrap = BV.el("div", { class: "mhv-ov-reglist" });
+    (regs || []).forEach(function (r) {
+      var val = (r.value === null || r.value === undefined || r.value === "") ? "—" : r.value;
+      wrap.insertAdjacentHTML("beforeend",
+        '<div class="mhv-ov-reg"><span class="mhv-ov-reglabel">' +
+        BV.esc(r.comment || ("R[" + r.index + "]")) + '</span><span class="mhv-ov-regval">' +
+        BV.esc(val) + "</span>" + BV.pill("R[" + r.index + "]", "on") + "</div>");
+    });
+    return wrap;
+  }
+
+  function magnetEntry(mag) {
+    var body = BV.el("div", { class: "mhv-ov-body" });
+    var g = mag.groups || { general: mag.registers || [], magnets: [] };
+    body.appendChild(ovRegRows(g.general));
+    (g.magnets || []).forEach(function (m) {
+      var sub = BV.el("div", { class: "mhv-ov-body" });
+      sub.appendChild(ovRegRows(m.registers));
+      body.appendChild(ovEntry('<span class="mhv-ov-name">Mag ' + m.n + "</span>", sub));
+    });
+    return ovEntry('<span class="mhv-ov-name">Magnet</span>', body);
+  }
+
+  /* one Outputs/Inputs section: functional-role labels (#n when a role repeats)
+     + the resolved DI/DO as a lit pill; each row links into the io tab */
+  function ovSigSection(title, sigs) {
+    if (!sigs.length) return "";
+    var counts = {}, seen = {};
+    sigs.forEach(function (s) { counts[s.role] = (counts[s.role] || 0) + 1; });
+    var html = '<div class="mhv-ov-sec">' + BV.esc(title) + "</div>";
+    sigs.forEach(function (s) {
+      var label = titleCase(s.role);
+      if (counts[s.role] > 1) { seen[s.role] = (seen[s.role] || 0) + 1; label += " #" + seen[s.role]; }
+      html += '<a class="mhv-ov-sig" href="#io/jump/' + s.kind + "/" + s.number + '">' +
+        '<span class="mhv-ov-siglabel">' + BV.esc(label) + "</span>" +
+        BV.pill(s.kind + "[" + s.number + "]", "on") + "</a>";
+    });
+    return html;
+  }
+
+  function valveEntry(v) {
+    var body = BV.el("div", { class: "mhv-ov-body" });
+    body.innerHTML = ovSigSection("Outputs", v.outputs || []) + ovSigSection("Inputs", v.inputs || []);
+    if (!body.innerHTML) body.innerHTML = '<div class="dim">no wired signals</div>';
+    return ovEntry('<span class="mhv-ov-name">' + BV.esc(v.name) +
+      '</span><span class="mhv-ov-type">' + BV.esc(v.type) + "</span>", body);
+  }
+
   function chipsHtml(ov) {
     var m = BV.state.manifest || {};
     var chips = [];
@@ -312,35 +377,30 @@
         ]));
       }
 
-      /* MH valves (GM grippers): a compact "what signal grips what" glance -
-         each gripper/vacuum with the signals that drive/sense it; click to open
-         the full MH valves tab. Only present when MHGRIPDT.VA is in the backup. */
-      if (BV.state.manifest && BV.state.manifest.tabs && BV.state.manifest.tabs.mhvalves) {
-        var mhBody = BV.el("div");
-        mhBody.innerHTML = '<div class="dim" style="font-size:.78rem">loading…</div>';
-        card("mhvalves", "mh valves").appendChild(mhBody);
-        BV.api.call("get_mhvalves").then(function (mh) {
-          var grips = mh.grippers || [];
-          var rows = grips.map(function (g) {
-            var byRole = {}, order = [];
-            (g.signals || []).forEach(function (s) {
-              if (!(s.role in byRole)) { byRole[s.role] = []; order.push(s.role); }
-              byRole[s.role].push(s.index);
-            });
-            var sigs = order.map(function (r) {
-              return '<span class="dim">' + BV.esc(r) + "</span> " + BV.esc(byRole[r].join(", "));
-            }).join(" · ");
-            return '<div class="mh-ov-row"><span class="mh-ov-name">' + BV.esc(g.name) +
-              (g.vacuum ? " " + BV.pill("vac", "ghost") : "") + "</span>" +
-              '<span class="mh-ov-sigs">' + (sigs || '<span class="dim">—</span>') + "</span></div>";
-          }).join("");
-          mhBody.innerHTML = (rows || '<div class="dim">no configured grippers</div>') +
-            '<a href="#mhvalves" class="mh-ov-open">open mh valves →</a>';
-          mhBody.querySelectorAll(".mh-ov-row").forEach(function (el) {
-            el.addEventListener("click", function () { location.hash = "#mhvalves"; });
-          });
+      /* MH valves + magnet (GM end-effector): ONE card of collapsible entries -
+         the magnet first (if present), then each configured valve. Entries start
+         collapsed; expanding shows organized detail (Mag registers / Outputs +
+         Inputs) with lit DI/DO/R pills. Present when MHGRIPDT.VA or a magnet is. */
+      var mhShow = BV.state.manifest && BV.state.manifest.tabs && BV.state.manifest.tabs.mhvalves;
+      var magShow = BV.state.manifest && BV.state.manifest.magnet;
+      if (mhShow || magShow) {
+        var grBody = BV.el("div", { class: "mhv-ov" });
+        grBody.innerHTML = '<div class="dim" style="font-size:.78rem">loading…</div>';
+        card("mhvalves", "mh valves").appendChild(grBody);
+        Promise.all([
+          mhShow ? BV.api.call("get_mhvalves") : Promise.resolve(null),
+          magShow ? BV.api.call("get_magnet").catch(function () { return null; }) : Promise.resolve(null),
+        ]).then(function (res) {
+          var mh = res[0], mag = res[1];
+          grBody.innerHTML = "";
+          if (mag && mag.is_magnet) grBody.appendChild(magnetEntry(mag));
+          var valves = mh ? (mh.tools || []).reduce(function (a, t) {
+            return a.concat(t.valves || []);
+          }, []) : [];
+          valves.forEach(function (v) { grBody.appendChild(valveEntry(v)); });
+          if (!grBody.children.length) grBody.innerHTML = '<div class="dim">no grippers</div>';
         }).catch(function (err) {
-          mhBody.innerHTML = '<div class="dim">' + BV.esc(err.message) + "</div>";
+          grBody.innerHTML = '<div class="dim">' + BV.esc(err.message) + "</div>";
         });
       }
 

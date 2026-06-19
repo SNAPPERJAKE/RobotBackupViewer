@@ -204,4 +204,7 @@ class BackupSession:
             "backup_type": self.backup_type,
             "truncated_scan": self.truncated_scan,
             "tabs": tabs,
+            # magnet end-effector: detected by its MAG*.PC KAREL programs (cheap,
+            # gates the overview/mhvalves magnet sections; full config via get_magnet)
+            "magnet": any(stem.startswith("MAG") for stem in self.karel_programs),
         }

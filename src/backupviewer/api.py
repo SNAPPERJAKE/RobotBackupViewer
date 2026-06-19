@@ -20,7 +20,7 @@ from . import library
 from . import search as search_mod
 from . import settings
 from .parsers import (alarms, callgraph, dcs, frames, gmwizlog, io_dg,
-                      ls_program, macros, mastering, mhvalves, payloads,
+                      ls_program, macros, magnet, mastering, mhvalves, payloads,
                       registers, styles, summary_dg, sysvars)
 from .parsers.common import is_binary, read_text
 from .session import BackupSession
@@ -577,10 +577,9 @@ class Api:
 
     @_endpoint
     def get_mhvalves(self, side: str = "a"):
-        # NOTE: the signal numbers (VALVETOA_SN, PART_PRES_SN, ...) are a
-        # GM-specific namespace, NOT direct DI/DO indices - resolving them
-        # against the IO table gives the wrong signal (PART_PRES_SN=1 ->
-        # DI[1]=*IMSTP). They are shown raw until the true mapping is confirmed.
+        # Each valve's *_SN field is a 1-based index into one of the four signal
+        # tables stored in MHGRIPDT (VALVE_TAB/PARTP_TAB/CLAMP_TAB/VMADE_TAB); the
+        # parser resolves them to real DI/DO (name + number). See parsers/mhvalves.
         s = self._side_session(side)
         text = s.text("MHGRIPDT.VA")
         if text is None:
@@ -592,7 +591,23 @@ class Api:
         su = s.text("MHGRIPSU.VA")
         if su:
             recs = recs + sysvars.records(su)
-        return {"grippers": model["grippers"], "records": [sysvars.record_tree(r) for r in recs]}
+        return {
+            "tools": model["tools"],
+            "tables": model["tables"],
+            "records": [sysvars.record_tree(r) for r in recs],
+        }
+
+    @_endpoint
+    def get_magnet(self, side: str = "a"):
+        """Magnet end-effector detection + config (MAG*.PC programs, R[800s])."""
+        s = self._side_session(side)
+
+        def build():
+            numreg_text = s.text("NUMREG.VA")
+            numreg = registers.parse_numreg(numreg_text) if numreg_text else []
+            return magnet.build_magnet(numreg, list(s.karel_programs))
+
+        return s.cached("magnet", build)
 
     # -- payload schedules -----------------------------------------------------------
 
