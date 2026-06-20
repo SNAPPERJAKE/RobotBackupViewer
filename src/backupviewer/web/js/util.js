@@ -105,6 +105,50 @@ window.BV = {};
     return !document.getElementById("modal-root").classList.contains("hidden");
   };
 
+  /* small anchored context menu (right-click-style popup). items is a list of
+     {label, onClick, danger?}. The menu floats just under anchorEl and dismisses
+     itself on outside-click, Esc, scroll, or resize. Returns {close}. */
+  BV.menu = function (anchorEl, items) {
+    var menu = BV.el("div", { class: "ctx-menu" });
+    items.forEach(function (it) {
+      var b = BV.el("button", { class: "ctx-item" + (it.danger ? " danger" : "") }, BV.esc(it.label));
+      b.addEventListener("click", function (e) {
+        e.stopPropagation();
+        close();
+        if (it.onClick) it.onClick();
+      });
+      menu.appendChild(b);
+    });
+    document.body.appendChild(menu);
+
+    var r = anchorEl.getBoundingClientRect();
+    var left = r.left;
+    if (left + menu.offsetWidth > window.innerWidth - 8) {
+      left = Math.max(8, r.right - menu.offsetWidth);  /* spill leftward at the edge */
+    }
+    menu.style.top = (r.bottom + 4) + "px";
+    menu.style.left = left + "px";
+
+    function close() {
+      if (!menu.parentNode) return;
+      menu.parentNode.removeChild(menu);
+      document.removeEventListener("mousedown", onOutside, true);
+      document.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    }
+    function onOutside(e) { if (!menu.contains(e.target)) close(); }
+    function onKey(e) { if (e.key === "Escape") { e.stopPropagation(); close(); } }
+    /* defer the listeners so the click that opened the menu doesn't close it */
+    setTimeout(function () {
+      document.addEventListener("mousedown", onOutside, true);
+      document.addEventListener("keydown", onKey, true);
+      window.addEventListener("scroll", close, true);
+      window.addEventListener("resize", close);
+    }, 0);
+    return { close: close };
+  };
+
   /* ---- collapsible primitive ----
      Standard collapsible node used by trees (sysvars, DCS entries, call tree).
      Structure: a container with class bv-collapsible (+.open when expanded),

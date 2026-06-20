@@ -1,45 +1,35 @@
-/* tabs/home.js - the ecosystem main menu (#home). Renders without a backup
-   open: three action tiles (open / add-to-library / take-a-backup) plus the
-   saved robot library grouped PLANT -> LINE -> ROBOT. Marked shell:true so the
-   router lets it render with no manifest. */
+/* tabs/home.js - the ecosystem main menu (#home). The whole screen is the saved
+   robot library, grouped PLANT -> LINE -> ROBOT, with collapsible folders.
+   "+ add robot" opens a context menu (from backup / manually). Each robot row has
+   a selection checkbox + edit; clicking the row opens the robot's backup. Per-LINE
+   controls (select-all / backup / trash) act on that line's selected robots, and
+   "backup" pulls fresh FTP backups for all selected at once, showing live per-row
+   progress. Marked shell:true so the router lets it render with no manifest. */
 (function () {
   "use strict";
 
-  var _libWrap = null;  /* the mounted library container, for in-place refresh */
+  var _libWrap = null;          /* the mounted library container, for in-place refresh */
+  var _collapsed = {};          /* folder keys explicitly collapsed (default = expanded) */
+  var _selected = {};           /* selected robot ids (object used as a Set) */
+  var _active = {};             /* jobId -> {robotId} for in-flight backups */
+  var _poll = null;             /* the single shared progress-poll interval */
 
-  function actionTile(opts) {
-    var c = BV.card({ title: opts.title, class: "home-tile" });
-    c.el.appendChild(BV.el("div", { class: "home-tile-desc" }, BV.esc(opts.desc)));
-    c.el.setAttribute("role", "button");
-    c.el.tabIndex = 0;
-    c.el.addEventListener("click", opts.onClick);
-    c.el.addEventListener("keydown", function (e) {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); opts.onClick(); }
+  /* ---- folder collapse state (survives in-place refreshes) ---- */
+  function isExpanded(key) { return !_collapsed[key]; }
+  function setExpanded(key, open) { if (open) delete _collapsed[key]; else _collapsed[key] = true; }
+  function makeCollapsible(node, head, body, key) {
+    node.appendChild(head);
+    node.appendChild(body);
+    BV.collapsible(node, head, body, {
+      open: isExpanded(key),
+      onToggle: function (open) { setExpanded(key, open); },
     });
-    return c.el;
+    return node;
   }
 
+  /* ---- screen ---- */
+
   function render(view, toolbar, params) {
-    view.appendChild(BV.hero({
-      name: "FANUC Backup", model: "ecosystem",
-      sub: ["view · library · take backups"], class: "home-hero",
-    }));
-
-    var tiles = BV.el("div", { class: "cards home-actions" });
-    tiles.appendChild(actionTile({
-      title: "open backup", desc: "browse a backup folder on disk",
-      onClick: function () { BV.openBackupFlow(); },
-    }));
-    tiles.appendChild(actionTile({
-      title: "add to library", desc: "save a backup folder to your library",
-      onClick: function () { BV.addToLibraryFlow(); },
-    }));
-    tiles.appendChild(actionTile({
-      title: "take a new backup", desc: "pull a fresh backup from a robot over the network",
-      onClick: function () { location.hash = "#backup"; },
-    }));
-    view.appendChild(tiles);
-
     _libWrap = BV.el("div", { class: "home-library" });
     view.appendChild(_libWrap);
     loadLibrary();
@@ -47,18 +37,35 @@
 
   function loadLibrary() {
     if (!_libWrap) return;
-    _libWrap.innerHTML =
-      '<div class="home-lib-head"><h2>library</h2>' +
-      '<button class="btn" id="lib-add-manual" title="add a robot manually">+ add robot</button></div>' +
-      '<div class="home-lib-body"><div class="dim">loading…</div></div>';
-    _libWrap.querySelector("#lib-add-manual").addEventListener("click", function () {
-      editRobotModal(null, true);
+    _libWrap.innerHTML = "";
+
+    var head = BV.el("div", { class: "home-lib-head" });
+    head.appendChild(BV.el("h2", null, "library"));
+    var headActs = BV.el("div", { class: "home-lib-actions" });
+    var cancelAll = BV.el("button", { class: "btn lib-cancel-all hidden", id: "lib-cancel-all" },
+      "cancel backups");
+    cancelAll.addEventListener("click", cancelAllBackups);
+    var addBtn = BV.el("button", { class: "btn lib-add-robot", id: "lib-add-robot",
+      title: "add a robot to the library" }, "+ add robot");
+    addBtn.addEventListener("click", function () {
+      BV.menu(addBtn, [
+        { label: "from backup", onClick: BV.addToLibraryFlow },
+        { label: "manually", onClick: function () { editRobotModal(null, true); } },
+      ]);
     });
+    headActs.appendChild(cancelAll);
+    headActs.appendChild(addBtn);
+    head.appendChild(headActs);
+    _libWrap.appendChild(head);
+
+    var body = BV.el("div", { class: "home-lib-body" }, '<div class="dim">loading…</div>');
+    _libWrap.appendChild(body);
+
     BV.api.call("lib_list").then(function (data) {
-      renderTree(_libWrap.querySelector(".home-lib-body"), data);
+      renderTree(body, data);
+      reattachProgress();   /* repaint any backups already running */
     }).catch(function (e) {
-      _libWrap.querySelector(".home-lib-body").innerHTML =
-        '<div class="dim">library unavailable: ' + BV.esc(e.message) + "</div>";
+      body.innerHTML = '<div class="dim">library unavailable: ' + BV.esc(e.message) + "</div>";
     });
   }
 
@@ -81,23 +88,70 @@
     });
     body.innerHTML = "";
     Object.keys(plants).sort().forEach(function (pl) {
-      var plantEl = BV.el("div", { class: "lib-plant" });
-      plantEl.appendChild(BV.el("div", { class: "lib-plant-h" }, BV.esc(pl)));
+      var plantNode = BV.el("div", { class: "lib-plant" });
+      var plantHead = BV.el("div", { class: "lib-plant-h" }, BV.esc(pl));
+      var plantBody = BV.el("div", { class: "lib-plant-body" });
       var lines = plants[pl];
       Object.keys(lines).sort().forEach(function (ln) {
-        var lineEl = BV.el("div", { class: "lib-line" });
-        lineEl.appendChild(BV.el("div", { class: "lib-line-h" }, BV.esc(ln)));
-        lines[ln].sort(function (a, b) {
+        var lineRobots = lines[ln].sort(function (a, b) {
           return (a.robot || "").localeCompare(b.robot || "");
-        }).forEach(function (r) { lineEl.appendChild(robotRow(r)); });
-        plantEl.appendChild(lineEl);
+        });
+        var lineNode = BV.el("div", { class: "lib-line" });
+        var lineHead = buildLineHead(ln, lineRobots);
+        var lineBody = BV.el("div", { class: "lib-line-body" });
+        lineRobots.forEach(function (r) { lineBody.appendChild(robotRow(r)); });
+        makeCollapsible(lineNode, lineHead, lineBody, pl + "|||" + ln);
+        plantBody.appendChild(lineNode);
       });
-      body.appendChild(plantEl);
+      makeCollapsible(plantNode, plantHead, plantBody, pl);
+      body.appendChild(plantNode);
     });
+    syncSelectionUI();
+  }
+
+  function buildLineHead(ln, lineRobots) {
+    var head = BV.el("div", { class: "lib-line-h" });
+    head.appendChild(BV.el("span", { class: "lib-line-name" }, BV.esc(ln)));
+
+    var controls = BV.el("div", { class: "lib-line-controls" });
+    controls.addEventListener("click", function (e) { e.stopPropagation(); });
+
+    var sa = BV.el("input", { type: "checkbox", class: "lf-check lib-line-selall",
+      title: "select all in line" });
+    sa.addEventListener("change", function () {
+      var ids = lineRobots.map(function (r) { return r.id; });
+      var allOn = ids.length && ids.every(function (id) { return _selected[id]; });
+      ids.forEach(function (id) { if (allOn) delete _selected[id]; else _selected[id] = true; });
+      syncSelectionUI();
+    });
+
+    var bk = BV.el("button", { class: "btn lib-line-backup", title: "back up selected robots" },
+      "backup");
+    bk.addEventListener("click", function () { startLineBackup(lineRobots); });
+
+    var tr = BV.el("button", { class: "btn lib-line-trash", title: "remove selected from library" },
+      "🗑");
+    tr.addEventListener("click", function () { removeSelectedInLine(lineRobots); });
+
+    controls.appendChild(sa);
+    controls.appendChild(bk);
+    controls.appendChild(tr);
+    head.appendChild(controls);
+    return head;
   }
 
   function robotRow(r) {
     var row = BV.el("div", { class: "lib-robot" + (r.stale ? " stale" : "") });
+    row.setAttribute("data-robot-id", r.id);
+
+    var cb = BV.el("input", { type: "checkbox", class: "lf-check lib-check", title: "select" });
+    cb.checked = !!_selected[r.id];
+    cb.addEventListener("click", function (e) { e.stopPropagation(); });
+    cb.addEventListener("change", function () {
+      if (cb.checked) _selected[r.id] = true; else delete _selected[r.id];
+      syncSelectionUI();
+    });
+    row.appendChild(cb);
 
     var main = BV.el("div", { class: "lib-robot-main" });
     var nameHtml = '<span class="lib-robot-name">' + BV.esc(r.robot || "(unnamed)") + "</span>";
@@ -108,31 +162,30 @@
     if (r.last_backup) meta.push("last " + BV.esc(r.last_backup));
     if (r.backups && r.backups.length) meta.push(r.backups.length + " saved");
     if (r.stale) meta.push('<span class="pill warn">missing</span>');
+    if (!r.latest_path && !r.stale) meta.push('<span class="pill ghost">no backup</span>');
     main.appendChild(BV.el("div", { class: "lib-robot-meta" },
       meta.join(' <span class="sep">·</span> ')));
     row.appendChild(main);
 
+    var prog = BV.el("div", { class: "lib-robot-progress" });
+    row.appendChild(prog);
+
     var acts = BV.el("div", { class: "lib-robot-acts" });
-    var openBtn = BV.el("button", { class: "btn" }, "open");
-    openBtn.addEventListener("click", function (e) { e.stopPropagation(); openRobot(r); });
     var editBtn = BV.el("button", { class: "btn", title: "edit" }, "edit");
     editBtn.addEventListener("click", function (e) { e.stopPropagation(); editRobotModal(r, false); });
-    var rmBtn = BV.el("button", { class: "btn", title: "remove from library" }, "✕");
-    rmBtn.addEventListener("click", function (e) {
-      e.stopPropagation();
-      BV.api.call("lib_remove", r.id).then(function () { BV.toast("removed"); refresh(); })
-        .catch(function (err) { BV.toast(err.message); });
-    });
-    acts.appendChild(openBtn);
     acts.appendChild(editBtn);
-    acts.appendChild(rmBtn);
     row.appendChild(acts);
 
-    row.addEventListener("click", function () { openRobot(r); });
+    /* whole row opens the robot, except the checkbox + the action buttons */
+    row.addEventListener("click", function (e) {
+      if (cb.contains(e.target) || acts.contains(e.target)) return;
+      openRobot(r);
+    });
     return row;
   }
 
   function openRobot(r) {
+    if (!r.latest_path) { BV.toast("no backup yet — take one"); return; }
     if (r.stale) { BV.toast("backup folder missing on disk"); return; }
     BV.api.call("lib_open", r.id, "latest").then(function (manifest) {
       BV.state.setManifest(manifest);
@@ -140,6 +193,186 @@
         ? manifest.robot_name + " · " + manifest.file_count + " files" : "opened");
       location.hash = "#overview";
     }).catch(function (e) { BV.toast(e.message); });
+  }
+
+  /* ---- selection ---- */
+
+  function selectedInLine(lineRobots) {
+    return lineRobots.filter(function (r) { return _selected[r.id]; });
+  }
+
+  /* reflect _selected onto every checkbox + each line's select-all tri-state */
+  function syncSelectionUI() {
+    if (!_libWrap) return;
+    _libWrap.querySelectorAll(".lib-line").forEach(function (lineNode) {
+      var rows = lineNode.querySelectorAll(".lib-robot[data-robot-id]");
+      var total = rows.length, on = 0;
+      rows.forEach(function (rowEl) {
+        var id = rowEl.getAttribute("data-robot-id");
+        var cb = rowEl.querySelector(".lib-check");
+        var checked = !!_selected[id];
+        if (cb) cb.checked = checked;
+        if (checked) on++;
+      });
+      var sa = lineNode.querySelector(".lib-line-selall");
+      if (sa) {
+        sa.checked = total > 0 && on === total;
+        sa.indeterminate = on > 0 && on < total;
+      }
+    });
+  }
+
+  /* ---- per-line actions ---- */
+
+  function removeSelectedInLine(lineRobots) {
+    var sel = selectedInLine(lineRobots);
+    if (!sel.length) { BV.toast("select robots first"); return; }
+    Promise.all(sel.map(function (r) {
+      return BV.api.call("lib_remove", r.id).then(function () { delete _selected[r.id]; });
+    })).then(function () {
+      BV.toast("removed " + sel.length);
+      refresh();
+    }).catch(function (e) { BV.toast(e.message); });
+  }
+
+  /* ---- multi-backup ---- */
+
+  function statusText(p) {
+    return {
+      connecting: "connecting…", listing: "listing files…", downloading: "downloading…",
+      done: "done", error: "failed", cancelled: "cancelled", pending: "starting…",
+    }[p.status] || p.status;
+  }
+
+  function startLineBackup(lineRobots) {
+    var sel = selectedInLine(lineRobots);
+    if (!sel.length) { BV.toast("select robots first"); return; }
+    var runnable = sel.filter(function (r) { return r.ips && r.ips[0]; });
+    var noip = sel.length - runnable.length;
+    if (!runnable.length) { BV.toast("no IP on selected robot(s)"); return; }
+
+    var needsPw = runnable.some(function (r) { return r.ftp && r.ftp.user; });
+    promptSharedPassword(needsPw, function (pw) {
+      runnable.forEach(function (r) {
+        var spec = {
+          host: r.ips[0], robot: r.robot, line: r.line, plant: r.plant,
+          user: (r.ftp && r.ftp.user) || "",
+          passive: !r.ftp || r.ftp.passive !== false,
+          passwd: (r.ftp && r.ftp.user) ? pw : "",
+          note: "",
+        };
+        renderRowProgress(r.id, { status: "pending", total: 0, done: 0 });
+        BV.api.call("start_backup", spec).then(function (res) {
+          _active[res.job_id] = { robotId: r.id };
+          setCancelAllVisible(true);
+          ensurePoller();
+        }).catch(function (e) {
+          var slot = rowProgressSlot(r.id);
+          if (slot) slot.innerHTML = '<div class="lib-robot-result err">✗ ' + BV.esc(e.message) + "</div>";
+        });
+        delete _selected[r.id];
+      });
+      syncSelectionUI();
+      if (noip) BV.toast(noip + " skipped · no IP");
+    });
+  }
+
+  /* one shared password prompt for the whole batch (FANUC default is anonymous) */
+  function promptSharedPassword(needed, cont) {
+    if (!needed) { cont(""); return; }
+    var body = BV.el("div", { class: "lib-form" });
+    var pw = BV.el("input", { type: "password", class: "lf-input", spellcheck: "false" });
+    var row = BV.el("div", { class: "lf-row" });
+    row.appendChild(BV.el("label", null, "password"));
+    row.appendChild(pw);
+    body.appendChild(row);
+    var acts = BV.el("div", { class: "lf-actions" });
+    var cancel = BV.el("button", { class: "btn" }, "cancel");
+    var ok = BV.el("button", { class: "btn primary" }, "connect");
+    acts.appendChild(cancel);
+    acts.appendChild(ok);
+    body.appendChild(acts);
+    var m = BV.modal("ftp password (shared)", body);
+    pw.focus();
+    cancel.addEventListener("click", m.close);
+    function go() { var v = pw.value; m.close(); cont(v); }
+    ok.addEventListener("click", go);
+    body.addEventListener("keydown", function (e) { if (e.key === "Enter") go(); });
+  }
+
+  function rowProgressSlot(robotId) {
+    if (!_libWrap) return null;
+    var row = _libWrap.querySelector('.lib-robot[data-robot-id="' + robotId + '"]');
+    return row ? row.querySelector(".lib-robot-progress") : null;
+  }
+
+  function renderRowProgress(robotId, p) {
+    var slot = rowProgressSlot(robotId);
+    if (!slot) return;
+    if (p.status === "done" || p.status === "error" || p.status === "cancelled") {
+      var cls, txt;
+      if (p.status === "done") { cls = "ok"; txt = "✓ " + p.done + " files"; }
+      else if (p.status === "cancelled") { cls = ""; txt = "cancelled"; }
+      else { cls = "err"; txt = "✗ " + (p.error || "failed"); }
+      slot.innerHTML = '<div class="lib-robot-result ' + cls + '">' + BV.esc(txt) + "</div>";
+      return;
+    }
+    var pct = p.total ? Math.round(100 * p.done / p.total) : 8;
+    var html = '<div class="membar"><div class="mb-label"><span>' + BV.esc(statusText(p)) +
+      "</span><span>" + (p.total ? p.done + " / " + p.total : "") + "</span></div>" +
+      '<div class="mb-track"><div class="mb-fill" style="width:' + pct + '%"></div></div></div>';
+    if (p.current) html += '<div class="bf-current dim">' + BV.esc(p.current) + "</div>";
+    slot.innerHTML = html;
+  }
+
+  function setCancelAllVisible(v) {
+    var b = _libWrap && _libWrap.querySelector("#lib-cancel-all");
+    if (b) b.classList.toggle("hidden", !v);
+  }
+
+  function cancelAllBackups() {
+    Object.keys(_active).forEach(function (jobId) {
+      BV.api.call("cancel_backup", jobId).catch(function () {});
+    });
+    BV.toast("cancelling backups…");
+  }
+
+  /* a single 500ms poll drives every in-flight job's row. It stops itself when
+     nothing is active or the library view is detached (jobs keep running server-
+     side; reattachProgress() repaints them when #home is shown again). */
+  function ensurePoller() {
+    if (_poll) return;
+    _poll = setInterval(function () {
+      if (!_libWrap || !document.body.contains(_libWrap)) { clearInterval(_poll); _poll = null; return; }
+      var ids = Object.keys(_active);
+      if (!ids.length) { clearInterval(_poll); _poll = null; setCancelAllVisible(false); return; }
+      ids.forEach(function (jobId) {
+        BV.api.call("get_backup_progress", jobId).then(function (p) {
+          if (!_active[jobId]) return;
+          renderRowProgress(_active[jobId].robotId, p);
+          if (p.status === "done" || p.status === "error" || p.status === "cancelled") {
+            delete _active[jobId];
+            if (!Object.keys(_active).length) { setCancelAllVisible(false); BV.toast("backups finished"); }
+          }
+        }).catch(function () {
+          delete _active[jobId];
+          if (!Object.keys(_active).length) setCancelAllVisible(false);
+        });
+      });
+    }, 500);
+  }
+
+  /* after any (re)render, repaint backups that are still running */
+  function reattachProgress() {
+    var ids = Object.keys(_active);
+    if (!ids.length) return;
+    setCancelAllVisible(true);
+    ensurePoller();
+    ids.forEach(function (jobId) {
+      BV.api.call("get_backup_progress", jobId).then(function (p) {
+        if (_active[jobId]) renderRowProgress(_active[jobId].robotId, p);
+      }).catch(function () {});
+    });
   }
 
   /* ---- add / edit modal ---- */

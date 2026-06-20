@@ -781,42 +781,68 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .set-row .name { color: var(--text); font-size: 0.88rem; }
 .set-row .seg { flex: none; }
 
-/* ---- home / shell ---- */
-.home-hero { padding-top: 0.6rem; }
-.home-actions { margin-bottom: 1.4rem; }
-.home-tile { cursor: pointer; transition: background var(--trans), box-shadow var(--trans); }
-.home-tile:hover {
-  background: color-mix(in srgb, var(--accent) 8%, var(--bg2));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+/* ---- home / library (the main menu) ---- */
+.home-lib-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: 0.2rem 0 1.1rem; }
+.home-lib-head h2 { font-size: 1.5rem; color: var(--text); text-transform: lowercase; margin: 0; letter-spacing: -0.01em; }
+.home-lib-actions { display: flex; align-items: center; gap: 0.4rem; flex: none; }
+.lib-add-robot { font-size: 0.92rem; padding: 0.4rem 0.85rem; }
+.lib-cancel-all { color: var(--error); }
+.lib-cancel-all:hover { color: var(--error); background: color-mix(in srgb, var(--error) 14%, var(--bg2)); }
+.empty-lib { color: var(--sub); font-size: 0.9rem; padding: 0.8rem 0.2rem; }
+
+.lib-plant { margin-bottom: 1rem; }
+.lib-plant-h {
+  font-size: 1.05rem; color: var(--sub); text-transform: uppercase; letter-spacing: 0.06em;
+  margin-bottom: 0.45rem; display: flex; align-items: center; gap: 0.4rem;
 }
-.home-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.home-tile h3 { color: var(--accent); }
-.home-tile-desc { color: var(--sub); font-size: 0.84rem; }
+.lib-plant-body { margin-left: 0.3rem; }
+.lib-line { margin: 0 0 0.6rem 0.4rem; }
+.lib-line-h {
+  font-size: 0.98rem; color: var(--accent); margin-bottom: 0.3rem;
+  display: flex; align-items: center; gap: 0.5rem;
+}
+.lib-line-name { font-weight: 600; }
+.lib-line-controls { display: flex; align-items: center; gap: 0.3rem; margin-left: auto; }
+.lib-line-controls .btn { padding: 0.18rem 0.5rem; font-size: 0.76rem; }
+.lib-line-selall { margin: 0 0.15rem; }
 
-.home-lib-head { display: flex; align-items: center; justify-content: space-between; margin: 0.4rem 0 0.7rem; }
-.home-lib-head h2 { font-size: 0.95rem; color: var(--text); text-transform: lowercase; margin: 0; }
-.empty-lib { color: var(--sub); font-size: 0.85rem; padding: 0.8rem 0.2rem; }
-
-.lib-plant { margin-bottom: 0.9rem; }
-.lib-plant-h { font-size: 0.74rem; color: var(--sub); text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 0.35rem; }
-.lib-line { margin: 0 0 0.5rem 0.6rem; }
-.lib-line-h { font-size: 0.8rem; color: var(--accent); margin-bottom: 0.25rem; }
 .lib-robot {
-  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  display: flex; align-items: center; gap: 0.7rem;
   background: var(--bg2); border-radius: var(--radius);
-  padding: 0.45rem 0.55rem 0.45rem 0.8rem; margin: 0 0 0.3rem 0.6rem; cursor: pointer;
+  padding: 0.5rem 0.6rem 0.5rem 0.7rem; margin: 0 0 0.35rem 0.6rem; cursor: pointer;
   transition: background var(--trans);
 }
 .lib-robot:hover { background: color-mix(in srgb, var(--sub-alt) 22%, var(--bg2)); }
 .lib-robot.stale { opacity: 0.6; }
-.lib-robot-main { min-width: 0; }
+.lib-check { flex: none; }
+.lib-robot-main { flex: 1 1 auto; min-width: 0; }
 .lib-robot-name { color: var(--text); font-weight: 600; }
 .lib-robot-model { color: var(--accent); font-size: 0.82rem; margin-left: 0.6em; }
-.lib-robot-meta { color: var(--sub); font-size: 0.76rem; margin-top: 0.1rem; }
+.lib-robot-meta { color: var(--sub); font-size: 0.78rem; margin-top: 0.1rem; }
 .lib-robot-meta .sep { margin: 0 0.35em; opacity: 0.5; }
-.lib-robot-acts { display: flex; gap: 0.25rem; flex: none; }
-.lib-robot-acts .btn { padding: 0.22rem 0.55rem; font-size: 0.78rem; }
 .lib-robot-name, .lib-robot-meta { user-select: text; }
+.lib-robot-progress { flex: 1 1 16rem; min-width: 0; max-width: 24rem; }
+.lib-robot-progress:empty { display: none; }
+.lib-robot-progress .membar { margin-bottom: 0; }
+.lib-robot-result { font-size: 0.8rem; color: var(--sub); white-space: nowrap; }
+.lib-robot-result.ok { color: var(--ok); }
+.lib-robot-result.err { color: var(--error); }
+.lib-robot-acts { display: flex; gap: 0.25rem; flex: none; }
+.lib-robot-acts .btn { padding: 0.24rem 0.6rem; font-size: 0.8rem; }
+
+/* anchored context menu (right-click-style popup, e.g. + add robot) */
+.ctx-menu {
+  position: fixed; z-index: 70; min-width: 9rem;
+  background: var(--bg2); border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4); padding: 0.25rem;
+  display: flex; flex-direction: column;
+}
+.ctx-item {
+  appearance: none; background: none; border: none; font: inherit; text-align: left;
+  color: var(--text); font-size: 0.86rem; padding: 0.4rem 0.7rem; border-radius: 6px; cursor: pointer;
+}
+.ctx-item:hover { background: color-mix(in srgb, var(--accent) 14%, var(--bg2)); color: var(--accent); }
+.ctx-item.danger:hover { background: color-mix(in srgb, var(--error) 14%, var(--bg2)); color: var(--error); }
 
 /* library add/edit form (modal) */
 .lib-form { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.3rem 0.6rem 0.2rem; }
@@ -832,23 +858,8 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .lf-check { width: 16px; height: 16px; accent-color: var(--accent); justify-self: start; }
 .lf-actions { display: flex; justify-content: flex-end; gap: 0.4rem; margin-top: 0.6rem; }
 
-/* ---- take a new backup (#backup) ---- */
-.backup-form { display: flex; flex-direction: column; gap: 0.45rem; max-width: 32rem; }
-.bf-picker { margin-bottom: 0.3rem; }
-.bf-picker-label { font-size: 0.74rem; color: var(--sub); text-transform: lowercase; margin-bottom: 0.3rem; }
-.bf-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; }
-.bf-chip { font-size: 0.78rem; padding: 0.22rem 0.6rem; }
-.backup-actions { display: flex; gap: 0.4rem; margin-top: 0.9rem; }
-.backup-status { margin-top: 1rem; max-width: 32rem; }
-.bf-probe { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
-.bf-banner { color: var(--sub); font-size: 0.78rem; margin-top: 0.4rem; font-family: var(--font); }
-.bf-err { color: var(--error); font-size: 0.82rem; margin-top: 0.4rem; }
-.backup-progress { display: flex; flex-direction: column; gap: 0.5rem; }
-.backup-progress .membar { margin-bottom: 0; }
-.bf-current { font-size: 0.78rem; font-family: var(--font); }
-.bf-done-pills { margin-bottom: 0.6rem; }
-.bf-done-acts { display: flex; gap: 0.4rem; }
-.bf-note { font-size: 0.78rem; margin-top: 1.2rem; max-width: 32rem; }
+/* ---- backup progress (per-row, in the library) ---- */
+.bf-current { font-size: 0.78rem; font-family: var(--font); margin-top: 0.15rem; }
 
 /* toast */
 #toast {

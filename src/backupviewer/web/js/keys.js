@@ -29,7 +29,6 @@
       ["j / k or ↓ / ↑", "move selection"],
       ["h / l or ← / →", "switch pane (split views)"],
       ["enter", "open selection · search signal"],
-      ["ctrl+o", "open backup folder"],
       ["t / shift+t", "theme picker / cycle theme"],
       ["?", "this help"],
     ];
@@ -44,12 +43,7 @@
   document.addEventListener("keydown", function (e) {
     if (BV.modalOpen()) return;        /* modal traps its own keys */
 
-    /* Ctrl+O / Ctrl+K work even while typing */
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "o") {
-      e.preventDefault();
-      BV.openBackupFlow();
-      return;
-    }
+    /* Ctrl+K works even while typing */
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
       e.preventDefault();
       if (BV.focusGlobalSearch) BV.focusGlobalSearch();

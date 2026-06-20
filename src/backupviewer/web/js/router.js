@@ -101,13 +101,22 @@
 
   function isShell(tab) { return !!(tab && tab.shell); }
 
+  /* the search box + compare are backup-viewer chrome - hide them on the shell
+     (home/backup) screens so the main menu's topbar is just logo·theme·aa·? */
+  function setTopbarChrome(shell) {
+    var s = document.getElementById("global-search");
+    var c = document.getElementById("btn-compare");
+    if (s) s.classList.toggle("hidden", shell);
+    if (c) c.classList.toggle("hidden", shell);
+  }
+
   function route() {
     BV.currentVTable = null;
     BV.currentSearch = null;
 
     /* running outside the app shell (plain browser, no python bridge): keep the
        old "launch via run.py" hint instead of a home screen that can't load */
-    if (!BV.api.bridged) { buildTabbar(); setActive(null); updateStatus(); emptyState(); return; }
+    if (!BV.api.bridged) { buildTabbar(); setActive(null); updateStatus(); setTopbarChrome(true); emptyState(); return; }
 
     var hash = location.hash.slice(1);
     var parts = hash.split("/");
@@ -127,6 +136,7 @@
       if (("#" + tab.id) !== location.hash) { location.hash = "#" + tab.id; return; }
     }
     setActive(tab.id);
+    setTopbarChrome(isShell(tab));
     view.classList.remove("no-pad");
     view.scrollTop = 0;
     /* each route renders into fresh slots: a stale async render from a previous
@@ -169,7 +179,6 @@
     logo.addEventListener("click", BV.goHome);
   }
 
-  document.getElementById("btn-open").addEventListener("click", BV.openBackupFlow);
   document.getElementById("btn-compare").addEventListener("click", function () {
     if (!BV.state.manifest) { BV.toast("open a backup first"); return; }
     if (BV.state.compare) location.hash = "#compare";
