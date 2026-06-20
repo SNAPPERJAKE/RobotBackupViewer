@@ -844,6 +844,19 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .ctx-item:hover { background: color-mix(in srgb, var(--accent) 14%, var(--bg2)); color: var(--accent); }
 .ctx-item.danger:hover { background: color-mix(in srgb, var(--error) 14%, var(--bg2)); color: var(--error); }
 
+/* bulk-add + discover scan modals */
+.scan-info { font-size: 0.82rem; margin-bottom: 0.2rem; }
+.scan-bar { margin: 0.2rem 0 0.3rem; }
+.scan-selall { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--sub); margin: 0.1rem 0; }
+.scan-results { max-height: 38vh; overflow: auto; display: flex; flex-direction: column; gap: 0.2rem; margin: 0.2rem 0; }
+.scan-results:empty { display: none; }
+.scan-row {
+  display: flex; align-items: center; gap: 0.5rem;
+  background: var(--bg2); border-radius: var(--radius); padding: 0.35rem 0.55rem;
+}
+.scan-row .lib-robot-name { font-weight: 600; }
+.scan-row .lib-robot-meta { font-size: 0.78rem; }
+
 /* library add/edit form (modal) */
 .lib-form { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.3rem 0.6rem 0.2rem; }
 .lf-row { display: grid; grid-template-columns: 7em 1fr; align-items: center; gap: 0.8rem; }

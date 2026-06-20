@@ -33,6 +33,62 @@ _KAREL_HEADER = re.compile(r"^\[([^\]]+)\]")
 MAX_SCAN_FILES = 20_000  # guard against opening C:\ by accident
 _BINARY_PROGRAM_EXTS = (".TP", ".PC", ".MR")
 
+# signatures that mark a folder as a FANUC backup root (used by the bulk-add
+# walker - kept in sync with _detect_type's markers)
+_BACKUP_MARKER_DIRS = {"mnt_data", "md_ls", "mdb"}
+_BACKUP_FILE_EXTS = (".LS", ".VA", ".TP", ".PC", ".MR", ".DG", ".SV", ".IO", ".DT")
+
+
+def looks_like_backup(d: Path) -> bool:
+    """Conservative, NON-recursive test: does this folder directly look like a
+    FANUC backup root? True when it holds any backup file (.LS/.VA/.TP/.DG/...)
+    or a maintenance-data marker subfolder (mnt_data/md_ls/mdb). Deliberately
+    strict so the bulk-add walker never mistakes an ordinary folder for a backup."""
+    try:
+        for p in d.iterdir():
+            try:
+                if p.is_dir():
+                    if p.name.lower() in _BACKUP_MARKER_DIRS:
+                        return True
+                elif p.suffix.upper() in _BACKUP_FILE_EXTS:
+                    return True
+            except OSError:
+                continue
+    except OSError:
+        return False
+    return False
+
+
+def find_backup_roots(parent: Path, max_depth: int = 5, cap: int = 300) -> list[Path]:
+    """Every backup root at or beneath `parent`. A folder that looks_like_backup
+    is a root and is NOT descended into (its dated <date>/<time> subfolders are
+    snapshots of the same backup, not separate ones). Handles a per-line Latest/
+    mirror (each child is a root), a LINE/ROBOT/<date>/<time> tree (the time
+    folder is the root), and a flat folder of backups. Bounded by depth + count."""
+    parent = Path(parent)
+    if not parent.is_dir():
+        return []
+    if looks_like_backup(parent):
+        return [parent]
+    roots: list[Path] = []
+    stack = [(parent, 0)]
+    while stack and len(roots) < cap:
+        d, depth = stack.pop()
+        try:
+            children = sorted(p for p in d.iterdir() if p.is_dir())
+        except OSError:
+            continue
+        for c in children:
+            if len(roots) >= cap:
+                break
+            if looks_like_backup(c):
+                roots.append(c)
+            elif depth + 1 < max_depth:
+                stack.append((c, depth + 1))
+    if len(roots) >= cap:
+        log.warning("find_backup_roots hit cap=%d under %s", cap, parent)
+    return sorted(roots)
+
 
 class BackupSession:
     def __init__(self, root: Path):

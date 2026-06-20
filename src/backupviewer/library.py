@@ -138,6 +138,34 @@ def add_robot(entry: dict) -> dict:
         return e
 
 
+def bulk_add(entries: list, plant: str = "", line: str = "") -> dict:
+    """Add many drafts at once under one plant/line, skipping any robot already
+    present (matched by (robot, line) like register_backup). Used by the
+    bulk-folder import and the network-discover flows. Returns the added entries
+    (with ids) and the names skipped as duplicates."""
+    added: list[dict] = []
+    skipped: list[str] = []
+    with _LOCK:
+        data = load()
+        for entry in entries or []:
+            e = dict(entry or {})
+            if plant:
+                e["plant"] = plant
+            if line:
+                e["line"] = line
+            match = _find_match(data, e)
+            if match is not None:
+                skipped.append(match.get("robot", "") or e.get("robot", ""))
+                continue
+            ne = _normalize(e)
+            data["robots"].append(ne)  # appended in-loop, so in-batch dupes also skip
+            added.append(ne)
+        if added:
+            _reconcile(data)
+            _write(data)
+    return {"added": added, "skipped": skipped}
+
+
 def update_robot(robot_id: str, patch: dict) -> dict | None:
     with _LOCK:
         data = load()

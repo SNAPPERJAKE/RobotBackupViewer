@@ -15,6 +15,7 @@ from pathlib import Path
 
 from . import compare
 from . import __version__
+from . import discover
 from . import ftpbackup
 from . import library
 from . import search as search_mod
@@ -58,6 +59,7 @@ class Api:
         self._session: BackupSession | None = None
         self._compare_session: BackupSession | None = None
         self._jobs: dict[str, ftpbackup.BackupJob] = {}  # active/finished backup jobs
+        self._scans: dict[str, discover._ScanJob] = {}  # folder + network scan jobs
 
     def bind(self, window, initial_backup: str | None = None):
         self._window = window
@@ -1072,3 +1074,59 @@ class Api:
             raise ApiError("NO_JOB", "unknown backup job")
         job.cancel()
         return True
+
+    # -- bulk import + network discovery ---------------------------------------
+
+    @_endpoint
+    def local_subnet(self):
+        """The local /24 (and IP) to prefill the discover dialog."""
+        return {"cidr": discover.default_cidr(), "ip": discover.local_ipv4()}
+
+    @_endpoint
+    def lib_bulk_scan_start(self, path: str):
+        """Walk a parent folder for backup roots on a worker thread; poll via
+        scan_progress. Each result is a library draft (newest snapshot per robot)."""
+        p = Path(path or "")
+        if not p.is_dir():
+            raise ApiError("NOT_FOUND", f"Not a folder: {path}")
+
+        def draft_fn(root):
+            return self._draft_from_session(BackupSession(root), str(root))
+
+        job = discover.FolderScanJob(p, draft_fn)
+        self._scans[job.id] = job
+        threading.Thread(target=job.run, name="folderscan-" + job.id, daemon=True).start()
+        return {"job_id": job.id}
+
+    @_endpoint
+    def net_scan_start(self, spec: dict):
+        """Sweep a subnet for FANUC controllers on a worker thread; poll via
+        scan_progress. spec={cidr?, port?}; cidr defaults to the local /24."""
+        spec = spec or {}
+        cidr = (spec.get("cidr") or "").strip() or discover.default_cidr()
+        if not cidr:
+            raise ApiError("BAD_SPEC", "could not determine a subnet to scan")
+        job = discover.NetworkScanJob(cidr, port=spec.get("port", 21))
+        self._scans[job.id] = job
+        threading.Thread(target=job.run, name="netscan-" + job.id, daemon=True).start()
+        return {"job_id": job.id, "cidr": cidr}
+
+    @_endpoint
+    def scan_progress(self, job_id: str):
+        job = self._scans.get(job_id)
+        if job is None:
+            raise ApiError("NO_JOB", "unknown scan job")
+        return job.snapshot()
+
+    @_endpoint
+    def cancel_scan(self, job_id: str):
+        job = self._scans.get(job_id)
+        if job is None:
+            raise ApiError("NO_JOB", "unknown scan job")
+        job.cancel()
+        return True
+
+    @_endpoint
+    def lib_bulk_add(self, entries: list, plant: str = "", line: str = ""):
+        """Add many drafts at once under one plant/line, skipping existing robots."""
+        return library.bulk_add(entries or [], plant=plant, line=line)

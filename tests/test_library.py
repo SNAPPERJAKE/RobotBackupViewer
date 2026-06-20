@@ -71,3 +71,19 @@ def test_register_backup_matches_then_creates(monkeypatch, tmp_path):
     # no match -> a new entry is created
     library.register_backup({"robot": "R2", "line": "L9"}, {"path": "x", "taken": "t"})
     assert len(library.list_robots()["robots"]) == 2
+
+
+def test_bulk_add_dedupes(monkeypatch, tmp_path):
+    _iso(monkeypatch, tmp_path)
+    library.add_robot({"robot": "R1", "line": "L1"})  # already present
+
+    res = library.bulk_add(
+        [{"robot": "R1"}, {"robot": "R2"}, {"robot": "R3"}, {"robot": "R2"}],
+        plant="P", line="L1",
+    )
+    assert len(res["added"]) == 2          # R2 + R3 (R1 exists; the 2nd R2 is an in-batch dup)
+    assert "R1" in res["skipped"]
+    names = {e["robot"] for e in library.list_robots()["robots"]}
+    assert names == {"R1", "R2", "R3"}
+    for e in res["added"]:
+        assert e["plant"] == "P" and e["line"] == "L1"

@@ -50,6 +50,8 @@
     addBtn.addEventListener("click", function () {
       BV.menu(addBtn, [
         { label: "from backup", onClick: BV.addToLibraryFlow },
+        { label: "bulk from folder", onClick: bulkAddFlow },
+        { label: "discover on network", onClick: discoverFlow },
         { label: "manually", onClick: function () { editRobotModal(null, true); } },
       ]);
     });
@@ -459,6 +461,214 @@
       });
     }).catch(function (e) { BV.toast(e.message); });
   };
+
+  /* ---- shared scan progress (bulk folder + network discover) ---- */
+
+  function scanStatusText(p) {
+    return {
+      pending: "starting…", scanning: "scanning…",
+      done: "done", error: "failed", cancelled: "cancelled",
+    }[p.status] || p.status;
+  }
+
+  function renderScanBar(el, p) {
+    var running = p.status === "pending" || p.status === "scanning";
+    var pct = p.total ? Math.round(100 * p.scanned / p.total) : (running ? 8 : 100);
+    var html = '<div class="membar"><div class="mb-label"><span>' + BV.esc(scanStatusText(p)) +
+      "</span><span>" + (p.total ? p.scanned + " / " + p.total : "") +
+      (p.found ? " · " + p.found + " found" : "") + "</span></div>" +
+      '<div class="mb-track"><div class="mb-fill" style="width:' + pct + '%"></div></div></div>';
+    if (running && p.current) html += '<div class="bf-current dim">' + BV.esc(p.current) + "</div>";
+    el.innerHTML = html;
+  }
+
+  /* poll one scan job every 500ms; onTick each poll, onDone at a terminal state.
+     returns a stop() that halts polling (the modal calls it + cancel_scan on close) */
+  function pollScan(jobId, onTick, onDone) {
+    var iv = setInterval(function () {
+      BV.api.call("scan_progress", jobId).then(function (p) {
+        onTick(p);
+        if (p.status === "done" || p.status === "error" || p.status === "cancelled") {
+          clearInterval(iv);
+          onDone(p);
+        }
+      }).catch(function () {
+        clearInterval(iv);
+        onDone({ status: "error", error: "scan lost", results: [] });
+      });
+    }, 500);
+    return function stop() { clearInterval(iv); };
+  }
+
+  /* ---- bulk add from a parent folder ---- */
+
+  function bulkAddFlow() {
+    BV.api.call("pick_backup_folder").then(function (path) {
+      if (path) bulkAddModal(path);
+    }).catch(function (e) { BV.toast(e.message); });
+  }
+
+  function bulkAddModal(path) {
+    var body = BV.el("div", { class: "lib-form" });
+    var info = BV.el("div", { class: "scan-info dim" }, "scanning " + BV.esc(path) + " …");
+    var bar = BV.el("div", { class: "scan-bar" });
+    var found = BV.el("div", { class: "scan-results" });
+    var fPlant = inp(""), fLine = inp("");
+    var actions = BV.el("div", { class: "lf-actions" });
+    var cancelBtn = BV.el("button", { class: "btn" }, "cancel");
+    var addBtn = BV.el("button", { class: "btn primary" }, "add");
+    addBtn.disabled = true;
+    actions.appendChild(cancelBtn);
+    actions.appendChild(addBtn);
+    body.appendChild(info);
+    body.appendChild(bar);
+    body.appendChild(found);
+    body.appendChild(field("plant", fPlant));
+    body.appendChild(field("line", fLine));
+    body.appendChild(actions);
+
+    var results = [], jobId = null, stop = null;
+    var m = BV.modal("bulk add from folder", body, {
+      onClose: function () { if (stop) stop(); if (jobId) BV.api.call("cancel_scan", jobId).catch(function () {}); },
+    });
+    cancelBtn.addEventListener("click", m.close);
+
+    BV.api.call("lib_bulk_scan_start", path).then(function (res) {
+      jobId = res.job_id;
+      stop = pollScan(jobId, function (p) { renderScanBar(bar, p); }, function (p) {
+        renderScanBar(bar, p);
+        results = p.results || [];
+        if (p.status !== "done") { info.textContent = "scan " + scanStatusText(p) + (p.error ? ": " + p.error : ""); return; }
+        info.textContent = results.length
+          ? results.length + " backup" + (results.length === 1 ? "" : "s") + " found — enter a plant & line"
+          : "no backups found in this folder";
+        found.innerHTML = "";
+        results.forEach(function (d) {
+          var row = BV.el("div", { class: "scan-row" });
+          var meta = [];
+          if (d.model) meta.push(BV.esc(d.model));
+          if (d.backup_type && d.backup_type !== "unknown") meta.push(BV.esc(d.backup_type));
+          row.innerHTML = '<span class="lib-robot-name">' + BV.esc(d.robot || "(unnamed)") + "</span>" +
+            (meta.length ? ' <span class="lib-robot-meta">' + meta.join(" · ") + "</span>" : "");
+          found.appendChild(row);
+        });
+        addBtn.disabled = results.length === 0;
+        addBtn.textContent = results.length ? "add " + results.length : "add";
+      });
+    }).catch(function (e) { info.textContent = e.message; });
+
+    addBtn.addEventListener("click", function () {
+      if (!results.length) return;
+      addBtn.disabled = true;
+      BV.api.call("lib_bulk_add", results, fPlant.value.trim(), fLine.value.trim()).then(function (r) {
+        m.close();
+        var added = (r.added || []).length, skipped = (r.skipped || []).length;
+        BV.toast("added " + added + (skipped ? " · skipped " + skipped + " already in library" : ""));
+        refresh();
+      }).catch(function (e) { BV.toast(e.message); addBtn.disabled = false; });
+    });
+  }
+
+  /* ---- discover robots on the network ---- */
+
+  function discoverFlow() {
+    var body = BV.el("div", { class: "lib-form" });
+    var fSubnet = inp("", { placeholder: "192.168.1.0/24" });
+    var fPlant = inp(""), fLine = inp("");
+    var bar = BV.el("div", { class: "scan-bar" });
+    var selRow = BV.el("div", { class: "scan-selall hidden" });
+    var selAll = BV.el("input", { type: "checkbox", class: "lf-check" });
+    selRow.appendChild(selAll);
+    selRow.appendChild(BV.el("span", null, "select all"));
+    var list = BV.el("div", { class: "scan-results" });
+    var actions = BV.el("div", { class: "lf-actions" });
+    var scanBtn = BV.el("button", { class: "btn" }, "scan");
+    var addBtn = BV.el("button", { class: "btn primary" }, "add");
+    addBtn.disabled = true;
+    actions.appendChild(scanBtn);
+    actions.appendChild(addBtn);
+    body.appendChild(field("subnet", fSubnet));
+    body.appendChild(field("plant", fPlant));
+    body.appendChild(field("line", fLine));
+    body.appendChild(bar);
+    body.appendChild(selRow);
+    body.appendChild(list);
+    body.appendChild(actions);
+
+    var found = [], sel = {}, jobId = null, stop = null, scanning = false;
+    var m = BV.modal("discover on network", body, {
+      onClose: function () { if (stop) stop(); if (jobId) BV.api.call("cancel_scan", jobId).catch(function () {}); },
+    });
+    BV.api.call("local_subnet").then(function (s) { if (s && s.cidr && !fSubnet.value) fSubnet.value = s.cidr; }).catch(function () {});
+
+    function updateAddBtn() {
+      var n = found.filter(function (h) { return sel[h.host]; }).length;
+      addBtn.disabled = n === 0;
+      addBtn.textContent = n ? "add " + n : "add";
+      var on = found.length && found.every(function (h) { return sel[h.host]; });
+      selAll.checked = !!on;
+      selAll.indeterminate = !on && found.some(function (h) { return sel[h.host]; });
+    }
+
+    function renderList() {
+      selRow.classList.toggle("hidden", found.length === 0);
+      list.innerHTML = "";
+      found.forEach(function (h) {
+        var row = BV.el("div", { class: "scan-row" });
+        var cb = BV.el("input", { type: "checkbox", class: "lf-check" });
+        cb.checked = !!sel[h.host];
+        cb.addEventListener("change", function () { if (cb.checked) sel[h.host] = true; else delete sel[h.host]; updateAddBtn(); });
+        row.appendChild(cb);
+        var label = '<span class="lib-robot-name">' + BV.esc(h.name || h.host) + "</span>";
+        var meta = [BV.esc(h.host)];
+        if (h.has_md) meta.push(BV.pill("MD", "acc"));
+        if (h.has_fr) meta.push(BV.pill("FR", "acc"));
+        label += ' <span class="lib-robot-meta">' + meta.join(" · ") + "</span>";
+        row.appendChild(BV.el("div", { class: "lib-robot-main" }, label));
+        list.appendChild(row);
+      });
+      updateAddBtn();
+    }
+
+    selAll.addEventListener("change", function () {
+      var on = selAll.checked;
+      found.forEach(function (h) { if (on) sel[h.host] = true; else delete sel[h.host]; });
+      renderList();
+    });
+
+    scanBtn.addEventListener("click", function () {
+      if (scanning) { if (jobId) BV.api.call("cancel_scan", jobId).catch(function () {}); return; }
+      var cidr = fSubnet.value.trim();
+      found = []; sel = {}; renderList();
+      scanning = true; scanBtn.textContent = "stop"; addBtn.disabled = true;
+      BV.api.call("net_scan_start", { cidr: cidr }).then(function (res) {
+        jobId = res.job_id;
+        stop = pollScan(jobId, function (p) {
+          renderScanBar(bar, p);
+          if ((p.results || []).length !== found.length) { found = p.results || []; renderList(); }
+        }, function (p) {
+          renderScanBar(bar, p);
+          found = p.results || []; renderList();
+          scanning = false; scanBtn.textContent = "scan";
+          if (p.status === "done" && !found.length) BV.toast("no FANUC robots found");
+        });
+      }).catch(function (e) { BV.toast(e.message); scanning = false; scanBtn.textContent = "scan"; });
+    });
+
+    addBtn.addEventListener("click", function () {
+      var drafts = found.filter(function (h) { return sel[h.host]; }).map(function (h) {
+        return { robot: h.name || h.host, ips: [h.host], ftp: { user: "", passive: true } };
+      });
+      if (!drafts.length) return;
+      addBtn.disabled = true;
+      BV.api.call("lib_bulk_add", drafts, fPlant.value.trim(), fLine.value.trim()).then(function (r) {
+        m.close();
+        var added = (r.added || []).length, skipped = (r.skipped || []).length;
+        BV.toast("added " + added + (skipped ? " · skipped " + skipped + " already in library" : ""));
+        refresh();
+      }).catch(function (e) { BV.toast(e.message); addBtn.disabled = false; });
+    });
+  }
 
   BV.tabs = BV.tabs || [];
   BV.tabs.push({ id: "home", label: "home", render: render, hidden: true, always: true, shell: true });
