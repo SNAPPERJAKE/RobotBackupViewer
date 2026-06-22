@@ -355,18 +355,29 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .mhv-sig-io { color: var(--sub-alt); }
 .mhv-prog-list { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.6rem; }
 
+/* overview = a fixed-height dashboard: the hero stays pinned at the top of the
+   slot while main + side each own their scroll, so they never ride one shared
+   scrollbar. Only applied on the overview (ov-host added in overview.js). */
+.view-slot.ov-host { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.view-slot.ov-host > .hero { flex: none; }
+.view-slot.ov-host > .ov-dash { flex: 1 1 auto; min-height: 0; }
+
 .ov-dash {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(16em, 19em);
   gap: 0.9rem;
-  align-items: start;
+  align-items: stretch;   /* panes fill the dash height so each can scroll */
 }
 @media (max-width: 760px) { .ov-dash { grid-template-columns: 1fr; } }
 
 /* main area: EXPLICIT columns - a card lives in the column you put it in;
    collapsing a neighbor can never reflow it somewhere else (and unlike CSS
-   multicol, overflow grows DOWN into scroll, never sideways into clipping) */
-.ov-main { display: flex; gap: 0.9rem; align-items: flex-start; min-width: 0; }
+   multicol, overflow grows DOWN into scroll, never sideways into clipping).
+   The pane scrolls only when its cards actually outgrow the dash. */
+.ov-main {
+  display: flex; gap: 0.9rem; align-items: flex-start; min-width: 0;
+  overflow-y: auto; min-height: 0;
+}
 .ov-col {
   flex: 1 1 0;
   min-width: 0;
@@ -375,17 +386,20 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
   gap: 0.9rem;
   min-height: 6rem; /* an emptied column stays a drop target */
 }
-/* sidebar stapled like header/footer: stays put while main scrolls, scrolls
-   internally only when it outgrows the window (big display settings) */
+/* sidebar is its own scroll region (own scrollbar); kept position:sticky so it
+   stays anchored, and bounded so it scrolls internally past the viewport */
 .ov-side {
   display: flex; flex-direction: column; gap: 0.9rem; min-width: 0;
   position: sticky;
   top: 0;
-  align-self: start;
+  align-self: stretch;
   max-height: calc(var(--view-h, 60rem) - 1.4rem);
-  overflow-y: auto;
+  overflow-y: auto; min-height: 0;
 }
-.ov-side:empty { display: none; }
+/* when the sidebar is emptied AND we're not mid-drag, reclaim its column; a drag
+   brings it back (see .drag-active below) so cards can be put back */
+.ov-dash.no-side:not(.drag-active) { grid-template-columns: minmax(0, 1fr); }
+.ov-dash.no-side:not(.drag-active) > .ov-side { display: none; }
 
 /* drag affordances */
 .card[data-card-id] > h3:first-of-type { cursor: grab; }
@@ -395,6 +409,14 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .ov-col.drop-end, .ov-side.drop-end {
   outline: 2px dashed color-mix(in srgb, var(--accent) 55%, transparent);
   outline-offset: 4px; border-radius: var(--radius);
+}
+/* mid-drag: every empty zone (incl. an emptied sidebar) is a clearly-marked drop
+   target so a column drained of cards can always be refilled */
+.ov-dash.drag-active .ov-side { display: flex; }
+.ov-dash.drag-active .ov-col:empty, .ov-dash.drag-active .ov-side:empty {
+  min-height: 6rem;
+  outline: 2px dashed color-mix(in srgb, var(--accent) 30%, transparent);
+  outline-offset: -5px; border-radius: var(--radius);
 }
 
 /* ---- collapsible cards ---- */
@@ -683,10 +705,26 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .dcs-dash-h { font-size: 0.74rem; color: var(--sub); text-transform: lowercase; font-weight: 600; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.4rem; }
 .dcs-dash-body, .dcs-dash-line { font-size: 0.8rem; color: var(--text); }
 .dcs-dash-line { display: flex; justify-content: space-between; gap: 0.6rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0.05rem 0; }
-.dcs-sig-strip { display: flex; flex-wrap: wrap; gap: 0.3rem; }
-.dcs-sig-chip { font-size: 0.72rem; padding: 0.08em 0.5em; border-radius: 99px; border: 1px solid; }
-.dcs-sig-chip.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
-.dcs-sig-chip.bad { color: var(--bg); background: var(--error); border-color: var(--error); font-weight: 600; }
+/* signatures: one row per signature, the real current/latch value on show
+   (not just an OK pill), stacked in a column; long lists scroll within the cell
+   instead of ballooning the sticky dashboard */
+.dcs-sig-col { display: flex; flex-direction: column; gap: 0.15rem; max-height: 10rem;
+  overflow-y: auto; overflow-x: hidden; }
+.dcs-sig-row {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.1rem 0.5rem;
+  font-size: 0.78rem; padding: 0.12rem 0.1rem; border-radius: 5px;
+  font-variant-numeric: tabular-nums;
+}
+.dcs-sig-row.bad { background: color-mix(in srgb, var(--error) 12%, transparent); }
+.dcs-sig-name { color: var(--accent); flex: 0 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.dcs-sig-vals { color: var(--text); white-space: nowrap; }
+.dcs-sig-sep { color: var(--sub); font-size: 0.92em; }
+.dcs-sig-latch { color: var(--error); }
+/* timestamps drop to their own line so the value + status pill never overflow
+   the narrow dashboard cell sideways */
+.dcs-sig-time { color: var(--sub); font-size: 0.68rem; white-space: nowrap; flex-basis: 100%; }
+.dcs-sig-row .pill { flex: none; margin-left: auto; }
 
 /* ---- system vars tree ---- */
 .sysvar-list { font-size: 0.85rem; }
@@ -712,7 +750,7 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .kv dt, .kv dd,
 .sysvar-name, .sysvar-type, .sysvar-val,
 .dcs-entry-label, .dcs-line > span, .dcs-pos-grid,
-.dcs-dash-line, .dcs-sig-chip,
+.dcs-dash-line, .dcs-sig-name, .dcs-sig-vals, .dcs-sig-time,
 .code-line .lc, .pd-text,
 .sr-name, .sr-hit .tx,
 .cmp-name, .cmp-a, .cmp-b, .cmp-summary,

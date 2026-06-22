@@ -18,6 +18,13 @@
 
   var vsOn = false; /* persists across section navigation within the tab */
 
+  /* sections featured as their own cell in the top dashboard bar - [sectionId,
+     label]. They are dropped from the section menu list below so each appears
+     ONCE (the overview cell), never duplicated as a redundant list row. */
+  var DASH_SECTIONS = [["robot-setup", "robot"], ["cip-safety", "cip safety"],
+                       ["mastering-parameter", "mastering"]];
+  var DASH_IDS = DASH_SECTIONS.map(function (p) { return p[0]; });
+
   /* ---- helpers ---- */
 
   /* dcs reserves bright colors for changed/NG; a screen of OK stays muted */
@@ -343,18 +350,30 @@
     var dash = BV.el("div", { class: "dcs-dash stick" });
     if (rep.signatures && rep.signatures.length) {
       var cell = BV.el("div", { class: "dcs-dash-cell" });
+      /* stacked rows showing the ACTUAL signature value (current, plus the latched
+         value when they disagree) + timestamps - not just a "trust me" OK pill */
       var h = '<div class="dcs-dash-h">signatures ' +
         (rep.all_signatures_match ? BV.pill("match ✓", "ok-soft") : BV.pill("⚠ mismatch", "err")) +
-        "</div><div class=\"dcs-sig-strip\">";
+        '</div><div class="dcs-sig-col">';
       rep.signatures.forEach(function (s) {
-        h += '<span class="dcs-sig-chip ' + (s.match ? "ok" : "bad") +
-          '" title="' + BV.esc(s.current + " vs " + s.latch) + '">' +
-          BV.esc(s.name) + (s.match ? " ✓" : " ✗") + "</span>";
+        var vals = '<span class="dcs-sig-cur">' + BV.esc(String(s.current)) + "</span>" +
+          (s.match ? "" : ' <span class="dcs-sig-sep">vs</span> ' +
+            '<span class="dcs-sig-latch">' + BV.esc(String(s.latch)) + "</span>");
+        var time = s.current_time
+          ? '<span class="dcs-sig-time">' + BV.esc(s.current_time) +
+            (s.latch_time && s.latch_time !== s.current_time ? " / " + BV.esc(s.latch_time) : "") +
+            "</span>"
+          : "";
+        h += '<div class="dcs-sig-row' + (s.match ? "" : " bad") + '">' +
+          '<span class="dcs-sig-name">' + BV.esc(s.name) + "</span>" +
+          '<span class="dcs-sig-vals">' + vals + "</span>" + time +
+          (s.match ? BV.pill("✓", "ok-soft") : BV.pill("✗", "err")) +
+          "</div>";
       });
       cell.innerHTML = h + "</div>";
       dash.appendChild(cell);
     }
-    [["robot-setup", "robot"], ["cip-safety", "cip safety"], ["mastering-parameter", "mastering"]]
+    DASH_SECTIONS
       .forEach(function (pair) {
         var sec = rep.sections.find(function (s) { return s.id === pair[0]; });
         if (!sec) return;
@@ -383,6 +402,8 @@
         '<h3 style="font-size:.78rem;color:var(--sub);margin:.2rem 0 .5rem">sections</h3>');
       var menu = BV.el("div", { class: "dcs-menu" });
       rep.sections.forEach(function (sec) {
+        /* skip the sections that already have their own dashboard cell above */
+        if (DASH_IDS.indexOf(sec.id) >= 0) return;
         var row = BV.el("div", { class: "dcs-menu-row" });
         row.innerHTML = '<span class="dcs-menu-title">' + BV.esc(sec.title) + "</span>" +
           '<span class="dcs-menu-tags">' + menuBadge(sec.summary) +
@@ -393,6 +414,7 @@
         menu.appendChild(row);
       });
       view.appendChild(menu);
+      BV.persistScroll("dcs", document.getElementById("view"));
     }).catch(function (e) {
       view.innerHTML = '<div class="empty-state"><div class="hint">' + BV.esc(e.message) + "</div></div>";
     });

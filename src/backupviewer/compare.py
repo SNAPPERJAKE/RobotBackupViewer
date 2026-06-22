@@ -283,6 +283,71 @@ def _pos_equal_frames(ea, eb) -> bool:
     return all(abs((ea.get(ax) or 0) - (eb.get(ax) or 0)) < 0.0005 for ax in _AXES)
 
 
+def _payload_vals_equal(sa, sb) -> bool:
+    if (sa.get("mass") is None) != (sb.get("mass") is None):
+        return False
+    if sa.get("mass") is not None and abs(sa["mass"] - sb["mass"]) >= 0.0005:
+        return False
+    for key in ("cg", "inertia"):
+        va, vb = sa.get(key) or [], sb.get(key) or []
+        if len(va) != len(vb):
+            return False
+        if any(abs((x or 0) - (y or 0)) >= 0.0005 for x, y in zip(va, vb)):
+            return False
+    return True
+
+
+def diff_payloads(a: dict, b: dict, ignore_comments: bool = False,
+                  ignore_values: bool = False) -> dict:
+    """Payload schedules ($PLST_GRP in SYMOTN.VA) per motion group. Two labeled
+    columns only, NEVER one-sided rows: a schedule present on one side and absent
+    (or uninit) on the other shows as added/removed with the empty side rendered
+    as "non-existent" by the UI. Mirrors diff_frames - an uninit slot counts as
+    "not set" (FANUC reports groups the robot doesn't have as default slots)."""
+    rows = []
+    groups = sorted(set(a.get("groups", {})) | set(b.get("groups", {})))
+    for g in groups:
+        am = {s["index"]: s for s in a.get("groups", {}).get(g, [])}
+        bm = {s["index"]: s for s in b.get("groups", {}).get(g, [])}
+
+        def desc(s):
+            if s.get("uninit"):
+                return "uninit"
+            bits = []
+            if s.get("comment"):
+                bits.append(f"'{s['comment']}'")
+            if s.get("mass") is not None:
+                bits.append(f"{s['mass']:.1f}kg")
+            cg = s.get("cg") or []
+            if any(cg):
+                bits.append("CG " + " ".join(f"{ax}{(v or 0):.1f}"
+                                              for ax, v in zip(("x", "y", "z"), cg)))
+            inertia = s.get("inertia") or []
+            if any(inertia):
+                bits.append("I " + " ".join(f"{ax}{(v or 0):.1f}"
+                                            for ax, v in zip(("ix", "iy", "iz"), inertia)))
+            return " · ".join(bits) or "—"
+
+        def is_set(s):
+            return bool(s) and not s.get("uninit")
+
+        for i in sorted(set(am) | set(bm)):
+            sa, sb = am.get(i), bm.get(i)
+            name = f"payload {i} (g{g})"
+            if is_set(sa) and not is_set(sb):
+                rows.append(_row("removed", name, desc(sa)))
+            elif is_set(sb) and not is_set(sa):
+                rows.append(_row("added", name, "", desc(sb)))
+            elif sa and sb:
+                cmt_diff = (sa.get("comment", "") != sb.get("comment", "")
+                            and not ignore_comments)
+                val_diff = not _payload_vals_equal(sa, sb) and not ignore_values
+                if (cmt_diff or val_diff) and (is_set(sa) or is_set(sb)
+                                               or sa.get("comment") or sb.get("comment")):
+                    rows.append(_row("changed", name, desc(sa), desc(sb)))
+    return finish(rows)
+
+
 def diff_programs(a: list[dict], b: list[dict]) -> dict:
     # -BCKED*- style system markers differ by timestamp on every backup; noise
     am = {p["name"].upper(): p for p in a if not p["name"].startswith("-")}

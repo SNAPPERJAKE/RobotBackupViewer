@@ -101,13 +101,16 @@
 
   function isShell(tab) { return !!(tab && tab.shell); }
 
-  /* the search box + compare are backup-viewer chrome - hide them on the shell
-     (home/backup) screens so the main menu's topbar is just logo·theme·aa·? */
+  /* the search box + compare + the 1-9 tabbar are backup-viewer chrome - hide
+     them on the shell (home/backup) screens so the main menu's topbar is just
+     logo·theme·aa·?. buildTabbar() keys off "manifest present", which stays true
+     once a robot is open, so the tabbar must be hidden here by ROUTE instead. */
   function setTopbarChrome(shell) {
     var s = document.getElementById("global-search");
     var c = document.getElementById("btn-compare");
     if (s) s.classList.toggle("hidden", shell);
     if (c) c.classList.toggle("hidden", shell);
+    if (tabbar) tabbar.classList.toggle("hidden", shell);
   }
 
   function route() {
@@ -138,6 +141,10 @@
     setActive(tab.id);
     setTopbarChrome(isShell(tab));
     view.classList.remove("no-pad");
+    /* drop any persist-scroll ownership before resetting: the scroll-to-0 below
+       fires a scroll event, and without this the OUTGOING tab's key would catch
+       it and overwrite its own saved position with 0 (BV.persistScroll) */
+    view._bvScrollKey = null;
     view.scrollTop = 0;
     /* each route renders into fresh slots: a stale async render from a previous
        route appends into a detached node and can never duplicate content */

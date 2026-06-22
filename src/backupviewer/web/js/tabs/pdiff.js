@@ -67,6 +67,22 @@
       body.innerHTML = html;
       wrap.appendChild(body);
 
+      /* center a row in the viewer, BELOW the sticky program/robot header (a
+         top-aligned target would hide under it) and flash THAT row. Reading
+         clientHeight / getBoundingClientRect forces a synchronous reflow, so the
+         math is correct without deferring (and the hidden probe window, which
+         never runs rAF callbacks, still scrolls + flashes). */
+      function scrollToRow(el) {
+        var headH = head.offsetHeight;
+        var wr = wrap.getBoundingClientRect();
+        var er = el.getBoundingClientRect();
+        var avail = wrap.clientHeight - headH;
+        wrap.scrollTop += (er.top - wr.top - headH) - Math.max(0, (avail - el.offsetHeight) / 2);
+        el.classList.remove("flash");
+        void el.offsetWidth; /* restart the animation */
+        el.classList.add("flash");
+      }
+
       /* jump between differences */
       var diffIdx = [];
       d.rows.forEach(function (r, i) { if (r.kind !== "same") diffIdx.push(i); });
@@ -75,32 +91,29 @@
         if (!diffIdx.length) { BV.toast("programs are identical"); return; }
         cur = (cur + dir + diffIdx.length) % diffIdx.length;
         var el = body.querySelector('[data-i="' + diffIdx[cur] + '"]');
-        if (el) {
-          el.scrollIntoView({ block: "center" });
-          el.classList.remove("flash");
-          void el.offsetWidth; /* restart the animation */
-          el.classList.add("flash");
-        }
+        if (el) scrollToRow(el);
       }
       nextBtn.addEventListener("click", function () { jump(1); });
       prevBtn.addEventListener("click", function () { jump(-1); });
 
-      /* #pdiff/A/B/L26 - land on a specific line (from the report's inline
-         mini-diff); otherwise land on the first difference */
-      var anchor = params[2] && /^L\d+$/.test(params[2]) ? parseInt(params[2].slice(1), 10) : null;
+      /* #pdiff/A/B/La26 - land on a specific line (from the report's inline
+         mini-diff). The side letter (a/b) disambiguates which program's line 26
+         this is; a bare L26 (older deep link) falls back to either side. */
+      var am = params[2] ? /^L([ab])?(\d+)$/.exec(params[2]) : null;
+      var anchorSide = am && am[1] ? am[1] : null;
+      var anchor = am ? parseInt(am[2], 10) : null;
       if (anchor !== null) {
         var target = -1;
         d.rows.some(function (r, i) {
-          if (r.a_n === anchor || r.b_n === anchor) { target = i; return true; }
+          var hit = anchorSide ? r[anchorSide + "_n"] === anchor
+                               : (r.a_n === anchor || r.b_n === anchor);
+          if (hit) { target = i; return true; }
           return false;
         });
         if (target >= 0) {
           cur = diffIdx.indexOf(target); /* keep prev/next in sync if it's a diff row */
           var tel = body.querySelector('[data-i="' + target + '"]');
-          if (tel) {
-            tel.scrollIntoView({ block: "center" });
-            tel.classList.add("flash");
-          }
+          if (tel) scrollToRow(tel);
         } else if (diffCount) jump(1);
       } else if (diffCount) jump(1); /* land on the first difference */
 

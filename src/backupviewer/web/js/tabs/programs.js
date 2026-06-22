@@ -44,11 +44,16 @@
         var progs = res[0], styleTable = res[1];
         var showSystem = listState.showSystem;
         var showBinary = listState.showBinary;
+        var typeFilter = listState.typeFilter || null;
         /* inverted rank so clicking the ★ header once (ascending) floats
            starred style programs to the top */
         progs.forEach(function (p) {
           p.star_rank = p.styles && p.styles.length ? 0 : 1;
         });
+        var typeSet = {};
+        progs.forEach(function (p) { if (p.prog_type) typeSet[p.prog_type] = 1; });
+        var progTypes = Object.keys(typeSet).sort();
+        if (typeFilter && progTypes.indexOf(typeFilter) < 0) typeFilter = listState.typeFilter = null;
 
         var sb = BV.searchBox({
           placeholder: "filter programs…",
@@ -92,6 +97,21 @@
             refill();
           });
           toolbar.appendChild(binBtn);
+        }
+
+        /* file-type filter (TP / MACRO / PC / KAREL …) - only when the backup has
+           more than one type to choose between */
+        if (progTypes.length > 1) {
+          var typeSeg = BV.segmented(
+            [{ id: "all", label: "all" }].concat(progTypes.map(function (t) {
+              return { id: t, label: t.toLowerCase() };
+            })),
+            { value: typeFilter || "all", onChange: function (id) {
+                typeFilter = listState.typeFilter = (id === "all" ? null : id);
+                refill();
+              } }
+          );
+          toolbar.appendChild(typeSeg.el);
         }
 
         /* compare mode: both robots' program lists + pick-one-each diffing */
@@ -151,6 +171,7 @@
           return (list || []).filter(function (p) {
             if (!showSystem && p.system) return false;
             if (!showBinary && p.binary) return false;
+            if (typeFilter && p.prog_type !== typeFilter) return false;
             return true;
           });
         }

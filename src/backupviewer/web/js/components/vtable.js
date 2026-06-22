@@ -43,6 +43,18 @@
     this.sortDir = opts.sortDir || 1;
     this.filter = "";
     this.selected = -1;
+    /* a resize-drag ends with a mouseup that the browser also reports as a click
+       on the header cell; this timestamp lets the sort handler ignore that click
+       (mirrors dragReorder's clickGuardMs/isRecentDrag) */
+    this._lastResizeEnd = 0;
+
+    /* opts.stateKey: persist scroll position + sort across navigating in/out of
+       the tab (in-session, via BV.tabState). Restored once on first layout. */
+    this.stateKey = opts.stateKey || null;
+    if (this.stateKey) {
+      var saved = BV.tabState(this.stateKey);
+      if (saved.sortKey) { this.sortKey = saved.sortKey; this.sortDir = saved.sortDir || 1; }
+    }
 
     this.async = !!opts.provider;
     this.allData = opts.data || [];
@@ -68,7 +80,12 @@
       var cell = BV.el("div", { class: cls }, '<span class="vt-label">' + BV.esc(col.label) + "</span>");
       if (self._colWidth(col)) { cell.style.width = self._colWidth(col); }
       if (col.sortable !== false && !self.async) {
-        cell.addEventListener("click", function () { self._sortBy(col.key); });
+        cell.addEventListener("click", function () {
+          /* a header click that is really the tail of a column resize-drag must
+             not toggle the sort (the resize mouseup lands on the cell) */
+          if (Date.now() - self._lastResizeEnd < 250) return;
+          self._sortBy(col.key);
+        });
       }
       /* drag the right border to resize this column; double-click it to auto-fit.
          the grip swallows its own click/dblclick so it never triggers a sort. */
@@ -90,6 +107,13 @@
 
     this._onScroll = BV.debounce(function () { self._render(); }, 8);
     this.container.addEventListener("scroll", this._onScroll);
+    /* persist scroll synchronously (a number), independent of the render debounce,
+       so it survives the router's scrollTop reset on the next route */
+    if (this.stateKey) {
+      this.container.addEventListener("scroll", function () {
+        BV.tabState(self.stateKey).scrollTop = self.container.scrollTop;
+      });
+    }
     this._renderedRows = [];
   };
 
@@ -129,6 +153,10 @@
     if (this.sortKey === key) this.sortDir = -this.sortDir;
     else { this.sortKey = key; this.sortDir = 1; }
     this._updateArrows();
+    if (this.stateKey) {
+      var s = BV.tabState(this.stateKey);
+      s.sortKey = this.sortKey; s.sortDir = this.sortDir;
+    }
     if (this.opts.onSort) this.opts.onSort(this.sortKey, this.sortDir);
     this._applySync();
   };
@@ -159,7 +187,9 @@
     var startW = cell.getBoundingClientRect().width;
     var rootFs = parseFloat(getComputedStyle(document.documentElement).fontSize) || 15;
     document.body.style.cursor = "col-resize";
+    var moved = false;
     function move(ev) {
+      moved = true;
       var w = Math.max(40, startW + (ev.clientX - startX));
       col._resized = true;
       col._userWidth = w * 14 / rootFs;   /* emw() interprets widths at a 14px root */
@@ -171,6 +201,8 @@
       document.removeEventListener("mousemove", move);
       document.removeEventListener("mouseup", up);
       document.body.style.cursor = "";
+      /* only guard the sort click when an actual drag happened */
+      if (moved) self._lastResizeEnd = Date.now();
     }
     document.addEventListener("mousemove", move);
     document.addEventListener("mouseup", up);
@@ -248,6 +280,21 @@
     this.spacer.innerHTML = "";
     this._renderedRows = [];
     this._render();
+    /* restore the saved scroll once the container is actually laid out + scrollable
+       (sync - the hidden probe window runs no rAF). The first _layout can fire
+       before the host has a resolved height, where scrollTop would clamp to 0, so
+       keep retrying on later layouts until it sticks. */
+    if (this.stateKey && !this._scrollRestored) {
+      var saved = BV.tabState(this.stateKey);
+      if (!saved.scrollTop) {
+        this._scrollRestored = true;
+      } else if (this.container.clientHeight > 0 &&
+                 this.spacer.offsetHeight > this.container.clientHeight) {
+        this.container.scrollTop = saved.scrollTop;
+        this._scrollRestored = true;
+        this._render();
+      }
+    }
     if (this.opts.onCount) this.opts.onCount(this.total);
   };
 

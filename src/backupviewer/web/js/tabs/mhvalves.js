@@ -194,6 +194,7 @@
         sb.setCount(shown, nodes.length);
       }
       sb.setCount(nodes.length, nodes.length);
+      BV.persistScroll("mhvalves", document.getElementById("view"));
     }).catch(function (e) {
       view.innerHTML = '<div class="empty-state"><div class="big">mh valves unavailable</div>' +
         '<div class="hint">' + BV.esc(e.message) + "</div></div>";

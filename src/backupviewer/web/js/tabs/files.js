@@ -14,6 +14,16 @@
   function renderList(view, toolbar) {
     view.classList.add("no-pad");
     BV.api.call("list_files").then(function (files) {
+      var fst = BV.tabState("files");
+      var typeFilter = fst.typeFilter || null;
+      var extSet = {};
+      files.forEach(function (f) { if (f.ext) extSet[f.ext] = 1; });
+      var exts = Object.keys(extSet).sort();
+      if (typeFilter && exts.indexOf(typeFilter) < 0) typeFilter = fst.typeFilter = null;
+      function typedFiles() {
+        return typeFilter ? files.filter(function (f) { return f.ext === typeFilter; }) : files;
+      }
+
       var sb = BV.searchBox({
         placeholder: "filter files…",
         onChange: function (q) { if (vt) vt.setFilter(q); },
@@ -21,6 +31,20 @@
       });
       toolbar.appendChild(sb.el);
       BV.currentSearch = sb;
+
+      /* file-type filter (by extension) - sits next to the search box */
+      if (exts.length > 1) {
+        var typeSeg = BV.segmented(
+          [{ id: "all", label: "all" }].concat(exts.map(function (e) {
+            return { id: e, label: e.toLowerCase() };
+          })),
+          { value: typeFilter || "all", onChange: function (id) {
+              typeFilter = fst.typeFilter = (id === "all" ? null : id);
+              if (vt) { vt.setData(typedFiles()); vt.setFilter(sb.value()); }
+            } }
+        );
+        toolbar.appendChild(typeSeg.el);
+      }
 
       var host = BV.el("div", { style: "height:100%;margin:0 1.25rem 1rem" });
       view.appendChild(host);
@@ -44,7 +68,8 @@
               return BV.esc(BV.fmt.epoch(r.mtime));
             } },
         ],
-        data: files,
+        data: typedFiles(),
+        stateKey: "files",   /* persist scroll + sort across nav (in-session) */
         onCount: function (n) { sb.setCount(n, files.length); },
         onOpen: function (r) { location.hash = "#files/" + encodeURIComponent(r.rel); },
       });

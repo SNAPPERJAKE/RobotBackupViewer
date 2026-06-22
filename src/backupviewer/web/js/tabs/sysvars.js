@@ -113,6 +113,7 @@
         sb.setCount(shown, recs.length);
       }
       sb.setCount(recs.length, recs.length);
+      BV.persistScroll("sysvars", document.getElementById("view"));
     }).catch(function (e) {
       view.innerHTML = '<div class="empty-state"><div class="big">system vars unavailable</div>' +
         '<div class="hint">' + BV.esc(e.message) + "</div></div>";

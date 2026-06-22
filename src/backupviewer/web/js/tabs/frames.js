@@ -57,24 +57,42 @@
       var fr = res[0];
       fr.payloads = (res[1] && res[1].groups) || {};   /* payloads = a section under frames */
       var groupSet = {};
-      ["tools", "frames", "payloads"].forEach(function (k) {
+      ["tools", "frames", "jogs", "payloads"].forEach(function (k) {
         Object.keys(fr[k] || {}).forEach(function (g) { groupSet[g] = 1; });
       });
-      var groups = Object.keys(groupSet).sort();
-      if (!groups.length) groups = ["1"];
-      var curGroup = params && params[0] && groups.indexOf(params[0]) >= 0 ? params[0] : groups[0];
-      var showEmpty = false;
+      /* a group is "used" only if some kind has a real (non-empty) entry - a
+         controller reports groups it doesn't have as all-zero/uninit slots, and
+         offering an empty group in the filter is just noise */
+      function groupHasData(g) {
+        return ["tools", "frames", "jogs", "payloads"].some(function (k) {
+          return ((fr[k] || {})[g] || []).some(function (e) {
+            return k === "payloads" ? !payloadEmpty(e)
+                                    : (e.comment || (!e.uninit && !isZero(e)));
+          });
+        });
+      }
+      var allGroups = Object.keys(groupSet).sort();
+      var groups = allGroups.filter(groupHasData);
+      if (!groups.length) groups = allGroups.length ? [allGroups[0]] : ["1"];
+      /* in-session state: last group (when the hash carries none), show-empty
+         toggle, and per-section collapse all survive navigating in/out */
+      var fst = BV.tabState("frames");
+      fst.collapse = fst.collapse || {};
+      var curGroup = params && params[0] && groups.indexOf(params[0]) >= 0 ? params[0]
+                   : (groups.indexOf(fst.group) >= 0 ? fst.group : groups[0]);
+      fst.group = curGroup;
+      var showEmpty = !!fst.showEmpty;
 
       if (groups.length > 1) {
         var seg = BV.segmented(
           groups.map(function (g) { return { id: g, label: "group " + g }; }),
-          { value: curGroup, onChange: function (id) { curGroup = id; draw(); } }
+          { value: curGroup, onChange: function (id) { curGroup = fst.group = id; draw(); } }
         );
         toolbar.appendChild(seg.el);
       }
-      var zt = BV.el("button", { class: "btn" }, "show empty");
+      var zt = BV.el("button", { class: "btn" }, showEmpty ? "hide empty" : "show empty");
       zt.addEventListener("click", function () {
-        showEmpty = !showEmpty;
+        showEmpty = fst.showEmpty = !showEmpty;
         zt.textContent = showEmpty ? "hide empty" : "show empty";
         draw();
       });
@@ -154,7 +172,10 @@
         sec.appendChild(head);
         sec.appendChild(body);
         target.appendChild(sec);
-        BV.collapsible(sec, head, body, { open: true });
+        BV.collapsible(sec, head, body, {
+          open: fst.collapse[kind] !== false,
+          onToggle: function (o) { fst.collapse[kind] = o; },
+        });
       }
 
       function sideColumn(data, otherData, name, active) {
@@ -194,6 +215,7 @@
         }
       }
       draw();
+      BV.persistScroll("frames", document.getElementById("view"));
     }).catch(function (e) {
       view.innerHTML = '<div class="empty-state"><div class="big">frames unavailable</div>' +
         '<div class="hint">' + BV.esc(e.message) + "</div></div>";

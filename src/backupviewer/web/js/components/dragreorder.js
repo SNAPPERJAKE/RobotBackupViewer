@@ -8,13 +8,17 @@
    module only moves DOM around. It also tracks the last drop so a click that
    immediately follows a sloppy drag can be ignored (isRecentDrag()).
 
-   opts: { zones:[el], itemSelector, handleSelector, classes, onDrop, clickGuardMs }
+   opts: { zones:[el], itemSelector, handleSelector, classes, onDrop, clickGuardMs,
+           autoScroll, onDragState }
            zones          - the drop containers
            itemSelector   - selects a draggable item (".card[data-card-id]")
            handleSelector  - child selector for the grab handle, relative to an
                              item; wire(item) sets draggable on it
            classes        - { dragging, dropBefore, dropAfter, dropEnd } overrides
            onDrop(item, fromZone, toZone) - called after a successful move
+           autoScroll     - [el] scroll containers to edge-scroll while dragging
+           onDragState(active) - called true on dragstart, false on dragend (so a
+                             host can reveal empty drop zones only mid-drag)
    returns: { wire(item), isRecentDrag(), destroy() } */
 (function () {
   "use strict";
@@ -34,6 +38,9 @@
     var dragged = null;
     var lastDragEnd = 0;
     var bound = [];
+    var autoScroll = opts.autoScroll || [];   /* scroll containers for edge-scroll */
+    var lastClientY = 0;
+    var scrollRAF = null;
 
     function on(el, ev, fn) { el.addEventListener(ev, fn); bound.push([el, ev, fn]); }
 
@@ -46,12 +53,51 @@
       });
     }
 
+    /* the item we'd drop BEFORE for a pointer Y in this zone (null = append at the
+       end). One model for "onto a card" and "into empty space" alike, so the
+       marker always shows exactly where the card will land. */
+    function insertionPoint(zone, clientY) {
+      var items = [].filter.call(zone.querySelectorAll(itemSel), function (it) {
+        return it !== dragged && it.parentElement === zone;
+      });
+      for (var i = 0; i < items.length; i++) {
+        var r = items[i].getBoundingClientRect();
+        if (clientY < r.top + r.height / 2) return items[i];
+      }
+      return null;
+    }
+
+    /* edge auto-scroll: while dragging near a scroll container's top/bottom, nudge
+       it. Driven synchronously from dragover (so the hidden probe window, which
+       runs no rAF, still scrolls) AND from a rAF loop (so holding the pointer
+       still at the edge keeps scrolling). */
+    function edgeScrollStep() {
+      if (!dragged) return;
+      autoScroll.forEach(function (sc) {
+        if (!sc) return;
+        var r = sc.getBoundingClientRect();
+        if (lastClientY < r.top || lastClientY > r.bottom) return;
+        var band = Math.min(70, r.height * 0.2) || 40;
+        var dy = 0;
+        if (lastClientY < r.top + band) dy = -Math.max(6, Math.round((r.top + band - lastClientY) / 3));
+        else if (lastClientY > r.bottom - band) dy = Math.max(6, Math.round((lastClientY - (r.bottom - band)) / 3));
+        if (dy) sc.scrollTop += dy;
+      });
+    }
+    function edgeLoop() {
+      if (!dragged) { scrollRAF = null; return; }
+      edgeScrollStep();
+      scrollRAF = requestAnimationFrame(edgeLoop);
+    }
+
     zones.forEach(function (zone) {
       on(zone, "dragstart", function (e) {
         var item = e.target.closest(itemSel);
         if (!item || !zone.contains(item)) return;
         dragged = item;
         item.classList.add(DRAGGING);
+        if (opts.onDragState) opts.onDragState(true);
+        if (autoScroll.length && !scrollRAF) scrollRAF = requestAnimationFrame(edgeLoop);
         try {
           e.dataTransfer.setData("text/plain", item.dataset.cardId || "");
           e.dataTransfer.effectAllowed = "move";
@@ -64,34 +110,31 @@
         clearMarks();
         dragged = null;
         lastDragEnd = Date.now();
+        if (scrollRAF) { cancelAnimationFrame(scrollRAF); scrollRAF = null; }
+        if (opts.onDragState) opts.onDragState(false);
       });
 
       on(zone, "dragover", function (e) {
         if (!dragged) return;
         e.preventDefault();
         if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+        lastClientY = e.clientY || 0;
+        edgeScrollStep();
         clearMarks();
-        var t = e.target.closest(itemSel);
-        if (t && t !== dragged && zone.contains(t)) {
-          var r = t.getBoundingClientRect();
-          t.classList.add(e.clientY < r.top + r.height / 2 ? BEFORE : AFTER);
-        } else if (!t) {
-          zone.classList.add(END);
-        }
+        /* mark exactly where it lands: a line ABOVE the insertion-point card, or
+           the whole zone's END when it appends past the last card / into empty */
+        var ref = insertionPoint(zone, lastClientY);
+        if (ref) ref.classList.add(BEFORE);
+        else zone.classList.add(END);
       });
 
       on(zone, "drop", function (e) {
         if (!dragged) return;
         e.preventDefault();
         var from = dragged.parentElement;
-        var t = e.target.closest(itemSel);
-        if (t && t !== dragged && zone.contains(t)) {
-          var r = t.getBoundingClientRect();
-          var before = e.clientY < r.top + r.height / 2;
-          t.parentElement.insertBefore(dragged, before ? t : t.nextSibling);
-        } else if (!t) {
-          zone.appendChild(dragged);
-        }
+        var ref = insertionPoint(zone, e.clientY || 0);
+        if (ref) zone.insertBefore(dragged, ref);
+        else zone.appendChild(dragged);
         clearMarks();
         if (opts.onDrop) opts.onDrop(dragged, from, zone);
       });
@@ -105,6 +148,7 @@
       },
       isRecentDrag: function () { return Date.now() - lastDragEnd < guardMs; },
       destroy: function () {
+        if (scrollRAF) { cancelAnimationFrame(scrollRAF); scrollRAF = null; }
         bound.forEach(function (b) { b[0].removeEventListener(b[1], b[2]); });
         bound = [];
       },

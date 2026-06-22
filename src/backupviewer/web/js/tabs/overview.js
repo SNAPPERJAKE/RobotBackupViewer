@@ -271,7 +271,17 @@
       var side = BV.el("div", { class: "ov-side" });
       dash.appendChild(main);
       dash.appendChild(side);
+      /* ov-host makes the slot a fixed-height column: the hero stays pinned at the
+         top while main + side each own their scroll (no single shared scrollbar) */
+      view.classList.add("ov-host");
       view.appendChild(dash);
+
+      /* an emptied sidebar reclaims its column when idle, but is revealed as a drop
+         target again the moment a drag starts (so cards can be put back) */
+      function updateNoSide() {
+        dash.classList.toggle("no-side",
+          side.querySelectorAll(":scope > .card[data-card-id]").length === 0);
+      }
 
       /* the side panel is its own scroll region: cap it to the space below the
          (sticky) hero so it scrolls internally instead of riding the main
@@ -296,7 +306,9 @@
         zones: zones.cols.concat([side]),
         itemSelector: ".card[data-card-id]",
         handleSelector: ":scope > h3:first-of-type",
-        onDrop: function () { persistLayout(); },
+        autoScroll: [main, side],   /* edge-scroll each pane while dragging */
+        onDragState: function (active) { dash.classList.toggle("drag-active", active); },
+        onDrop: function () { persistLayout(); updateNoSide(); },
       });
       var layout = resolveLayout();
 
@@ -550,6 +562,7 @@
       }
 
       applyLayout(layout);
+      updateNoSide();
     }).catch(function (e) {
       view.innerHTML = '<div class="empty-state"><div class="big">overview unavailable</div>' +
         '<div class="hint">' + BV.esc(e.message) + "</div></div>";

@@ -623,6 +623,14 @@ class Api:
 
     # -- compare two backups ---------------------------------------------------------
 
+    def _payloads_for(self, s: BackupSession) -> dict:
+        """Payload model for compare; an absent SYMOTN.VA yields an empty model so
+        the other side's schedules still diff as two-column added rows."""
+        text = s.text("SYMOTN.VA")
+        if text is None:
+            return {"groups": {}}
+        return s.cached("payloads", lambda: payloads.build_payloads_model(text))
+
     def _side_info(self, s: BackupSession) -> dict:
         m = s.manifest()
         backup_date = ""
@@ -751,6 +759,8 @@ class Api:
                 self._build_io(a), self._build_io(b), ig_c, ig_v))
             run("frames", "frames", lambda: compare.diff_frames(
                 self._build_frames(a), self._build_frames(b), ig_c, ig_v))
+            run("payloads", "payloads", lambda: compare.diff_payloads(
+                self._payloads_for(a), self._payloads_for(b), ig_c, ig_v))
             run("numreg", "numeric registers", lambda: compare.diff_scalar_registers(
                 self._build_registers("num", a), self._build_registers("num", b), "R", ig_c, ig_v))
             run("posreg", "position registers", lambda: compare.diff_posreg(
@@ -1003,10 +1013,12 @@ class Api:
         return library.add_robot(draft)
 
     @_endpoint
-    def lib_open(self, robot_id: str, which: str = "latest"):
-        """Load a library robot's backup as the (single) active session.
-        which='latest' opens its latest_path; any other value is a specific
-        backup folder path from its history."""
+    def lib_open(self, robot_id: str, which: str = "latest", side: str = "a"):
+        """Load a library robot's backup as a session. which='latest' opens its
+        latest_path; any other value is a specific backup folder from its history.
+        side='b' loads it as the COMPARE session (needs a primary first) so the
+        compare flow can pick a second robot straight from the library, instead of
+        the folder dialog; side='a' (default) loads it as the single primary."""
         e = library.get_robot(robot_id)
         if e is None:
             raise ApiError("NOT_FOUND", "robot not in library")
@@ -1014,6 +1026,10 @@ class Api:
         p = Path(path)
         if not p.is_dir():
             raise ApiError("NOT_FOUND", f"backup folder missing: {path}")
+        if side == "b":
+            self._need_session()  # comparing needs a primary first
+            self._compare_session = BackupSession(p)
+            return self._compare_session.manifest()
         self._session = BackupSession(p)
         self._compare_session = None
         settings.set_value("last_folder", str(p))
