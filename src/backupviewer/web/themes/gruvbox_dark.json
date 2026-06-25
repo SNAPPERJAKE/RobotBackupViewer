@@ -1,6 +1,7 @@
 {
   "id": "gruvbox_dark",
   "name": "gruvbox dark",
+  "category": "MonkeyType",
   "colors": {
     "bg": "#282828",
     "bg2": "#1d2021",

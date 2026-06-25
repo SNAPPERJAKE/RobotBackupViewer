@@ -1,0 +1,16 @@
+{
+  "id": "tigers",
+  "name": "Tigers",
+  "category": "Sports",
+  "colors": {
+    "bg": "#0A1A2E",
+    "bg2": "#112440",
+    "sub": "#5E748E",
+    "subAlt": "#1C3354",
+    "text": "#EAF0F6",
+    "accent": "#FA4616",
+    "error": "#E5484D",
+    "ok": "#6FBF73",
+    "warn": "#F2A900"
+  }
+}

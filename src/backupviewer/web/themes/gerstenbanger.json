@@ -1,0 +1,16 @@
+{
+  "id": "gerstenbanger",
+  "name": "Gerstenbanger",
+  "category": "Sports",
+  "colors": {
+    "bg": "#0C2138",
+    "bg2": "#14304F",
+    "sub": "#6E8AA8",
+    "subAlt": "#244766",
+    "text": "#EAF1F8",
+    "accent": "#F26522",
+    "error": "#E5484D",
+    "ok": "#5FBF77",
+    "warn": "#FDBB30"
+  }
+}

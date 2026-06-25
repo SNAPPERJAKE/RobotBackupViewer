@@ -1,0 +1,16 @@
+{
+  "id": "cp_yellow",
+  "name": "Cyberpunk Yellow",
+  "category": "Cyberpunk 2077",
+  "colors": {
+    "bg": "#0C0C0C",
+    "bg2": "#151507",
+    "sub": "#6E6E50",
+    "subAlt": "#2A2A12",
+    "text": "#F0F0E6",
+    "accent": "#FCEE0A",
+    "error": "#FF2A6D",
+    "ok": "#00F0A8",
+    "warn": "#FF7A00"
+  }
+}

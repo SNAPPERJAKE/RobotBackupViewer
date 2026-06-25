@@ -1,6 +1,15 @@
 /* base.css - layout, typography, theme variables.
    Every color in the app must come from a var(--*) so themes fully reskin it. */
 
+/* Bundled UI display font (ROG-style). SIL OFL, shipped in web/fonts/ so it works
+   fully offline in the packaged .exe. Data/code stay on --font-mono (see below). */
+@font-face {
+  font-family: "Orbitron";
+  src: url("../fonts/Orbitron-VariableFont_wght.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
 :root {
   /* serika dark defaults; theme.js overrides these */
   --bg: #323437;
@@ -13,7 +22,19 @@
   --ok: #7ec384;
   --warn: #e2b714;
 
-  --font: "Cascadia Code", "Consolas", "JetBrains Mono", ui-monospace, monospace;
+  /* derived structural edge: a translucent slice of the theme's accent, so the "cracks"
+     keep the accent's TRUE hue on every theme (Pistons red stays red instead of muddying
+     toward the blue border color). --edge frames panels; --edge-soft is the quieter
+     sibling for the densest grids; the focal rails use full var(--accent). */
+  --edge: color-mix(in srgb, var(--accent) 45%, transparent);
+  --edge-soft: color-mix(in srgb, var(--accent) 26%, transparent);
+
+  --font-mono: "Cascadia Code", "Consolas", "JetBrains Mono", ui-monospace, monospace;
+  /* UI font - the font picker (settings_ui.js) overrides this at runtime. Defaults to
+     mono so the app is visually unchanged until a user opts in, and so chrome falls
+     back to mono if a bundled display font ever fails to load. Dense data/code is
+     pinned to --font-mono in components.css so column alignment never depends on it. */
+  --font: var(--font-mono);
   --radius: 8px;
   --row-h: 27px;
   --trans: 0.18s ease;
@@ -177,7 +198,7 @@ a:hover { text-decoration: underline; }
 h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; }
 
 kbd {
-  font-family: var(--font);
+  font-family: var(--font-mono);
   font-size: 0.72rem;
   background: var(--bg2);
   color: var(--sub);

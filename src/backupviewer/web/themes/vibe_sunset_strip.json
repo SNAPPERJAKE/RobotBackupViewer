@@ -1,0 +1,16 @@
+{
+  "id": "vibe_sunset_strip",
+  "name": "Sunset Strip",
+  "category": "Vibes",
+  "colors": {
+    "bg": "#1A0C04",
+    "bg2": "#28140A",
+    "sub": "#8E6A50",
+    "subAlt": "#3E2212",
+    "text": "#F6E8DC",
+    "accent": "#FF8C1A",
+    "error": "#FF4D4D",
+    "ok": "#6FD89B",
+    "warn": "#FFC42A"
+  }
+}

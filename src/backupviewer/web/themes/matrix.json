@@ -1,6 +1,7 @@
 {
   "id": "matrix",
   "name": "matrix",
+  "category": "MonkeyType",
   "colors": {
     "bg": "#000000",
     "bg2": "#0d0d0d",

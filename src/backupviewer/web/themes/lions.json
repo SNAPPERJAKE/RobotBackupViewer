@@ -1,0 +1,16 @@
+{
+  "id": "lions",
+  "name": "Lions",
+  "category": "Sports",
+  "colors": {
+    "bg": "#08304D",
+    "bg2": "#0E3F62",
+    "sub": "#7E93A3",
+    "subAlt": "#54636E",
+    "text": "#B7BEC5",
+    "accent": "#C4CCD2",
+    "error": "#E5605A",
+    "ok": "#6FBF8F",
+    "warn": "#E2B23A"
+  }
+}

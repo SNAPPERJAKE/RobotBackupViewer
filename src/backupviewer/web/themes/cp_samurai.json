@@ -1,0 +1,16 @@
+{
+  "id": "cp_samurai",
+  "name": "Cyberpunk Samurai",
+  "category": "Cyberpunk 2077",
+  "colors": {
+    "bg": "#15050B",
+    "bg2": "#240A14",
+    "sub": "#8A5566",
+    "subAlt": "#3A1320",
+    "text": "#F6E2EA",
+    "accent": "#FF2A6D",
+    "error": "#FF4D4D",
+    "ok": "#00F5A0",
+    "warn": "#FCEE0A"
+  }
+}

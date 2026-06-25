@@ -1,0 +1,16 @@
+{
+  "id": "vibe_indigo_drift",
+  "name": "Indigo Drift",
+  "category": "Vibes",
+  "colors": {
+    "bg": "#0A0B24",
+    "bg2": "#131534",
+    "sub": "#5E63A0",
+    "subAlt": "#20275A",
+    "text": "#E6E9F8",
+    "accent": "#6C5CE7",
+    "error": "#FF4D6D",
+    "ok": "#6FD89B",
+    "warn": "#F2B441"
+  }
+}

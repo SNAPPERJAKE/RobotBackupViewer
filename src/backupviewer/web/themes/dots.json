@@ -1,6 +1,7 @@
 {
   "id": "dots",
   "name": "dots",
+  "category": "MonkeyType",
   "colors": {
     "bg": "#121520",
     "bg2": "#1a1e2e",

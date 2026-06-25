@@ -1,0 +1,16 @@
+{
+  "id": "pistons",
+  "name": "Pistons",
+  "category": "Sports",
+  "colors": {
+    "bg": "#121A3A",
+    "bg2": "#1B2552",
+    "sub": "#6E79A6",
+    "subAlt": "#2A356E",
+    "text": "#ECEEF6",
+    "accent": "#E62740",
+    "error": "#FF6168",
+    "ok": "#5FBF8F",
+    "warn": "#F2B441"
+  }
+}

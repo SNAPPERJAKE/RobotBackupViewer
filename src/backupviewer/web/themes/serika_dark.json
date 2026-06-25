@@ -1,6 +1,7 @@
 {
   "id": "serika_dark",
   "name": "serika dark",
+  "category": "MonkeyType",
   "colors": {
     "bg": "#323437",
     "bg2": "#2c2e31",

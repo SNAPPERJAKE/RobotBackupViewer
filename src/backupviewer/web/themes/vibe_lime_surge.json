@@ -1,0 +1,16 @@
+{
+  "id": "vibe_lime_surge",
+  "name": "Lime Surge",
+  "category": "Vibes",
+  "colors": {
+    "bg": "#0E1606",
+    "bg2": "#18230C",
+    "sub": "#6E7E50",
+    "subAlt": "#283A14",
+    "text": "#ECF4E0",
+    "accent": "#B6F23A",
+    "error": "#FF5A5A",
+    "ok": "#7ADF6A",
+    "warn": "#E2C23A"
+  }
+}

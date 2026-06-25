@@ -1,6 +1,7 @@
 {
   "id": "husqy",
   "name": "husqy",
+  "category": "MonkeyType",
   "colors": {
     "bg": "#000000",
     "bg2": "#0e0a16",

@@ -1,0 +1,16 @@
+{
+  "id": "vibe_chrome_frost",
+  "name": "Chrome Frost",
+  "category": "Vibes",
+  "colors": {
+    "bg": "#101216",
+    "bg2": "#1A1E24",
+    "sub": "#7A828E",
+    "subAlt": "#2A303A",
+    "text": "#E8ECF2",
+    "accent": "#AEB9C6",
+    "error": "#FF6470",
+    "ok": "#6FD89B",
+    "warn": "#E2C23A"
+  }
+}

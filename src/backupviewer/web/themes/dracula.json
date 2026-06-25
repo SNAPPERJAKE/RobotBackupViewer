@@ -1,6 +1,7 @@
 {
   "id": "dracula",
   "name": "dracula",
+  "category": "MonkeyType",
   "colors": {
     "bg": "#282a36",
     "bg2": "#21222c",

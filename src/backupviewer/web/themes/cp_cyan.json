@@ -1,0 +1,16 @@
+{
+  "id": "cp_cyan",
+  "name": "Cyberpunk Cyan",
+  "category": "Cyberpunk 2077",
+  "colors": {
+    "bg": "#04141A",
+    "bg2": "#0A222B",
+    "sub": "#4E7A86",
+    "subAlt": "#103642",
+    "text": "#E2F4F8",
+    "accent": "#00F0FF",
+    "error": "#FF2A6D",
+    "ok": "#00F5A0",
+    "warn": "#FCEE0A"
+  }
+}

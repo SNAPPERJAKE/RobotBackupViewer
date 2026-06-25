@@ -1,6 +1,7 @@
 {
   "id": "rose_pine",
   "name": "rose pine",
+  "category": "MonkeyType",
   "colors": {
     "bg": "#1f1d27",
     "bg2": "#26233a",

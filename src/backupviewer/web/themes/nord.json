@@ -1,6 +1,7 @@
 {
   "id": "nord",
   "name": "nord",
+  "category": "MonkeyType",
   "colors": {
     "bg": "#242933",
     "bg2": "#2e3440",

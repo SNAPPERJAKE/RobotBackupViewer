@@ -1,0 +1,16 @@
+{
+  "id": "redwings",
+  "name": "Red Wings",
+  "category": "Sports",
+  "colors": {
+    "bg": "#2E0A0D",
+    "bg2": "#3C1115",
+    "sub": "#C7A6A9",
+    "subAlt": "#531C20",
+    "text": "#FAF5F5",
+    "accent": "#FF2D3C",
+    "error": "#FF6B6B",
+    "ok": "#6FBF8F",
+    "warn": "#E2B23A"
+  }
+}

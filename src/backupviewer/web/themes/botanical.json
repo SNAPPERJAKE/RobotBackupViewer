@@ -1,6 +1,7 @@
 {
   "id": "botanical",
   "name": "botanical",
+  "category": "MonkeyType",
   "colors": {
     "bg": "#7b9c98",
     "bg2": "#6f8e8a",

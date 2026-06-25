@@ -1,0 +1,16 @@
+{
+  "id": "state",
+  "name": "State",
+  "category": "Sports",
+  "colors": {
+    "bg": "#0A2C24",
+    "bg2": "#103A30",
+    "sub": "#5E907E",
+    "subAlt": "#18493C",
+    "text": "#EAF2EE",
+    "accent": "#4CC68D",
+    "error": "#E5605A",
+    "ok": "#6FD89B",
+    "warn": "#E2B23A"
+  }
+}

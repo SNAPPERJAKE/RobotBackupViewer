@@ -8,11 +8,22 @@
   /* shop-floor friendly defaults - old eyes and young eyes both read this */
   var DEFAULT_FONT = 15;
   var DEFAULT_SCALE = 1.1;
+  /* switchable UI font. "mono" keeps the classic look; "rog" uses the bundled
+     Orbitron display face (web/fonts) - applied only to UI chrome, never to data
+     or code (those are pinned to --font-mono in css), so columns stay aligned. */
+  var FONT_OPTIONS = [
+    { id: "mono", label: "mono", css: "var(--font-mono)" },
+    { id: "rog", label: "ROG", css: '"Orbitron", var(--font-mono)' },
+  ];
+  var DEFAULT_FONT_FAMILY = "mono";
 
   BV.uiPrefs = {
     apply: function (settings) {
       var fs = settings.font_size || DEFAULT_FONT;
       var sc = settings.ui_scale || DEFAULT_SCALE;
+      var ff = settings.font_family || DEFAULT_FONT_FAMILY;
+      var fopt = FONT_OPTIONS.find(function (o) { return o.id === ff; }) || FONT_OPTIONS[0];
+      document.documentElement.style.setProperty("--font", fopt.css);
       document.documentElement.style.fontSize = fs + "px";
       document.body.style.fontSize = fs + "px";
       document.body.style.zoom = sc;
@@ -57,6 +68,18 @@
           s.ui_scale = v;
           BV.uiPrefs.apply(s);
           BV.api.call("set_setting", "ui_scale", v).catch(function () {});
+        });
+
+      segRow("font", FONT_OPTIONS.map(function (o) { return o.id; }),
+        s.font_family || DEFAULT_FONT_FAMILY,
+        function (id) {
+          var o = FONT_OPTIONS.find(function (x) { return x.id === id; });
+          return o ? o.label : id;
+        },
+        function (id) {
+          s.font_family = id;
+          BV.uiPrefs.apply(s);
+          BV.api.call("set_setting", "font_family", id).catch(function () {});
         });
 
       BV.state.settings = s;

@@ -1,0 +1,16 @@
+{
+  "id": "vibe_aqua_pulse",
+  "name": "Aqua Pulse",
+  "category": "Vibes",
+  "colors": {
+    "bg": "#04181C",
+    "bg2": "#0A262C",
+    "sub": "#4E8088",
+    "subAlt": "#103A42",
+    "text": "#E2F4F6",
+    "accent": "#1DE0D0",
+    "error": "#FF5A6A",
+    "ok": "#00E0A0",
+    "warn": "#E2C23A"
+  }
+}

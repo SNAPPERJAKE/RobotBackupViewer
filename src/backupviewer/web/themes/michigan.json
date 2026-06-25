@@ -1,0 +1,16 @@
+{
+  "id": "michigan",
+  "name": "Michigan",
+  "category": "Sports",
+  "colors": {
+    "bg": "#07203F",
+    "bg2": "#0E2E54",
+    "sub": "#6385AB",
+    "subAlt": "#18406E",
+    "text": "#EEF3FA",
+    "accent": "#FFCB05",
+    "error": "#E5605A",
+    "ok": "#6FBF8F",
+    "warn": "#F2A900"
+  }
+}

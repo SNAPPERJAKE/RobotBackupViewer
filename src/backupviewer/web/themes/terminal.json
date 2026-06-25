@@ -1,6 +1,7 @@
 {
   "id": "terminal",
   "name": "terminal",
+  "category": "MonkeyType",
   "colors": {
     "bg": "#191a1b",
     "bg2": "#1f2122",

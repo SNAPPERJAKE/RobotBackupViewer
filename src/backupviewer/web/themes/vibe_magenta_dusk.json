@@ -1,0 +1,16 @@
+{
+  "id": "vibe_magenta_dusk",
+  "name": "Magenta Dusk",
+  "category": "Vibes",
+  "colors": {
+    "bg": "#160A1E",
+    "bg2": "#21102D",
+    "sub": "#7A5A86",
+    "subAlt": "#341A40",
+    "text": "#F2E6F4",
+    "accent": "#F0479E",
+    "error": "#FF4D6D",
+    "ok": "#6FD89B",
+    "warn": "#E2B23A"
+  }
+}
