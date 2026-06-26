@@ -913,6 +913,16 @@ class Api:
 
     # -- themes & settings ------------------------------------------------------------
 
+    # A theme is these 9 colors. User-made themes live as individual JSON files in
+    # settings.user_themes_dir() so they're trivially shareable (copy the file); get_themes
+    # loads them next to the bundled packs and tags them user=True / category="Custom".
+    _THEME_KEYS = ("bg", "bg2", "sub", "subAlt", "text", "accent", "error", "ok", "warn")
+    _SERIKA_FALLBACK = {
+        "bg": "#323437", "bg2": "#2c2e31", "sub": "#646669", "subAlt": "#51545a",
+        "text": "#d1d0c5", "accent": "#e2b714", "error": "#ca4754", "ok": "#7ec384",
+        "warn": "#e2b714",
+    }
+
     @_endpoint
     def get_themes(self):
         from .app import resource_path
@@ -922,16 +932,100 @@ class Api:
         for d in (resource_path("web/themes"), settings.user_themes_dir()):
             if not d.is_dir():
                 continue
+            is_user = d == settings.user_themes_dir()
             for f in sorted(d.glob("*.json")):
                 try:
                     t = json.loads(f.read_text(encoding="utf-8"))
                     if isinstance(t, dict) and t.get("id") and t.get("colors") and t["id"] not in seen:
-                        t["user"] = d == settings.user_themes_dir()
+                        t["user"] = is_user
+                        if is_user:
+                            t["category"] = "Custom"   # user themes always group under Custom
                         themes.append(t)
                         seen.add(t["id"])
                 except (OSError, ValueError):
                     log.warning("bad theme file: %s", f)
+
         return {"themes": themes, "active": settings.get("theme", "serika_dark")}
+
+    @staticmethod
+    def _theme_slug(name: str) -> str:
+        """A filesystem- and id-safe token from a display name: lowercase, every run of
+        non-alphanumerics collapsed to a single underscore."""
+        slug = "".join(ch if ch.isalnum() else "_" for ch in str(name).strip().lower())
+        while "__" in slug:
+            slug = slug.replace("__", "_")
+        return slug.strip("_") or "custom"
+
+    @_endpoint
+    def save_user_theme(self, theme, prev_id=None):
+        """Write a custom theme as <slug>.json in the user themes dir and return the saved
+        theme (with its final id + user flag). prev_id, when given, is the theme being
+        edited; if the name (hence slug) changed, its old file is removed (a rename)."""
+        from .app import resource_path
+
+        if not isinstance(theme, dict):
+            raise ValueError("theme must be an object")
+        name = str(theme.get("name", "")).strip()
+        if not name:
+            raise ValueError("theme needs a name")
+        src = theme.get("colors")
+        colors = dict(self._SERIKA_FALLBACK)
+        if isinstance(src, dict):
+            colors.update({k: src[k] for k in self._THEME_KEYS if k in src})
+
+        d = settings.user_themes_dir()
+        # never shadow a bundled id; pick a slug unique across all themes (except the one
+        # being edited, which we're overwriting/renaming)
+        bundled = resource_path("web/themes")
+        taken = {p.stem for p in bundled.glob("*.json")} if bundled.is_dir() else set()
+        taken |= {p.stem for p in d.glob("*.json")}
+        if prev_id:
+            taken.discard(str(prev_id))
+        base_slug = self._theme_slug(name)
+        slug = base_slug
+        n = 2
+        while slug in taken:
+            slug = f"{base_slug}_{n}"
+            n += 1
+
+        saved = {"id": slug, "name": name, "category": "Custom", "colors": colors}
+        (d / f"{slug}.json").write_text(json.dumps(saved, indent=2), encoding="utf-8")
+        if prev_id and str(prev_id) != slug:
+            old = d / f"{Path(str(prev_id)).name}.json"
+            if old.is_file() and old.parent == d:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+        saved["user"] = True
+        return saved
+
+    @_endpoint
+    def delete_user_theme(self, theme_id):
+        """Remove a custom theme file. Guarded to the user themes dir; ignores ids that try
+        to escape it (path traversal) or that don't exist there."""
+        d = settings.user_themes_dir()
+        f = d / f"{Path(str(theme_id)).name}.json"
+        if f.is_file() and f.parent == d:
+            f.unlink()
+            return True
+        return False
+
+    @_endpoint
+    def reveal_themes_dir(self):
+        """Open the user themes folder in the OS file manager (so files can be shared)."""
+        import os
+        import subprocess
+
+        d = settings.user_themes_dir()
+        try:
+            os.startfile(str(d))  # Windows-native; the app only ships on Windows
+        except (AttributeError, OSError):
+            try:
+                subprocess.Popen(["explorer", str(d)])  # noqa: S607
+            except OSError:
+                pass
+        return str(d)
 
     @_endpoint
     def get_version(self):

@@ -40,6 +40,14 @@
   --trans: 0.18s ease;
 }
 
+/* "borders off" (display settings): neutralize the accent panel hairlines so the UI goes
+   flat. Only the two --edge tokens are remapped; the accent SELECTION rails (row/table
+   highlights, drag markers) use box-shadow var(--accent) directly and intentionally stay. */
+.no-edges {
+  --edge: transparent;
+  --edge-soft: transparent;
+}
+
 * { box-sizing: border-box; }
 
 html, body {

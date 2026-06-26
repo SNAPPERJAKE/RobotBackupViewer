@@ -237,16 +237,78 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .modal .static-row .name { color: var(--text); font-size: 0.88rem; }
 .modal .swatches { display: flex; gap: 0.3rem; }
 .modal .swatch { width: 14px; height: 14px; border-radius: 50%; }
-/* theme picker: category filter button + per-category attribution caption */
-.modal .picker-head { display: flex; align-items: center; gap: 0.6rem; padding: 0.15rem 0.7rem 0.25rem; }
-.modal .cat-btn {
+/* theme picker: a collapsible accordion, one section per category */
+.modal .theme-acc { display: flex; flex-direction: column; gap: 0.1rem; }
+.modal .acc-head {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.45rem 0.7rem; border-radius: 6px; cursor: pointer;
+  color: var(--text); font-size: 0.9rem; transition: background var(--trans);
+}
+.modal .acc-head:hover { background: var(--bg); }
+.modal .acc-name { font-weight: 600; text-transform: lowercase; }
+.modal .acc-count { color: var(--sub); font-size: 0.76rem; }
+.modal .acc-reveal {
+  margin-left: auto; appearance: none; background: none; border: none; cursor: pointer;
+  font-size: 0.9rem; line-height: 1; padding: 0.1rem 0.35rem; border-radius: 5px;
+  opacity: 0.65; transition: opacity var(--trans), background var(--trans);
+}
+.modal .acc-reveal:hover { opacity: 1; background: var(--bg2); }
+.modal .acc-body { padding-left: 0.5rem; }
+.modal .acc-credit { font-size: 0.64rem; color: var(--sub); padding: 0.1rem 0.7rem 0.4rem; }
+.modal .acc-empty { font-size: 0.76rem; color: var(--sub); padding: 0.25rem 0.7rem 0.45rem; }
+.modal .opt-new .name { color: var(--accent); }
+.modal .opt-del {
+  appearance: none; background: none; border: none; cursor: pointer; font: inherit;
+  font-size: 0.82rem; line-height: 1; padding: 0.1rem 0.3rem; border-radius: 5px;
+  opacity: 0.55; flex: none; transition: opacity var(--trans), background var(--trans);
+}
+.modal .opt-del:hover { opacity: 1; background: var(--bg2); }
+/* cluster swatches (+ the custom row's edit/delete buttons) at the right edge */
+.modal .opt-row .swatches { margin-left: auto; }
+.modal .opt-edit {
+  appearance: none; background: none; border: none; cursor: pointer; font: inherit;
+  color: var(--sub); font-size: 0.95rem; line-height: 1; padding: 0.1rem 0.35rem;
+  border-radius: 5px; transition: color var(--trans), background var(--trans); flex: none;
+}
+.modal .opt-edit:hover { color: var(--accent); background: var(--bg2); }
+
+/* ---- custom theme editor ---- */
+.modal .editor-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 1.5rem;
+  padding: 0.4rem 0.7rem;
+}
+.modal .editor-row .name { color: var(--text); font-size: 0.88rem; }
+.modal .editor-row input[type=color] {
+  appearance: none; -webkit-appearance: none;
+  width: 46px; height: 24px; padding: 0; flex: none; cursor: pointer;
+  background: var(--bg2); border: 1px solid var(--edge); border-radius: 6px;
+}
+.modal .editor-row input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
+.modal .editor-row input[type=color]::-webkit-color-swatch { border: none; border-radius: 4px; }
+.modal .editor-name {
+  appearance: none; font: inherit; font-size: 0.85rem;
+  background: var(--bg2); color: var(--text); flex: 1; min-width: 0; margin-left: 1.5rem;
+  border: 1px solid var(--edge); border-radius: 6px; padding: 0.25rem 0.5rem;
+}
+.modal .editor-name:focus { outline: none; border-color: var(--accent); }
+.modal .editor-adv-head {
+  color: var(--sub); font-size: 0.8rem; padding: 0.4rem 0.7rem;
+  display: flex; align-items: center;
+}
+.modal .contrast-hint { font-size: 0.7rem; color: var(--sub); padding: 0.1rem 0.7rem 0.5rem; }
+.modal .contrast-hint .warn { color: var(--warn); }
+.modal .contrast-hint .note { opacity: 0.7; }
+.modal .editor-actions {
+  display: flex; justify-content: flex-end; gap: 0.5rem; padding: 0.6rem 0.7rem 0.3rem;
+}
+.modal .editor-actions button {
   appearance: none; cursor: pointer; font: inherit; font-size: 0.82rem;
   background: var(--bg); color: var(--text);
-  border: 1px solid var(--sub-alt); border-radius: 6px;
-  padding: 0.28rem 0.7rem; transition: border-color var(--trans), color var(--trans);
+  border: 1px solid var(--sub-alt); border-radius: 6px; padding: 0.3rem 0.9rem;
+  transition: border-color var(--trans), color var(--trans);
 }
-.modal .cat-btn:hover { border-color: var(--accent); color: var(--accent); }
-.modal .credit-line { font-size: 0.66rem; color: var(--sub); padding: 0 0.7rem 0.45rem; min-height: 0.8rem; }
+.modal .editor-actions button:hover { border-color: var(--accent); color: var(--accent); }
+.modal .editor-actions .save { border-color: var(--accent); color: var(--accent); }
 
 /* ---- program / file viewer ---- */
 .viewer {

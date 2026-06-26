@@ -30,6 +30,8 @@
       /* #app divides its 100vh by this so the layout still fits the window
          exactly under zoom (vh units don't compensate for zoom) */
       document.documentElement.style.setProperty("--app-zoom", sc);
+      /* accent panel borders on by default; "off" flattens the UI (see base.css .no-edges) */
+      document.documentElement.classList.toggle("no-edges", settings.edges === false);
       BV.state.emit("uiprefs", settings);
     },
 
@@ -80,6 +82,14 @@
           s.font_family = id;
           BV.uiPrefs.apply(s);
           BV.api.call("set_setting", "font_family", id).catch(function () {});
+        });
+
+      segRow("borders", [true, false], s.edges !== false,
+        function (v) { return v ? "on" : "off"; },
+        function (v) {
+          s.edges = v;
+          BV.uiPrefs.apply(s);
+          BV.api.call("set_setting", "edges", v).catch(function () {});
         });
 
       BV.state.settings = s;
