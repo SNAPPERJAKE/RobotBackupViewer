@@ -92,6 +92,31 @@
           BV.api.call("set_setting", "edges", v).catch(function () {});
         });
 
+      /* library folder: the single root that is both the FTP backup destination
+         and the tree the app scans to build the library. Changing it rescans. */
+      var pathRow = BV.el("div", { class: "set-row" });
+      pathRow.appendChild(BV.el("span", { class: "name" }, "library folder"));
+      var pathWrap = BV.el("div", { class: "set-path" });
+      var pathVal = BV.el("span", { class: "set-path-val dim" }, "…");
+      var changeBtn = BV.el("button", { class: "btn" }, "change…");
+      pathWrap.appendChild(pathVal);
+      pathWrap.appendChild(changeBtn);
+      pathRow.appendChild(pathWrap);
+      body.appendChild(pathRow);
+
+      function showPath(p) { pathVal.textContent = p || "(default)"; pathVal.title = p || ""; }
+      BV.api.call("get_library_root").then(function (r) { showPath(r && r.path); }).catch(function () {});
+      changeBtn.addEventListener("click", function () {
+        BV.api.call("pick_library_root").then(function (p) {
+          if (!p) return null;
+          return BV.api.call("set_library_root", p).then(function (r) {
+            showPath(r && r.path);
+            BV.toast("library folder set — rescanning…");
+            return BV.api.call("lib_rescan").then(function () { BV.toast("library updated"); });
+          });
+        }).catch(function (e) { BV.toast(e.message); });
+      });
+
       BV.state.settings = s;
       BV.modal("display", body);
     },

@@ -24,7 +24,7 @@ from .parsers import (alarms, callgraph, dcs, frames, gmwizlog, io_dg,
                       ls_program, macros, magnet, mastering, mhvalves, payloads,
                       registers, styles, summary_dg, sysvars)
 from .parsers.common import is_binary, read_text
-from .session import BackupSession
+from .session import BackupSession, find_backup_roots
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +53,13 @@ def _endpoint(fn):
     return wrapper
 
 
+def _folder_mtime(p) -> float:
+    try:
+        return Path(p).stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 class Api:
     def __init__(self):
         self._window = None
@@ -60,6 +67,7 @@ class Api:
         self._compare_session: BackupSession | None = None
         self._jobs: dict[str, ftpbackup.BackupJob] = {}  # active/finished backup jobs
         self._scans: dict[str, discover._ScanJob] = {}  # folder + network scan jobs
+        self._booted_scan = False  # one-shot folder scan on the first library load
 
     def bind(self, window, initial_backup: str | None = None):
         self._window = window
@@ -78,6 +86,33 @@ class Api:
         if self._session is None:
             raise ApiError("NO_BACKUP", "No backup folder is open")
         return self._session
+
+    def _release_sessions_under(self, *folders):
+        """Drop any open session whose root is inside one of `folders`, so a
+        relocate/merge can move that tree (Windows blocks renaming a folder a
+        process holds a handle into)."""
+        roots = []
+        for f in folders:
+            if not f:
+                continue
+            try:
+                roots.append(Path(f).resolve())
+            except OSError:
+                roots.append(Path(f))
+
+        def _under(sess):
+            if sess is None:
+                return False
+            try:
+                sr = Path(sess.root).resolve()
+            except OSError:
+                sr = Path(sess.root)
+            return any(sr == r or library._within(sr, r) for r in roots)
+
+        if _under(self._session):
+            self._session = None
+        if _under(self._compare_session):
+            self._compare_session = None
 
     def _side_session(self, side: str) -> BackupSession:
         """'a' = the open backup, 'b' = the loaded comparison backup."""
@@ -1051,26 +1086,71 @@ class Api:
         m = s.manifest()
         ips: list[str] = []
         model = ""
+        ident: dict = {}
         try:
             ov = self._build_summary(s)
+            ident = ov.get("identity") or {}
             for h in (ov.get("ethernet") or {}).get("hosts", []):
                 addr = h.get("addr")
                 if addr and addr not in ips:
                     ips.append(addr)
-            model = (ov.get("identity") or {}).get("robot_model", "") or ""
+            model = ident.get("robot_model", "") or ""
         except ApiError:
             pass
+        # name/F-number: the .LS report header, then the SUMMARY identity
+        # ($HOSTNAME), and only as a last resort the folder name.
         return {
-            "robot": m["robot_name"] or Path(path).name,
+            "robot": m["robot_name"] or ident.get("robot_name", "") or Path(path).name,
             "model": model,
-            "f_number": m["f_number"],
+            "f_number": m["f_number"] or ident.get("f_number", "") or "",
             "ips": ips,
             "latest_path": path,
             "backup_type": m["backup_type"],
         }
 
     @_endpoint
+    def get_library_root(self):
+        """The configured library folder (FTP destination + scanned source)."""
+        return {"path": settings.library_root()}
+
+    @_endpoint
+    def set_library_root(self, path: str):
+        p = (path or "").strip()
+        if not p:
+            raise ApiError("BAD_PATH", "a folder path is required")
+        settings.set_value("library_root", p)
+        settings.set_value("backup_root", p)   # keep the legacy key in sync
+        return {"path": p}
+
+    @_endpoint
+    def pick_library_root(self):
+        import webview
+
+        start = settings.library_root()
+        result = self._window.create_file_dialog(
+            webview.FOLDER_DIALOG, directory=start if Path(start or ".").exists() else ""
+        )
+        if not result:
+            return None
+        return result[0] if isinstance(result, (list, tuple)) else result
+
+    @_endpoint
+    def lib_rescan(self):
+        """Rebuild the library from the folder tree (picks up copied-in folders)
+        and return the reconciled set."""
+        return library.scan_library_root(settings.library_root())
+
+    @_endpoint
     def lib_list(self):
+        # once per session, fold in folders copied into the library root since
+        # last run (e.g. a coworker's tree dropped on top). Best-effort: a scan
+        # failure must never block showing the existing library.
+        if not self._booted_scan:
+            self._booted_scan = True
+            try:
+                return library.scan_library_root(settings.library_root())
+            except Exception:
+                log.exception("library scan on first load failed")
         return library.list_robots()
 
     @_endpoint
@@ -1089,13 +1169,58 @@ class Api:
         return library.remove_robot(robot_id)
 
     @_endpoint
+    def lib_set_hidden(self, robot_id: str, hidden: bool = True):
+        """Hide/unhide a robot from the library view (overlay-only; survives a
+        rescan). The everyday, non-destructive alternative to deleting."""
+        e = library.set_hidden(robot_id, hidden)
+        if e is None:
+            raise ApiError("NOT_FOUND", "robot not in library")
+        return e
+
+    @_endpoint
+    def lib_delete_files(self, robot_id: str):
+        """Permanently delete a robot's backup folders from disk and drop it from
+        the library. Guarded to the configured library root. Caller is expected
+        to have done the two-step (type-the-name) confirmation in the UI."""
+        return library.delete_robot_files(robot_id)
+
+    @_endpoint
     def lib_scan_folder(self, path: str):
         """Parse a picked backup folder into a draft entry WITHOUT making it the
-        active session - the 'add to library' flow shows this for editing."""
+        active session - the 'add to library' flow shows this for editing.
+
+        If the picked folder actually holds several dated snapshots, group them
+        by robot so we don't build one muddled session over every date: a single
+        robot yields one draft carrying its full history (newest = latest); many
+        robots yield {multi, drafts} for the bulk-add modal."""
         p = Path(path)
         if not p.is_dir():
             raise ApiError("NOT_FOUND", f"Not a folder: {path}")
-        return self._draft_from_session(BackupSession(p), str(p))
+        roots = find_backup_roots(p)
+        if len(roots) <= 1:
+            target = roots[0] if roots else p
+            return self._draft_from_session(BackupSession(target), str(target))
+
+        groups: dict = {}
+        for root in roots:
+            try:
+                d = self._draft_from_session(BackupSession(root), str(root))
+            except Exception:  # noqa: BLE001 - one bad snapshot shouldn't sink the add
+                continue
+            groups.setdefault((d.get("robot") or "").upper(), []).append((root, d))
+
+        drafts = []
+        for items in groups.values():
+            items.sort(key=lambda rd: _folder_mtime(rd[0]), reverse=True)
+            newest_root, newest_draft = items[0]
+            nd = dict(newest_draft)
+            nd["latest_path"] = str(newest_root)
+            nd["history_root"] = str(library.robot_folder_of(newest_root))
+            nd["backups"] = [library.backup_record(r) for r, _ in items]
+            drafts.append(nd)
+        if len(drafts) == 1:
+            return drafts[0]
+        return {"multi": True, "drafts": drafts}
 
     @_endpoint
     def lib_add_from_session(self, plant: str = "", line: str = ""):
@@ -1127,7 +1252,177 @@ class Api:
         self._session = BackupSession(p)
         self._compare_session = None
         settings.set_value("last_folder", str(p))
-        return self._session.manifest()
+        # carry the robot's identity + dated history so the backup view can show
+        # a date-picker timeline (a folder opened directly leaves these unset).
+        m = self._session.manifest()
+        m["robot_id"] = e["id"]
+        m["backups"] = e.get("backups", [])
+        m["current_path"] = str(p)
+        return m
+
+    # -- rename / merge / tidy + open backup location -------------------------
+    # Fix IP-named legacy robots from their backup contents, merge duplicates,
+    # and jump to a folder in Explorer. relocate_robot/merge_robots move the
+    # on-disk tree WITH the entry (see library.py); these endpoints just preview,
+    # release any open session over the affected tree, and apply.
+
+    @_endpoint
+    def lib_resolve_names(self, ids: list):
+        """Preview 'fix names from backups' for the given robots: read each robot's
+        REAL name from its latest backup and classify the change as noop / rename
+        (clean) / merge (the proposed name+line collides with another robot - in the
+        library OR within this very selection). Pure preview; the UI applies on
+        confirm. Returns {items:[{id,current,proposed,plant,line,action,merge_into,
+        reason}]}."""
+        ids = list(ids or [])
+        data = library.list_robots()
+        by_id = {e["id"]: e for e in data["robots"]}
+
+        proposals: dict = {}
+        for rid in ids:
+            e = by_id.get(rid)
+            if e is None:
+                continue
+            proposed = e.get("robot") or ""
+            lp = e.get("latest_path") or ""
+            if lp and Path(lp).is_dir():
+                try:
+                    d = self._draft_from_session(BackupSession(Path(lp)), lp)
+                    proposed = (d.get("robot") or "").strip() or proposed
+                except Exception:  # noqa: BLE001 - a sparse/locked backup just yields no change
+                    pass
+            proposals[rid] = proposed
+
+        def _existing_collision(rid, name, line):
+            nm, ln = name.upper(), (line or "").upper()
+            for e in data["robots"]:
+                if e["id"] == rid:
+                    continue
+                if e.get("robot", "").upper() == nm and (e.get("line", "") or "").upper() == ln:
+                    return e["id"]
+            return None
+
+        items, seen_in_sel = [], {}
+        for rid in ids:
+            e = by_id.get(rid)
+            if e is None:
+                continue
+            cur, proposed, line = e.get("robot", ""), proposals[rid], e.get("line", "")
+            action, merge_into, reason = "rename", None, ""
+            if not proposed or proposed.upper() == cur.upper():
+                action, reason = "noop", "name already matches the backup"
+            else:
+                col = _existing_collision(rid, proposed, line)
+                key = (proposed.upper(), (line or "").upper())
+                if col is not None:
+                    action, merge_into, reason = "merge", col, "another robot already has this name"
+                elif key in seen_in_sel:
+                    action, merge_into, reason = "merge", seen_in_sel[key], "duplicate within the selection"
+                else:
+                    seen_in_sel[key] = rid
+            items.append({"id": rid, "current": cur, "proposed": proposed,
+                          "plant": e.get("plant", ""), "line": line,
+                          "action": action, "merge_into": merge_into, "reason": reason})
+        return {"items": items}
+
+    @_endpoint
+    def lib_apply_renames(self, items: list):
+        """Apply clean renames (relocating their folders). `items` = [{id, plant?,
+        line?, robot}]. A collision discovered at apply time surfaces as a 'merged'
+        result rather than aborting the batch."""
+        renamed, merged, failed = [], [], []
+        for it in (items or []):
+            rid = it.get("id")
+            e = library.get_robot(rid)
+            if e is None:
+                failed.append({"id": rid, "error": "robot not in library"})
+                continue
+            plant = it.get("plant", e.get("plant", ""))
+            line = it.get("line", e.get("line", ""))
+            robot = it.get("robot", e.get("robot", ""))
+            target = str(library._robot_dir_for(library._root(), plant, line, robot))
+            self._release_sessions_under(e.get("history_root"), e.get("latest_path"), target)
+            try:
+                res = library.relocate_robot(rid, plant, line, robot)
+            except library.PathGuard as ex:
+                failed.append({"id": rid, "error": f"BAD_PATH: {ex}"})
+                continue
+            except (ValueError, OSError) as ex:
+                failed.append({"id": rid, "error": str(ex)})
+                continue
+            (merged if res.get("action") == "merged" else renamed).append(res)
+        return {"renamed": renamed, "merged": merged, "failed": failed}
+
+    @_endpoint
+    def lib_merge(self, primary_id: str, secondary_ids):
+        """Merge one or more secondary robots INTO a primary (folders + history).
+        Cross-line pairs are refused (reported, not merged)."""
+        if isinstance(secondary_ids, str):
+            secondary_ids = [secondary_ids]
+        merged, refused, failed = [], [], []
+        for sid in (secondary_ids or []):
+            prim, sec = library.get_robot(primary_id), library.get_robot(sid)
+            if prim is None or sec is None:
+                failed.append({"id": sid, "error": "robot not in library"})
+                continue
+            self._release_sessions_under(prim.get("history_root"), prim.get("latest_path"),
+                                         sec.get("history_root"), sec.get("latest_path"))
+            try:
+                res = library.merge_robots(primary_id, sid)
+            except library.PathGuard as ex:
+                failed.append({"id": sid, "error": f"BAD_PATH: {ex}"})
+                continue
+            except (ValueError, OSError) as ex:
+                failed.append({"id": sid, "error": str(ex)})
+                continue
+            (refused if res.get("action") == "refused" else merged).append(res)
+        return {"merged": merged, "refused": refused, "failed": failed}
+
+    @_endpoint
+    def lib_relocate(self, robot_id: str, plant: str, line: str, robot: str):
+        """Rename/relocate one robot, moving its folder tree. Returns the raw
+        relocate result so the edit modal can detect a merge (collision)."""
+        e = library.get_robot(robot_id)
+        if e is None:
+            raise ApiError("NOT_FOUND", "robot not in library")
+        target = str(library._robot_dir_for(library._root(), plant, line, robot))
+        self._release_sessions_under(e.get("history_root"), e.get("latest_path"), target)
+        try:
+            return library.relocate_robot(robot_id, plant, line, robot)
+        except library.PathGuard as ex:
+            raise ApiError("BAD_PATH", str(ex))
+        except ValueError as ex:
+            raise ApiError("BAD_SPEC", str(ex))
+        except OSError as ex:
+            raise ApiError("MOVE_FAILED", str(ex))
+
+    @_endpoint
+    def open_path(self, path: str):
+        """Open a folder in the OS file manager. Guarded: only existing directories
+        under library_root() (mirrors reveal_themes_dir + the delete root-guard)."""
+        import os
+        import subprocess
+
+        p = (path or "").strip()
+        if not p:
+            raise ApiError("BAD_PATH", "a folder path is required")
+        try:
+            root = Path(settings.library_root()).resolve()
+            rp = Path(p).resolve()
+        except OSError:
+            raise ApiError("BAD_PATH", "could not resolve path")
+        if not rp.is_dir():
+            raise ApiError("BAD_PATH", f"not a folder: {p}")
+        if not library._within(rp, root):
+            raise ApiError("BAD_PATH", "path is outside the library root")
+        try:
+            os.startfile(str(rp))  # Windows-native; the app only ships on Windows
+        except (AttributeError, OSError):
+            try:
+                subprocess.Popen(["explorer", str(rp)])  # noqa: S607
+            except OSError:
+                pass
+        return str(rp)
 
     # -- take a new backup (FTP pull) ------------------------------------------
 
@@ -1143,15 +1438,26 @@ class Api:
         )
 
     @_endpoint
+    def diagnose_controller(self, spec: dict):
+        """Read-only FTP probe to debug auto-naming on a live robot: writes a JSON
+        summary to app.log (banner, cwd behaviour, listings, sniffed headers,
+        resolved name) and returns it. No writes to the controller."""
+        spec = spec or {}
+        host = (spec.get("host") or "").strip()
+        if not host:
+            raise ApiError("BAD_SPEC", "robot host/IP is required")
+        return discover.diagnose_controller(host, port=spec.get("port", 21))
+
+    @_endpoint
     def start_backup(self, spec: dict):
         """Kick off an FTP backup on a worker thread; returns a job_id to poll."""
         spec = spec or {}
         host = (spec.get("host") or "").strip()
         if not host:
             raise ApiError("BAD_SPEC", "robot host/IP is required")
-        root = (spec.get("dest_root") or settings.get("backup_root")
-                or str(Path.home() / "RobotBackups"))
-        settings.set_value("backup_root", str(root))
+        root = (spec.get("dest_root") or settings.library_root())
+        settings.set_value("library_root", str(root))
+        settings.set_value("backup_root", str(root))   # keep the legacy key in sync
 
         def _register(job: ftpbackup.BackupJob):
             library.register_backup(
@@ -1191,6 +1497,15 @@ class Api:
     def local_subnet(self):
         """The local /24 (and IP) to prefill the discover dialog."""
         return {"cidr": discover.default_cidr(), "ip": discover.local_ipv4()}
+
+    @_endpoint
+    def list_adapters(self):
+        """Network adapters (name/kind/ip/cidr) for the discover dialog, plus the
+        local-subnet fallback when adapter enumeration is unavailable."""
+        return {
+            "adapters": discover.list_adapters(),
+            "fallback": {"cidr": discover.default_cidr(), "ip": discover.local_ipv4()},
+        }
 
     @_endpoint
     def lib_bulk_scan_start(self, path: str):

@@ -217,6 +217,7 @@
   });
 
   window.addEventListener("hashchange", route);
+  BV.route = route;   /* re-render the active tab in place (e.g. after switching dated backup) */
 
   /* font/scale changes re-render the active tab so virtual tables pick up
      the new row height and em column widths */

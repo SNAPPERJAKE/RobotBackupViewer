@@ -15,8 +15,12 @@ backup to an existing entry; each entry carries a stable uuid `id` the UI uses.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import logging
+import os
+import re
+import shutil
 import threading
 import uuid
 from pathlib import Path
@@ -85,24 +89,36 @@ def _normalize(entry: dict) -> dict:
     e.setdefault("latest_path", "")
     e.setdefault("history_root", "")
     e.setdefault("last_backup", "")
+    e["hidden"] = bool(e.get("hidden", False))
     backups = e.get("backups")
     e["backups"] = backups if isinstance(backups, list) else []
+    aliases = e.get("aliases")
+    e["aliases"] = aliases if isinstance(aliases, list) else []
     return e
 
 
 def _find_match(data: dict, match: dict):
     """The existing entry a backup belongs to: same robot name, and same line
-    when a line is given (a robot name can repeat across lines)."""
+    when a line is given (a robot name can repeat across lines). Falls back to an
+    entry's recorded aliases so a stray folder under a robot's *old* name re-merges
+    into it after a rename/merge instead of spawning a duplicate."""
     rname = (match.get("robot") or match.get("robot_name") or "").upper()
     line = (match.get("line") or "").upper()
     if not rname:
         return None
-    for e in data["robots"]:
+    for e in data["robots"]:                                   # tier 1: current identity
         if e.get("robot", "").upper() != rname:
             continue
         if line and e.get("line", "").upper() != line:
             continue
         return e
+    for e in data["robots"]:                                   # tier 2: a recorded alias
+        for a in e.get("aliases", []) or []:
+            if (a.get("robot", "") or "").upper() != rname:
+                continue
+            if line and (a.get("line", "") or "").upper() != line:
+                continue
+            return e
     return None
 
 
@@ -135,6 +151,7 @@ def add_robot(entry: dict) -> dict:
         data["robots"].append(e)
         _reconcile(data)
         _write(data)
+        _persist_sidecar(e)
         return e
 
 
@@ -177,6 +194,7 @@ def update_robot(robot_id: str, patch: dict) -> dict | None:
                 _normalize(e)  # re-shape in place in case ips/ftp changed type
                 _reconcile(data)
                 _write(data)
+                _persist_sidecar(e)
                 return e
         return None
 
@@ -197,6 +215,86 @@ def get_robot(robot_id: str) -> dict | None:
         if e.get("id") == robot_id:
             return e
     return None
+
+
+def set_hidden(robot_id: str, hidden: bool) -> dict | None:
+    """Toggle a robot's hidden flag (an overlay-only, per-machine preference the
+    folder scan preserves - the everyday alternative to deleting)."""
+    return update_robot(robot_id, {"hidden": bool(hidden)})
+
+
+def _within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _delete_targets(e: dict) -> list[str]:
+    """Folders to remove for a robot: its robot folder (history_root) + the
+    sibling Latest/<robot> mirror + (defensively) each snapshot's robot dir."""
+    out: list[str] = []
+    hr = e.get("history_root")
+    if hr:
+        p = Path(hr)
+        out.append(hr)
+        out.append(str(p.parent / "Latest" / p.name))   # the mirror is a sibling
+    lp = e.get("latest_path")
+    if lp:
+        out.append(lp)
+    for b in e.get("backups", []):
+        bp = b.get("path")
+        if bp:
+            p = Path(bp)
+            out.append(str(p.parent.parent if _is_dated(p) else p))
+    return out
+
+
+def delete_robot_files(robot_id: str) -> dict:
+    """Permanently delete a robot's backup folders from disk AND drop it from the
+    library. HARD-GUARDED: only folders that resolve to inside the configured
+    library root are touched (no symlink escape). Returns {robot, removed:[...],
+    refused:[...]} so the UI can report exactly what happened."""
+    with _LOCK:
+        data = load()
+        e = next((x for x in data["robots"] if x.get("id") == robot_id), None)
+        if e is None:
+            return {"robot": "", "removed": [], "refused": []}
+        try:
+            root = Path(settings.library_root()).resolve()
+        except OSError:
+            root = Path(settings.library_root())
+        removed: list[str] = []
+        refused: list[str] = []
+        seen: set[Path] = set()
+        targets = []
+        for cand in _delete_targets(e):
+            try:
+                rp = Path(cand).resolve()
+            except OSError:
+                continue
+            if rp in seen:
+                continue
+            seen.add(rp)
+            if rp.is_dir():
+                if _within(rp, root):
+                    targets.append(rp)
+                else:
+                    refused.append(str(rp))
+        # deepest first so a parent delete doesn't race a child
+        for t in sorted(targets, key=lambda p: len(p.parts), reverse=True):
+            if not t.exists():
+                continue
+            try:
+                shutil.rmtree(t)
+                removed.append(str(t))
+            except OSError:
+                log.warning("could not delete %s", t)
+                refused.append(str(t))
+        data["robots"] = [x for x in data["robots"] if x.get("id") != robot_id]
+        _write(data)
+        return {"robot": e.get("robot", ""), "removed": removed, "refused": refused}
 
 
 def register_backup(match: dict, backup: dict, *, latest_path: str = "") -> dict:
@@ -226,4 +324,700 @@ def register_backup(match: dict, backup: dict, *, latest_path: str = "") -> dict
             e["latest_path"] = latest_path
         _reconcile(data)
         _write(data)
+        _persist_sidecar(e)
         return e
+
+
+# -- robot.json sidecar (portable identity) -------------------------------------
+# The library.json index is local + per-machine. To let a copied folder tree
+# carry its robots to another PC, we drop a robot.json at each robot folder
+# holding identity + config (NEVER a password). The library entry's id is reused
+# so a later scan re-matches the same robot. notes.txt / backup.json (written by
+# the backup engine) carry the per-snapshot note + stats alongside.
+
+SIDECAR = "robot.json"
+_DATE_RE = re.compile(r"^\d{4}_\d{2}_\d{2}$")     # YYYY_MM_DD  (dated snapshot)
+_TIME_RE = re.compile(r"^\d{2}_\d{2}_\d{2}$")     # HH_MM_SS
+
+
+def _read_json(p: Path) -> dict:
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _is_dated(snap: Path) -> bool:
+    return bool(_TIME_RE.match(snap.name) and _DATE_RE.match(snap.parent.name))
+
+
+def _robot_folder(e: dict) -> Path | None:
+    """The folder that holds a robot's snapshots (where robot.json belongs):
+    history_root if known, else derived from latest_path (up from a dated
+    snapshot; never the Latest/ mirror)."""
+    hr = e.get("history_root")
+    if hr and Path(hr).is_dir():
+        return Path(hr)
+    lp = e.get("latest_path")
+    if lp and Path(lp).is_dir():
+        p = Path(lp)
+        if any(part.lower() == "latest" for part in p.parts):
+            return None                      # don't write into a mirror
+        return p.parent.parent if _is_dated(p) else p
+    return None
+
+
+def _write_robot_sidecar(e: dict, folder: Path) -> None:
+    """Write robot.json for `e` into `folder`. Best-effort; no password."""
+    ftp = e.get("ftp") or {}
+    data = {
+        "schema": 1, "id": e.get("id", ""),
+        "plant": e.get("plant", ""), "line": e.get("line", ""), "robot": e.get("robot", ""),
+        "model": e.get("model", ""), "f_number": e.get("f_number", ""),
+        "ips": list(e.get("ips", []) or []),
+        "ftp": {"user": ftp.get("user", ""), "passive": ftp.get("passive", True)},
+        "notes": e.get("notes", ""),
+        "aliases": list(e.get("aliases", []) or []),
+        "updated": _dt.datetime.now().isoformat(timespec="seconds"),
+    }
+    try:
+        tmp = folder / (SIDECAR + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp.replace(folder / SIDECAR)
+    except OSError:
+        log.warning("could not write %s in %s", SIDECAR, folder)
+
+
+def _persist_sidecar(e: dict) -> None:
+    folder = _robot_folder(e)
+    if folder is not None:
+        _write_robot_sidecar(e, folder)
+
+
+# -- folder-tree scan (the tree is the source of truth) -------------------------
+
+def _is_latest_mirror(snap: Path, root: Path) -> bool:
+    try:
+        rel = snap.relative_to(root)
+    except ValueError:
+        return False
+    return any(part.lower() == "latest" for part in rel.parts)
+
+
+def _snap_taken(snap: Path, meta: dict) -> str:
+    if meta.get("taken"):
+        return meta["taken"]
+    if _is_dated(snap):
+        return snap.parent.name.replace("_", "-") + "T" + snap.name.replace("_", ":")
+    try:
+        return _dt.datetime.fromtimestamp(snap.stat().st_mtime).isoformat(timespec="seconds")
+    except OSError:
+        return ""
+
+
+def _backup_record(snap: Path, meta: dict) -> dict:
+    note = meta.get("note", "")
+    if not note:
+        try:
+            nt = snap / "notes.txt"
+            if nt.is_file():
+                note = nt.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            pass
+    return {
+        "path": str(snap), "taken": _snap_taken(snap, meta),
+        "type": meta.get("type", "") or "", "files": meta.get("files", 0) or 0,
+        "bytes": meta.get("bytes", 0) or 0,
+        "source": meta.get("source", "") or ("ftp" if meta else "import"),
+        "note": note,
+    }
+
+
+def robot_folder_of(snap) -> Path:
+    """The robot folder a snapshot belongs to (up from a <date>/<time> pair)."""
+    p = Path(snap)
+    return p.parent.parent if _is_dated(p) else p
+
+
+def backup_record(snap) -> dict:
+    """One history record for a snapshot folder (reads its backup.json + notes.txt).
+    Used by the add-from-folder flow to attach a robot's full dated history."""
+    p = Path(snap)
+    return _backup_record(p, _read_json(p / "backup.json"))
+
+
+def _path_identity(robot_dir: Path, root: Path) -> tuple[str, str, str]:
+    """(plant, line, robot) from <root>/[plant/]<line>/<robot> path structure."""
+    try:
+        parts = robot_dir.relative_to(root).parts
+    except ValueError:
+        parts = (robot_dir.name,)
+    robot = parts[-1] if parts else robot_dir.name
+    line = parts[-2] if len(parts) >= 2 else ""
+    plant = parts[-3] if len(parts) >= 3 else ""
+    return plant, line, robot
+
+
+def _scan_disk(root: Path) -> dict:
+    """Walk the tree for backup snapshots and group them by robot. Returns
+    {key: disk_entry}, each with backups[] newest-first + identity from sidecars
+    (robot.json / backup.json) falling back to the path. Read-only."""
+    from . import session  # local import: avoids any import-time coupling
+
+    groups: dict = {}
+    for snap in session.find_backup_roots(root):
+        if _is_latest_mirror(snap, root):
+            continue                                   # mirror = copy of a dated snap
+        meta = _read_json(snap / "backup.json")
+        robot_dir = snap.parent.parent if _is_dated(snap) else snap
+        rjson = _read_json(robot_dir / SIDECAR)
+        robot = rjson.get("robot") or meta.get("robot") or ""
+        line = rjson.get("line") or meta.get("line") or ""
+        plant = rjson.get("plant") or meta.get("plant") or ""
+        if not robot:
+            plant, line, robot = _path_identity(robot_dir, root)
+        if not robot:
+            continue
+        rid = rjson.get("id") or ""
+        key = rid or (plant.upper(), line.upper(), robot.upper())
+        g = groups.get(key)
+        if g is None:
+            ftp = rjson.get("ftp") if isinstance(rjson.get("ftp"), dict) else {}
+            g = {
+                "id": rid, "plant": plant, "line": line, "robot": robot,
+                "model": rjson.get("model", "") or meta.get("model", ""),
+                "f_number": rjson.get("f_number", "") or "",
+                "ips": list(rjson.get("ips", []) or []),
+                "ftp": {"user": ftp.get("user", ""), "passive": ftp.get("passive", True)},
+                "notes": rjson.get("notes", "") or "",
+                "aliases": list(rjson.get("aliases", []) or []),
+                "history_root": str(robot_dir), "_snaps": [],
+            }
+            groups[key] = g
+        g["_snaps"].append(_backup_record(snap, meta))
+
+    out: dict = {}
+    for key, g in groups.items():
+        snaps = sorted(g.pop("_snaps"), key=lambda b: b.get("taken", ""), reverse=True)
+        g["backups"] = snaps
+        g["latest_path"] = snaps[0]["path"] if snaps else ""
+        g["last_backup"] = snaps[0]["taken"] if snaps else ""
+        out[key] = g
+    return out
+
+
+def _apply_disk(e: dict, disk: dict) -> None:
+    """Fold a disk-scanned robot onto an overlay entry. Disk is authoritative for
+    what exists on disk (backups/latest_path/history_root); the overlay (user
+    edits) wins for identity + config, filled only where empty."""
+    e["backups"] = disk["backups"]
+    e["latest_path"] = disk["latest_path"]
+    e["history_root"] = disk["history_root"]
+    if disk.get("last_backup"):
+        e["last_backup"] = disk["last_backup"]
+    for k in ("plant", "line", "model", "f_number", "notes"):
+        if not e.get(k) and disk.get(k):
+            e[k] = disk[k]
+    ips = e.get("ips", []) or []
+    for ip in disk.get("ips", []) or []:
+        if ip and ip not in ips:
+            ips.append(ip)
+    e["ips"] = ips
+    if not (e.get("ftp") or {}).get("user") and (disk.get("ftp") or {}).get("user"):
+        e.setdefault("ftp", {})["user"] = disk["ftp"]["user"]
+    for a in disk.get("aliases", []) or []:                     # union: aliases are additive memory
+        _add_alias(e, a.get("plant", ""), a.get("line", ""), a.get("robot", ""))
+
+
+def _union_disk(e: dict, disk: dict) -> None:
+    """A second disk folder maps to an already-applied entry (e.g. a stray folder
+    under the robot's OLD name, re-matched via an alias). Combine the histories
+    instead of letting the later folder clobber the earlier one."""
+    have = {b.get("path") for b in e.get("backups", [])}
+    for b in disk.get("backups", []):
+        if b.get("path") not in have:
+            e.setdefault("backups", []).append(b)
+            have.add(b.get("path"))
+    e["backups"].sort(key=lambda b: b.get("taken", ""), reverse=True)
+    if e["backups"]:
+        e["latest_path"] = e["backups"][0]["path"]
+        e["last_backup"] = e["backups"][0].get("taken", e.get("last_backup", ""))
+    for a in disk.get("aliases", []) or []:
+        _add_alias(e, a.get("plant", ""), a.get("line", ""), a.get("robot", ""))
+
+
+def _merge_scan(data: dict, scanned: dict) -> None:
+    by_id = {e["id"]: e for e in data["robots"] if e.get("id")}
+    applied: set = set()                        # entries already filled from disk this scan
+    for disk in scanned.values():
+        e = None
+        did = disk.get("id")
+        if did and did in by_id:
+            cand = by_id[did]
+            # trust a carried id only if the name reconciles (guards a copied id)
+            if not cand.get("robot") or cand["robot"].upper() == (disk.get("robot") or "").upper():
+                e = cand
+        if e is None:
+            e = _find_match(data, {"robot": disk.get("robot"), "line": disk.get("line")})
+        if e is None:
+            ne = _normalize(disk)
+            data["robots"].append(ne)
+            if ne.get("id"):
+                by_id[ne["id"]] = ne
+        elif id(e) in applied:
+            _union_disk(e, disk)                # 2nd folder for one robot -> combine, don't clobber
+        else:
+            _apply_disk(e, disk)
+            applied.add(id(e))
+
+
+def scan_library_root(root: str | Path) -> dict:
+    """Rebuild the library from the backup folder tree (the source of truth for
+    which robots/backups exist) and merge it onto the existing library.json
+    overlay (local-only data: hidden flag, ftp creds, user edits). Folders found
+    on disk are added/refreshed; entries whose folders are gone are kept and
+    marked stale (never auto-deleted). Returns the reconciled library."""
+    root = Path(root)
+    with _LOCK:
+        data = load()
+        if root.is_dir():
+            _merge_scan(data, _scan_disk(root))
+        _reconcile(data)
+        _write(data)
+        return data
+
+
+# -- rename / merge / relocate (folders move WITH the entry) ---------------------
+# Cody's library is full of legacy robots backed up before auto-naming worked, so
+# many are IP-named and some duplicated. These primitives let the UI fix a name
+# (and physically move the folder tree), merge duplicates, and tidy up - always
+# inside library_root(), always transactionally (os.rename, or copy-verify-delete
+# across volumes), recording the old identity as an alias so a stray old-named
+# folder re-merges on the next scan instead of spawning a duplicate.
+
+class PathGuard(Exception):
+    """A relocate/merge target resolved outside the configured library root."""
+
+
+def _root() -> Path:
+    try:
+        return Path(settings.library_root()).resolve()
+    except OSError:
+        return Path(settings.library_root())
+
+
+def _safe_resolve(p) -> Path:
+    try:
+        return Path(p).resolve()
+    except OSError:
+        return Path(p)
+
+
+def _alias_key(plant: str, line: str, robot: str) -> tuple[str, str, str]:
+    return ((plant or "").upper(), (line or "").upper(), (robot or "").upper())
+
+
+def _alias_record(plant: str, line: str, robot: str) -> dict:
+    return {"plant": plant or "", "line": line or "", "robot": robot or ""}
+
+
+def _add_alias(e: dict, plant: str, line: str, robot: str) -> None:
+    """Remember a robot's former identity so a stray folder under the old name
+    re-merges into this entry. No-ops for the entry's current identity + dups."""
+    if not (robot or "").strip():
+        return
+    new = _alias_key(plant, line, robot)
+    if new == _alias_key(e.get("plant", ""), e.get("line", ""), e.get("robot", "")):
+        return
+    aliases = e.setdefault("aliases", [])
+    have = {_alias_key(a.get("plant", ""), a.get("line", ""), a.get("robot", "")) for a in aliases}
+    if new not in have:
+        aliases.append(_alias_record(plant, line, robot))
+
+
+def _ident(t) -> dict:
+    return {"plant": t[0], "line": t[1], "robot": t[2]}
+
+
+def _ident_e(e: dict) -> dict:
+    return _ident((e.get("plant", ""), e.get("line", ""), e.get("robot", "")))
+
+
+def _robot_dir_for(root: Path, plant: str, line: str, robot: str) -> Path:
+    """The robot folder <root>/<plant?>/<line>/<robot>, built through the backup
+    engine's own path rules (blank-plant omission + _safe_name) via a sentinel
+    timestamp so it always matches where a real backup would land."""
+    from . import ftpbackup
+    return ftpbackup.dated_dir(root, plant, line, robot, _dt.datetime(2000, 1, 1)).parent.parent
+
+
+def _latest_dir_for(root: Path, plant: str, line: str, robot: str) -> Path:
+    from . import ftpbackup
+    return ftpbackup.latest_dir(root, plant, line, robot)
+
+
+def _verify_tree(src: Path, dst: Path) -> bool:
+    src, dst = Path(src), Path(dst)
+    for f in src.rglob("*"):
+        if f.is_file():
+            t = dst / f.relative_to(src)
+            try:
+                if not t.is_file() or t.stat().st_size != f.stat().st_size:
+                    return False
+            except OSError:
+                return False
+    return True
+
+
+def _move_tree(src, dst) -> None:
+    """Move a folder: atomic os.rename on the same volume, else copy-verify-delete
+    (raises OSError if the copy doesn't verify, leaving the source intact)."""
+    src, dst = Path(src), Path(dst)
+    try:
+        os.rename(src, dst)
+        return
+    except OSError:
+        pass
+    shutil.copytree(src, dst)
+    if not _verify_tree(src, dst):
+        raise OSError(f"verify failed copying {src} -> {dst}")
+    shutil.rmtree(src)
+
+
+def _prune_empty_dirs(start, root) -> None:
+    """Walk up from `start` removing now-empty folders, stopping at the first
+    non-empty folder or the library root. Tolerates `start` already gone."""
+    root_r = _safe_resolve(Path(root))
+    d = Path(start)
+    while d != d.parent:
+        dr = _safe_resolve(d)
+        if dr == root_r or not _within(dr, root_r):
+            break
+        if d.exists():
+            if not d.is_dir():
+                break
+            try:
+                next(d.iterdir())
+                break                                  # not empty -> stop pruning
+            except StopIteration:
+                pass
+            try:
+                d.rmdir()
+            except OSError:
+                break
+        d = d.parent
+
+
+def _entry_for_folder(data: dict, folder) -> dict | None:
+    """The entry, if any, whose history_root IS this folder (so a relocate onto an
+    existing robot folder merges into that robot rather than clobbering it)."""
+    target = _safe_resolve(Path(folder))
+    for e in data["robots"]:
+        hr = e.get("history_root")
+        if hr and _safe_resolve(Path(hr)) == target:
+            return e
+    return None
+
+
+def _scan_robot_backups(robot_dir) -> list:
+    """Newest-first history records for one robot folder, read from disk (its
+    dated <date>/<time> snapshots' backup.json + notes.txt). Disk is the source
+    of truth for what exists, so we rebuild backups[] from it after a move."""
+    robot_dir = Path(robot_dir)
+    out: list = []
+    if not robot_dir.is_dir():
+        return out
+    for date_dir in robot_dir.iterdir():
+        if not (date_dir.is_dir() and _DATE_RE.match(date_dir.name)):
+            continue
+        for time_dir in date_dir.iterdir():
+            if time_dir.is_dir() and _TIME_RE.match(time_dir.name):
+                out.append(_backup_record(time_dir, _read_json(time_dir / "backup.json")))
+    out.sort(key=lambda b: b.get("taken", ""), reverse=True)
+    return out
+
+
+def _rebuild_backups(e: dict, robot_dir, root) -> None:
+    """Recompute e's backups[]/latest_path/last_backup from its (new) robot folder
+    on disk, preserving any still-present non-dated 'flat' imports that live
+    outside the dated tree."""
+    dated = _scan_robot_backups(robot_dir)
+    seen = {b["path"] for b in dated}
+    extra: list = []
+    for b in e.get("backups", []):
+        p = b.get("path", "")
+        if not p or p in seen or _is_dated(Path(p)):
+            continue                                   # dated history is rebuilt from disk above
+        # keep non-dated 'flat' imports even when currently offline (a removable /
+        # network drive may just be disconnected) - _reconcile marks them stale, in
+        # line with the "never auto-delete an offline backup" policy.
+        seen.add(p)
+        extra.append(b)
+    out = dated + extra
+    out.sort(key=lambda b: b.get("taken", ""), reverse=True)
+    e["backups"] = out
+    e["latest_path"] = out[0]["path"] if out else ""
+    e["last_backup"] = out[0].get("taken", "") if out else e.get("last_backup", "")
+
+
+def _regen_latest(e: dict, root: Path):
+    """Rebuild the Latest/<robot> mirror from the newest existing dated snapshot
+    (temp dir -> copytree -> atomic replace). Newest missing -> leave any existing
+    mirror untouched (don't destroy a good-but-currently-offline mirror)."""
+    newest = None
+    for b in e.get("backups", []):                     # newest-first
+        p = Path(b.get("path", ""))
+        if p.is_dir():
+            newest = p
+            break
+    if newest is None:
+        return None
+    latest = _latest_dir_for(root, e.get("plant", ""), e.get("line", ""), e.get("robot", ""))
+    tmp = latest.with_name(latest.name + ".__tmp")
+    try:
+        latest.parent.mkdir(parents=True, exist_ok=True)
+        if tmp.exists():
+            shutil.rmtree(tmp, ignore_errors=True)
+        shutil.copytree(newest, tmp)
+        if latest.exists():
+            shutil.rmtree(latest, ignore_errors=True)
+        os.replace(tmp, latest)
+        return latest
+    except OSError:
+        log.exception("Latest mirror regen failed for %s (dated snapshot intact)", e.get("robot"))
+        shutil.rmtree(tmp, ignore_errors=True)
+        return None
+
+
+def _rel(p, root) -> str:
+    try:
+        return str(_safe_resolve(Path(p)).relative_to(_safe_resolve(Path(root))))
+    except (OSError, ValueError):
+        return str(p)
+
+
+def _stat_pair(meta: dict) -> tuple[int, int]:
+    return (int(meta.get("files", 0) or 0), int(meta.get("bytes", 0) or 0))
+
+
+def _statd(t) -> dict:
+    return {"files": t[0], "bytes": t[1]}
+
+
+def _merge_into(src_dir, dst_dir, root, src_latest) -> dict:
+    """Fold src_dir's dated snapshots into dst_dir. A snapshot whose <date>/<time>
+    already exists in dst is a DUPLICATE: skipped (the redundant source copy is
+    dropped) when identical, flagged as a conflict (never moved, never deleted)
+    when its backup.json files/bytes differ. Moves one snapshot at a time.
+
+    The source robot folder is removed ONLY when nothing but its (now-stale)
+    robot.json sidecar is left - i.e. it held nothing but the moved-away dated
+    snapshots. Anything else (a conflicting snapshot, a flat/non-dated import, a
+    stray user file) is preserved, and its Latest mirror is kept too. Returns
+    {moved, skipped, conflicts, source_removed}."""
+    moved: list = []
+    skipped: list = []
+    conflicts: list = []
+    if src_dir is None or not Path(src_dir).exists():
+        return {"moved": moved, "skipped": skipped, "conflicts": conflicts, "source_removed": False}
+    src_dir, dst_dir = Path(src_dir), Path(dst_dir)
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    date_dirs = sorted(p for p in src_dir.iterdir() if p.is_dir() and _DATE_RE.match(p.name))
+    for date_dir in date_dirs:
+        time_dirs = sorted(p for p in date_dir.iterdir() if p.is_dir() and _TIME_RE.match(p.name))
+        for time_dir in time_dirs:
+            target = dst_dir / date_dir.name / time_dir.name
+            rel = _rel(target, root)
+            if target.exists():
+                s = _stat_pair(_read_json(time_dir / "backup.json"))
+                d = _stat_pair(_read_json(target / "backup.json"))
+                if s != d:
+                    conflicts.append({"path": rel, "src": _statd(s), "dst": _statd(d)})
+                else:
+                    skipped.append(rel)
+                    shutil.rmtree(time_dir, ignore_errors=True)   # identical -> drop the redundant source copy
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _move_tree(time_dir, target)
+            moved.append(rel)
+        _prune_empty_dirs(date_dir, root)
+    # Remove the source robot folder ONLY when nothing but its sidecar remains;
+    # never blow away conflicts or non-dated (flat-import / user) content.
+    source_removed = False
+    if src_dir.exists() and _within(_safe_resolve(src_dir), Path(root)):
+        remaining = [p for p in src_dir.iterdir() if p.name != SIDECAR]
+        if not remaining:
+            shutil.rmtree(src_dir, ignore_errors=True)
+            source_removed = True
+    # the source Latest mirror is only stale once the source is actually gone
+    if source_removed and src_latest is not None and Path(src_latest).exists() \
+            and _within(_safe_resolve(Path(src_latest)), Path(root)):
+        shutil.rmtree(src_latest, ignore_errors=True)
+        _prune_empty_dirs(src_latest, root)
+    if source_removed:
+        _prune_empty_dirs(src_dir, root)
+    return {"moved": moved, "skipped": skipped, "conflicts": conflicts, "source_removed": source_removed}
+
+
+def _merge_pair(data: dict, prim: dict, sec: dict, root: Path) -> dict:
+    """Survivor = prim; fold sec's folders + history in, alias sec's identity onto
+    prim, drop sec, regenerate prim's mirror. Caller holds _LOCK and does the
+    _reconcile/_write/_persist_sidecar."""
+    prim_dir = _robot_folder(prim) or _robot_dir_for(
+        root, prim.get("plant", ""), prim.get("line", ""), prim.get("robot", ""))
+    sec_dir = _robot_folder(sec)
+    for d in (prim_dir, sec_dir):
+        if d is not None and Path(d).exists() and not _within(_safe_resolve(Path(d)), root):
+            raise PathGuard(f"merge target escapes library root: {d}")
+    sec_latest = _latest_dir_for(root, sec.get("plant", ""), sec.get("line", ""), sec.get("robot", "")) \
+        if sec_dir is not None else None
+    result = _merge_into(sec_dir, prim_dir, root, sec_latest)
+    # Record sec's identity as an alias on prim either way, so a future scan of any
+    # leftover sec folder re-merges into prim instead of duplicating.
+    _add_alias(prim, sec.get("plant", ""), sec.get("line", ""), sec.get("robot", ""))
+    for a in sec.get("aliases", []) or []:
+        _add_alias(prim, a.get("plant", ""), a.get("line", ""), a.get("robot", ""))
+    prim["history_root"] = str(prim_dir)
+    if sec_dir is None:
+        # an empty placeholder entry (never had a folder) -> drop it
+        data["robots"] = [x for x in data["robots"] if x.get("id") != sec["id"]]
+        result["secondary_removed"] = True
+    elif result.get("source_removed"):
+        # sec's folder was fully folded in and removed -> drop its entry
+        data["robots"] = [x for x in data["robots"] if x.get("id") != sec["id"]]
+        result["secondary_removed"] = True
+    else:
+        # conflicts / flat imports / an offline folder remain -> KEEP sec's entry
+        # pointing at the leftovers (never orphan or auto-delete real data). Only
+        # refresh from disk when the folder is actually reachable.
+        if Path(sec_dir).exists():
+            _rebuild_backups(sec, sec_dir, root)
+            _regen_latest(sec, root)
+        result["secondary_removed"] = False
+    _rebuild_backups(prim, prim_dir, root)
+    _regen_latest(prim, root)
+    return result
+
+
+def relocate_robot(robot_id: str, plant: str, line: str, robot: str) -> dict:
+    """Rename/relocate a robot, MOVING its on-disk folder tree with it.
+
+    No collision at the destination -> a single os.rename (atomic) of the robot
+    folder + a regenerated Latest mirror. Destination already exists -> a MERGE
+    (snapshot-by-snapshot, duplicate <date>/<time> skipped/flagged). The id is
+    preserved; the old identity is recorded as an alias; the sidecar is rewritten.
+
+    Returns {"action": "noop"|"renamed"|"merged", ...}. Raises ValueError (bad
+    args / unknown id), PathGuard (escapes root), OSError (move failure)."""
+    plant = (plant or "").strip()
+    line = (line or "").strip()
+    robot = (robot or "").strip()
+    if not robot:
+        raise ValueError("robot name required")
+    if robot.lower() == "latest":
+        raise ValueError("'Latest' is reserved (it names the mirror folder)")
+    with _LOCK:
+        data = load()
+        e = next((x for x in data["robots"] if x.get("id") == robot_id), None)
+        if e is None:
+            raise ValueError("robot not in library")
+        old = (e.get("plant", ""), e.get("line", ""), e.get("robot", ""))
+        if _alias_key(*old) == _alias_key(plant, line, robot):
+            return {"action": "noop", "id": robot_id, "from": _ident(old), "to": _ident(old)}
+
+        root = _root()
+        src = _robot_folder(e)
+        dst = _robot_dir_for(root, plant, line, robot)
+        if not _within(_safe_resolve(dst), root):
+            raise PathGuard(f"destination escapes library root: {dst}")
+        if src is not None and src.exists() and not _within(_safe_resolve(src), root):
+            raise PathGuard(f"source escapes library root: {src}")
+
+        same_path = src is not None and _safe_resolve(src) == _safe_resolve(dst)
+        merge = dst.exists() and not same_path
+
+        if merge:
+            owner = _entry_for_folder(data, dst)
+            if owner is not None and owner is not e:
+                # Only fold into the destination entry when it is genuinely the SAME
+                # robot identity we were asked for. A different identity that merely
+                # sanitizes to the same folder name is a name conflict, not a
+                # duplicate - refuse rather than merge into the wrong robot.
+                if _alias_key(owner.get("plant", ""), owner.get("line", ""), owner.get("robot", "")) \
+                        != _alias_key(plant, line, robot):
+                    raise ValueError(
+                        f"destination folder name collides with a different robot ({owner.get('robot', '')})")
+                res = _merge_pair(data, owner, e, root)
+                _reconcile(data)
+                _write(data)
+                _persist_sidecar(owner)
+                res.update({"action": "merged", "id": owner["id"],
+                            "removed_id": e["id"] if res.get("secondary_removed") else None,
+                            "from": _ident(old), "to": _ident_e(owner)})
+                return res
+            # the destination is an orphan folder (no entry) -> e adopts + folds into it
+            src_latest = _latest_dir_for(root, *old) if src is not None else None
+            res = _merge_into(src, dst, root, src_latest)
+            e["plant"], e["line"], e["robot"] = plant, line, robot
+            _add_alias(e, *old)                                # after the rename: old != current
+            e["history_root"] = str(dst)
+            _rebuild_backups(e, dst, root)
+            _regen_latest(e, root)
+            _reconcile(data)
+            _write(data)
+            _persist_sidecar(e)
+            res.update({"action": "merged", "id": e["id"], "removed_id": None,
+                        "from": _ident(old), "to": _ident((plant, line, robot))})
+            return res
+
+        # ---- clean rename: destination is free ----
+        moving = src is not None and src.exists() and not same_path
+        if moving:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            _move_tree(src, dst)
+            src_latest = _latest_dir_for(root, *old)
+            if src_latest.exists() and _within(_safe_resolve(src_latest), root):
+                shutil.rmtree(src_latest, ignore_errors=True)
+            _prune_empty_dirs(src_latest, root)
+            _prune_empty_dirs(src, root)
+        e["plant"], e["line"], e["robot"] = plant, line, robot
+        _add_alias(e, *old)                                    # after the rename: old != current
+        if moving:
+            e["history_root"] = str(dst)
+            _rebuild_backups(e, dst, root)
+            _regen_latest(e, root)
+        _reconcile(data)
+        _write(data)
+        _persist_sidecar(e)
+        return {"action": "renamed", "id": robot_id,
+                "from": _ident(old), "to": _ident((plant, line, robot))}
+
+
+def merge_robots(primary_id: str, secondary_id: str) -> dict:
+    """Explicitly merge secondary INTO primary (folders + history). Refuses a
+    cross-line merge (a robot name can legitimately repeat across lines). Returns
+    {"action": "merged"|"refused", ...}."""
+    if primary_id == secondary_id:
+        raise ValueError("cannot merge a robot into itself")
+    with _LOCK:
+        data = load()
+        prim = next((x for x in data["robots"] if x.get("id") == primary_id), None)
+        sec = next((x for x in data["robots"] if x.get("id") == secondary_id), None)
+        if prim is None or sec is None:
+            raise ValueError("robot not in library")
+        if (prim.get("line", "") or "").upper() != (sec.get("line", "") or "").upper():
+            return {"action": "refused", "reason": "cross-line",
+                    "primary": _ident_e(prim), "secondary": _ident_e(sec)}
+        root = _root()
+        res = _merge_pair(data, prim, sec, root)
+        _reconcile(data)
+        _write(data)
+        _persist_sidecar(prim)
+        if not res.get("secondary_removed"):
+            _persist_sidecar(sec)                  # sec kept its leftovers -> refresh its sidecar
+        res.update({"action": "merged", "id": primary_id,
+                    "removed_id": secondary_id if res.get("secondary_removed") else None,
+                    "primary": _ident_e(prim), "secondary": _ident_e(sec)})
+        return res

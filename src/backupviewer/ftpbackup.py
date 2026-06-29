@@ -328,8 +328,11 @@ class BackupJob:
     # -- library record ------------------------------------------------------
 
     def library_match(self) -> dict:
+        dated = self.snapshot().get("dated_path", "")
+        # <root>/<plant>/<line>/<robot>/<date>/<time> -> the robot folder
+        history_root = str(Path(dated).parent.parent) if dated else ""
         return {"robot": self.robot, "line": self.line, "plant": self.plant,
-                "ips": [self.host] if self.host else []}
+                "ips": [self.host] if self.host else [], "history_root": history_root}
 
     def library_backup(self) -> dict:
         s = self.snapshot()

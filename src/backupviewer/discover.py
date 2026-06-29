@@ -17,14 +17,17 @@ from __future__ import annotations
 
 import ftplib
 import ipaddress
+import json
 import logging
 import socket
+import subprocess
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from . import ftpbackup, session
+from .parsers import summary_dg
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +35,16 @@ PORT = 21
 PORT_TIMEOUT = 0.7        # fast TCP pre-check before the heavier FTP probe
 SCAN_WORKERS = 48
 _NAME_LS_TRIES = 8        # report .LS files to sniff for a robot name
+# SUMMARY.DG is synthesized on GET; its F Number sits in the first lines, so a
+# small prefix is enough (confirmed on a live R-30iB: --diagnose). The robot name
+# comes from a report header, not SUMMARY's ($HOSTNAME is far deeper than is worth
+# slurping per host), so we don't read the whole file just to name a robot.
+NAME_SUMMARY_CAP = 24_000
+# report files RETR'd directly to read their "Robot Name <host>" header. The first
+# 8 .LS in a controller's MD: listing are alphabetical programs (-bcked*, abortit,
+# ...) with no header, so naming MUST target these by name. LOGBOOK first: on a
+# live R-30iB ERRALL.LS reset the data connection while LOGBOOK.LS read cleanly.
+_NAME_REPORT_FILES = ("LOGBOOK.LS", "ERRALL.LS", "ERRHIST.LS")
 
 
 # -- subnet helpers --------------------------------------------------------------
@@ -66,6 +79,101 @@ def enumerate_hosts(cidr: str) -> list[str]:
     if not hosts:
         hosts = [str(net.network_address)]
     return hosts
+
+
+# -- network adapters (for the discover dialog) ----------------------------------
+
+# absolute path: PATH is unreliable inside a frozen onefile exe
+_PS_EXE = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+_ADAPTER_TIMEOUT = 5
+_ADAPTER_PS = (
+    "$a=Get-NetAdapter -ErrorAction SilentlyContinue|"
+    "Select-Object Name,Status,PhysicalMediaType,ifIndex;"
+    "$p=Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue|"
+    "Select-Object IPAddress,PrefixLength,ifIndex;"
+    "$o=foreach($x in $a){"
+    "$m=$p|Where-Object{$_.ifIndex -eq $x.ifIndex}|Select-Object -First 1;"
+    "[pscustomobject]@{name=$x.Name;status=[string]$x.Status;"
+    "media=[string]$x.PhysicalMediaType;ip=$m.IPAddress;prefix=$m.PrefixLength}};"
+    "$o|ConvertTo-Json -Compress"
+)
+
+
+def _powershell(script: str, runner) -> str:
+    """Run a PowerShell one-liner and return stdout, or "" on any failure. Uses an
+    absolute exe + CREATE_NO_WINDOW so a windowed exe never flashes a console."""
+    exe = _PS_EXE if Path(_PS_EXE).exists() else "powershell.exe"
+    kwargs = {"capture_output": True, "text": True, "timeout": _ADAPTER_TIMEOUT}
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if flags:
+        kwargs["creationflags"] = flags
+    try:
+        proc = runner([exe, "-NoProfile", "-NonInteractive", "-Command", script], **kwargs)
+    except Exception:  # noqa: BLE001 - no powershell / timeout / frozen quirk
+        return ""
+    return getattr(proc, "stdout", "") or ""
+
+
+def _adapter_kind(media: str) -> str:
+    m = (media or "").lower()
+    if "802.11" in m or "wireless" in m or "wi-fi" in m:
+        return "wifi"
+    if "802.3" in m or "ethernet" in m:
+        return "ethernet"
+    return "other"
+
+
+def _mark_default_adapter(adapters: list[dict], egress: str) -> None:
+    """Default = the up ethernet on the egress IP, else first up ethernet, else
+    first up adapter, else nothing."""
+    ups = [a for a in adapters if a["up"]]
+    eths = [a for a in ups if a["kind"] == "ethernet"]
+    chosen = None
+    for a in eths:
+        if egress and a["ip"] == egress:
+            chosen = a
+            break
+    chosen = chosen or (eths[0] if eths else (ups[0] if ups else None))
+    if chosen:
+        chosen["default"] = True
+
+
+def list_adapters(runner=subprocess.run) -> list[dict]:
+    """Active network adapters with IPv4 + CIDR for the discover dialog:
+    [{name, kind:'ethernet'|'wifi'|'other', ip, cidr, up, default}], ethernet
+    first. Windows-only (PowerShell); returns [] on any failure so the caller
+    falls back to the local /24. `runner` is injectable so tests never spawn."""
+    raw = _powershell(_ADAPTER_PS, runner)
+    if not raw.strip():
+        return []
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return []
+    if isinstance(data, dict):
+        data = [data]
+    egress = local_ipv4()
+    out: list[dict] = []
+    for d in data if isinstance(data, list) else []:
+        ip = str(d.get("ip") or "").strip()
+        if not ip or ip.startswith(("169.254.", "127.")):
+            continue
+        prefix = d.get("prefix")
+        try:
+            cidr = str(ipaddress.ip_network(f"{ip}/{int(prefix)}", strict=False)) if prefix else ""
+        except (ValueError, TypeError):
+            cidr = ""
+        out.append({
+            "name": str(d.get("name") or "?"),
+            "kind": _adapter_kind(d.get("media")),
+            "ip": ip,
+            "cidr": cidr,
+            "up": str(d.get("status") or "").lower() == "up",
+            "default": False,
+        })
+    out.sort(key=lambda a: ({"ethernet": 0, "wifi": 1}.get(a["kind"], 2), not a["up"], a["name"].lower()))
+    _mark_default_adapter(out, egress)
+    return out
 
 
 def _mtime(path: str) -> float:
@@ -239,54 +347,224 @@ class NetworkScanJob(_ScanJob):
         banner = info.get("banner", "") or ""
         if "FANUC" not in banner.upper() and not info.get("has_md"):
             return None  # an FTP server, but not a FANUC controller
+        ident = resolve_robot_name(self._ftp_factory, host, self.port)
         return {
             "host": host,
-            "name": self._resolve_name(host),
+            "name": ident["name"],
+            "model": ident["model"],
+            "f_number": ident["f_number"],
             "banner": banner,
             "has_md": bool(info.get("has_md")),
             "has_fr": bool(info.get("has_fr")),
         }
 
-    def _resolve_name(self, host: str) -> str:
-        """Best-effort robot name from the controller's host comms / report
-        headers over FTP. Returns "" on any failure - the caller falls back to
-        the IP. Reads only the first line of a few report .LS files, so it stays
-        gentle on a live robot."""
-        ftp = None
+
+# -- live name resolution --------------------------------------------------------
+# Mirrors the PROVEN ftpbackup enumeration: tolerate cwd("MD:") failing (some
+# controllers root straight at MD:), and never assume nlst() surfaces the
+# synthesized report files - RETR them directly. SUMMARY.DG is the primary source
+# (name + model + F-number in one GET); the .LS header sniff is the fallback.
+
+def _connect_md(ftp_factory, host, port):
+    """Connect, anonymous login, and land where MD: files live. Mirrors
+    ftpbackup._cwd_root + its 'MD: is the only device, stay put' tolerance.
+    The caller is responsible for quitting the returned ftp."""
+    ftp = ftp_factory(timeout=ftpbackup.CONNECT_TIMEOUT)
+    ftp.connect(host, port)
+    ftp.login("", "")
+    for path in ("/", ""):
         try:
-            ftp = self._ftp_factory(timeout=ftpbackup.CONNECT_TIMEOUT)
-            ftp.connect(host, self.port)
-            ftp.login("", "")
+            ftp.cwd(path)
+            break
+        except ftplib.all_errors:
+            continue
+    try:
+        ftp.cwd("MD:")
+    except ftplib.all_errors:
+        pass  # some controllers root straight at MD: - stay where we are
+    return ftp
+
+
+def _retr_head(ftp, name, cap) -> str:
+    """First `cap` bytes of an FTP file decoded cp1252, or "" on any failure.
+    Stops the transfer once cap is reached so a live robot isn't slurped dry."""
+    buf = bytearray()
+
+    def grab(chunk, _b=buf):
+        _b.extend(chunk)
+        if len(_b) >= cap:
+            raise _StopRead
+
+    try:
+        ftp.retrbinary("RETR " + name, grab)
+    except _StopRead:
+        pass
+    except Exception:  # noqa: BLE001 - 550/odd server/fake without retrbinary
+        return ""
+    return bytes(buf[:cap]).decode("cp1252", errors="replace")
+
+
+def _name_from_reports(ftp) -> str:
+    """Robot name from a report-.LS header ('<file>   Robot Name <host> ...').
+    Tries the hardcoded shortlist by RETR even when nlst() hides them, then any
+    .LS the listing does surface - first matching header wins."""
+    try:
+        listed = [n for n in ftp.nlst() if n.upper().endswith(".LS")]
+    except ftplib.all_errors:
+        listed = []
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for n in list(_NAME_REPORT_FILES) + listed:
+        if n.upper() not in seen:
+            seen.add(n.upper())
+            candidates.append(n)
+    for n in candidates[:_NAME_LS_TRIES]:
+        first = {"line": ""}
+
+        def grab(line, _f=first):
+            _f["line"] = line
+            raise _StopRead
+
+        try:
+            ftp.retrlines("RETR " + n, grab)
+        except _StopRead:
+            pass
+        except ftplib.all_errors:
+            continue
+        m = session._REPORT_HEADER.match(first["line"])
+        if m:
+            return m.group(2)
+    return ""
+
+
+def resolve_robot_name(ftp_factory, host, port) -> dict:
+    """Best-effort {name, model, f_number} from a live controller over one gentle
+    FTP connection. SUMMARY.DG (synthesized on GET) is primary - it gives all
+    three; the report-.LS header sniff is the name fallback. Returns blanks on
+    any failure so the caller falls back to the IP - naming never sinks a scan."""
+    out = {"name": "", "model": "", "f_number": ""}
+    ftp = None
+    try:
+        ftp = _connect_md(ftp_factory, host, port)
+        head = _retr_head(ftp, "SUMMARY.DG", NAME_SUMMARY_CAP)
+        if head:
             try:
-                ftp.cwd("MD:")
-            except ftplib.all_errors:
-                return ""
-            ls = [n for n in ftp.nlst() if n.upper().endswith(".LS")][:_NAME_LS_TRIES]
-            for n in ls:
-                first = {"line": ""}
-
-                def grab(line, _f=first):
-                    _f["line"] = line
-                    raise _StopRead
-
+                ident = summary_dg.parse_summary(head).get("identity") or {}
+                out["name"] = ident.get("robot_name", "") or ""
+                out["model"] = ident.get("robot_model", "") or ""
+                out["f_number"] = ident.get("f_number", "") or ""
+            except Exception:  # noqa: BLE001 - a partial SUMMARY must not sink naming
+                pass
+        if not out["name"]:
+            out["name"] = _name_from_reports(ftp)
+        return out
+    except Exception:  # noqa: BLE001 - name is a nicety; never let it sink discovery
+        return out
+    finally:
+        if ftp is not None:
+            try:
+                ftp.quit()
+            except Exception:  # noqa: BLE001
                 try:
-                    ftp.retrlines("RETR " + n, grab)
-                except _StopRead:
-                    pass
-                except ftplib.all_errors:
-                    continue
-                m = session._REPORT_HEADER.match(first["line"])
-                if m:
-                    return m.group(2)
-            return ""
-        except Exception:  # noqa: BLE001 - name is a nicety; never let it sink discovery
-            return ""
-        finally:
-            if ftp is not None:
-                try:
-                    ftp.quit()
+                    ftp.close()
                 except Exception:  # noqa: BLE001
-                    try:
-                        ftp.close()
-                    except Exception:  # noqa: BLE001
-                        pass
+                    pass
+
+
+# -- live diagnostic -------------------------------------------------------------
+
+_DIAG_NLST_CAP = 200      # directory entries to capture per device
+_DIAG_HEAD_LINES = 3      # first lines of each sniffed file
+
+
+class _DiagStop(Exception):
+    """Stop a diag retrlines after enough header lines."""
+
+
+def _diag_head_lines(ftp, name) -> dict:
+    """{ok, lines|error} - the first few lines of an FTP file, read-only."""
+    lines: list[str] = []
+
+    def grab(line, _l=lines):
+        _l.append(line)
+        if len(_l) >= _DIAG_HEAD_LINES:
+            raise _DiagStop
+
+    try:
+        ftp.retrlines("RETR " + name, grab)
+    except _DiagStop:
+        pass
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return {"ok": True, "lines": lines}
+
+
+def diagnose_controller(host, *, port=PORT, ftp_factory=ftplib.FTP) -> dict:
+    """Read-only FTP probe to debug auto-naming against a LIVE robot. Captures the
+    banner, how cwd behaves, the raw directory listings, and the first lines of
+    the files we sniff for a name - then the resolved name. ZERO writes. The
+    summary is also log.info'd as JSON so it lands in app.log on a shop PC with no
+    console. Use its output to tune NAME_SUMMARY_CAP and the report shortlist."""
+    port = int(port or PORT)
+    out: dict = {"host": host, "port": port, "banner": "",
+                 "cwd": {}, "nlst": {}, "files": {}, "resolved": {}, "error": ""}
+    ftp = None
+    try:
+        ftp = ftp_factory(timeout=ftpbackup.CONNECT_TIMEOUT)
+        ftp.connect(host, port)
+        ftp.login("", "")
+        try:
+            out["banner"] = (ftp.getwelcome() or "").strip()
+        except Exception as e:  # noqa: BLE001
+            out["banner"] = f"<{type(e).__name__}: {e}>"
+        for path in ("/", "", "MD:"):
+            try:
+                ftp.cwd(path)
+                out["cwd"][path or "(empty)"] = "ok"
+            except Exception as e:  # noqa: BLE001
+                out["cwd"][path or "(empty)"] = f"{type(e).__name__}: {e}"
+        for label, path in (("root", "/"), ("MD:", "MD:")):
+            try:
+                ftp.cwd(path)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                out["nlst"][label] = list(ftp.nlst())[:_DIAG_NLST_CAP]
+            except Exception as e:  # noqa: BLE001
+                out["nlst"][label] = f"{type(e).__name__}: {e}"
+        try:
+            ftp.cwd("MD:")
+        except Exception:  # noqa: BLE001
+            pass
+        listed: list[str] = []
+        try:
+            listed = [n for n in ftp.nlst() if n.upper().endswith(".LS")][:5]
+        except Exception:  # noqa: BLE001
+            pass
+        seen: set[str] = set()
+        for n in ["SUMMARY.DG", *_NAME_REPORT_FILES, *listed]:
+            if n.upper() in seen:
+                continue
+            seen.add(n.upper())
+            out["files"][n] = _diag_head_lines(ftp, n)
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"{type(e).__name__}: {e}"
+    finally:
+        if ftp is not None:
+            try:
+                ftp.quit()
+            except Exception:  # noqa: BLE001
+                try:
+                    ftp.close()
+                except Exception:  # noqa: BLE001
+                    pass
+    # resolve on its own fresh connection so a partial probe above still reports it
+    try:
+        out["resolved"] = resolve_robot_name(ftp_factory, host, port)
+    except Exception as e:  # noqa: BLE001
+        out["resolved"] = {"error": f"{type(e).__name__}: {e}"}
+    try:
+        log.info("diagnose_controller %s -> %s", host, json.dumps(out)[:4000])
+    except Exception:  # noqa: BLE001
+        pass
+    return out

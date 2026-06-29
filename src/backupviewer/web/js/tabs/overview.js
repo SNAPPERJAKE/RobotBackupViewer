@@ -241,6 +241,58 @@
     }).join("");
   }
 
+  /* a dated-backup timeline picker - only when a library robot (with history) is
+     open. Switching re-opens the chosen snapshot and re-renders in place. */
+  function fmtBackupDate(taken) {
+    if (!taken) return "(undated)";
+    return String(taken).replace("T", " ").slice(0, 16);
+  }
+
+  function switchBackup(path) {
+    var man = BV.state.manifest || {};
+    if (!man.robot_id) return;
+    BV.api.call("lib_open", man.robot_id, path).then(function (m) {
+      BV.state.setManifest(m);
+      BV.route();
+    }).catch(function (e) { BV.toast(e.message); });
+  }
+
+  function buildDatePicker() {
+    var man = BV.state.manifest || {};
+    var backups = man.backups || [];
+    if (!man.robot_id || backups.length < 2) return null;   // nothing to switch between
+    var current = man.current_path || "";
+    var cur = null;
+    backups.forEach(function (b) { if (b.path === current) cur = b; });
+    var label = fmtBackupDate((cur || backups[0]).taken);
+    var btn = BV.el("button", { class: "btn ov-datepick", title: "switch to another dated backup" },
+      "🕓 " + BV.esc(label));
+    btn.addEventListener("click", function () {
+      BV.menu(btn, backups.map(function (b, i) {
+        return {
+          label: fmtBackupDate(b.taken) + (i === 0 ? "  · latest" : "") + (b.path === current ? "  ✓" : ""),
+          onClick: function () { if (b.path !== current) switchBackup(b.path); },
+        };
+      }));
+    });
+    return btn;
+  }
+
+  /* "open backup location" - reveal the currently-open snapshot folder in Explorer.
+     Only shown for backups opened from the library (which carry current_path). */
+  function buildOpenLocation() {
+    var man = BV.state.manifest || {};
+    var path = man.current_path || "";
+    if (!path) return null;
+    var btn = BV.el("button", { class: "btn ov-openloc", title: "open this backup's folder in Explorer" },
+      "📂 open location");
+    btn.addEventListener("click", function () {
+      if (BV.openLocation) BV.openLocation(path);
+      else BV.api.call("open_path", path).catch(function (e) { BV.toast(e.message); });
+    });
+    return btn;
+  }
+
   function render(view, toolbar) {
     view.innerHTML = "";
     toolbar.innerHTML = "";
@@ -253,6 +305,10 @@
       render(view, toolbar);
     });
     toolbar.appendChild(resetBtn);
+    var datePick = buildDatePicker();
+    if (datePick) toolbar.appendChild(datePick);
+    var openLoc = buildOpenLocation();
+    if (openLoc) toolbar.appendChild(openLoc);
 
     BV.api.call("get_overview").then(function (ov) {
       var id = ov.identity || {};

@@ -57,6 +57,14 @@ def get(key: str, default=None):
     return load().get(key, default)
 
 
+def library_root() -> str:
+    """The single folder that is BOTH the FTP backup destination and the scanned
+    library source. Back-compat: falls back to the legacy `backup_root`, then a
+    default under the home dir."""
+    s = load()
+    return s.get("library_root") or s.get("backup_root") or str(Path.home() / "RobotBackups")
+
+
 def set_value(key: str, value) -> None:
     # read-modify-write under one lock: js_api calls run on separate threads,
     # and concurrent set_value calls must not clobber each other's keys

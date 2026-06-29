@@ -898,6 +898,11 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .set-row { display: flex; align-items: center; justify-content: space-between; gap: 1.5rem; padding: 0.45rem 0.7rem; }
 .set-row .name { color: var(--text); font-size: 0.88rem; }
 .set-row .seg { flex: none; }
+.set-path { display: flex; align-items: center; gap: 0.5rem; min-width: 0; flex: 1; justify-content: flex-end; }
+.set-path-val {
+  font-size: 0.78rem; max-width: 22ch; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; direction: rtl; text-align: left;
+}
 
 /* ---- home / library (the main menu) ---- */
 .home-lib-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: 0.2rem 0 1.1rem; }
@@ -939,6 +944,15 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .lib-robot-meta { color: var(--sub); font-size: 0.78rem; margin-top: 0.1rem; }
 .lib-robot-meta .sep { margin: 0 0.35em; opacity: 0.5; }
 .lib-robot-name, .lib-robot-meta { user-select: text; }
+.lib-robot-note { margin-top: 0.15rem; }
+.lib-robot-note-head {
+  display: flex; align-items: center; gap: 0.3rem; overflow: hidden;
+  color: var(--sub); font-size: 0.78rem; cursor: pointer;
+}
+.lib-robot-note-head.solo { cursor: default; }
+.lib-robot-note-head .note-line { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-robot-note-head .bv-caret { flex: none; }
+.lib-robot-note-body { color: var(--sub); font-size: 0.78rem; white-space: pre-wrap; margin-top: 0.2rem; user-select: text; }
 .lib-robot-progress { flex: 1 1 16rem; min-width: 0; max-width: 24rem; }
 .lib-robot-progress:empty { display: none; }
 .lib-robot-progress .membar { margin-bottom: 0; }
@@ -947,6 +961,19 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .lib-robot-result.err { color: var(--error); }
 .lib-robot-acts { display: flex; gap: 0.25rem; flex: none; }
 .lib-robot-acts .btn { padding: 0.24rem 0.6rem; font-size: 0.8rem; }
+.lib-robot-more { font-weight: 700; line-height: 1; }
+.lib-robot.hidden-robot { opacity: 0.5; }
+
+/* danger button + destructive-confirm copy */
+button.btn.danger { color: var(--error); border-color: color-mix(in srgb, var(--error) 45%, var(--edge)); }
+button.btn.danger:hover { background: var(--error); color: var(--bg); filter: none; }
+button.btn.danger:disabled { opacity: 0.5; cursor: default; }
+.del-warn { font-size: 0.88rem; line-height: 1.45; padding: 0.3rem 0.1rem 0.55rem; color: var(--text); }
+.del-warn b { color: var(--error); }
+
+/* list of pending merges in the "merge duplicates" confirm */
+.merge-list { margin: 0 0 0.4rem; padding: 0 0 0 1.1rem; font-size: 0.84rem; color: var(--sub); }
+.merge-list li { margin: 0.12rem 0; }
 
 /* anchored context menu (right-click-style popup, e.g. + add robot) */
 .ctx-menu {
@@ -977,6 +1004,17 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 }
 .scan-row .lib-robot-name { font-weight: 600; }
 .scan-row .lib-robot-meta { font-size: 0.78rem; }
+
+/* discover: adapter picker + advanced toggle */
+.disc-adapter { width: 100%; text-align: left; justify-content: flex-start; }
+.disc-adapter::after { content: "▾"; margin-left: auto; opacity: 0.6; }
+.disc-advanced {
+  appearance: none; background: none; border: none; color: var(--sub);
+  font: inherit; font-size: 0.78rem; cursor: pointer; padding: 0; align-self: flex-start;
+}
+.disc-advanced:hover { color: var(--text); }
+.disc-adv-box { display: flex; flex-direction: column; gap: 0.5rem; }
+.disc-adv-box.hidden { display: none; }
 
 /* library add/edit form (modal) */
 .lib-form { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.3rem 0.6rem 0.2rem; }
