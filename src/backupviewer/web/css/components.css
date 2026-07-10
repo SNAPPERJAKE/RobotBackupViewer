@@ -962,6 +962,7 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
   margin-bottom: 0.45rem; display: flex; align-items: center; gap: 0.4rem;
 }
 .lib-plant-body { margin-left: 0.3rem; }
+.lib-empty-note { padding: 0.1rem 0 0.35rem 1.2rem; font-size: 0.85rem; }
 .lib-line { margin: 0 0 0.6rem 0.4rem; }
 .lib-line-h {
   font-size: 0.98rem; color: var(--accent); margin-bottom: 0.3rem;
@@ -1022,6 +1023,8 @@ button.btn.danger:disabled { opacity: 0.5; cursor: default; }
 /* list of pending merges in the "merge duplicates" confirm */
 .merge-list { margin: 0 0 0.4rem; padding: 0 0 0 1.1rem; font-size: 0.84rem; color: var(--sub); }
 .merge-list li { margin: 0.12rem 0; }
+.merge-list .merge-why { padding-left: 1.35rem; font-size: 0.78rem; }
+.merge-list .merge-row.weak .merge-why { color: var(--warn); }
 
 /* anchored context menu (right-click-style popup, e.g. + add robot) */
 .ctx-menu {

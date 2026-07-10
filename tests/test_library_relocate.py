@@ -37,6 +37,8 @@ def _snap(robot_dir, date, time, *, files=1, bytes_=10, taken=None,
 
 
 def _sidecar(robot_dir, rid, plant, line, robot, **extra):
+    """Deliberately LEGACY schema-1 (identity fields included) — the shape still
+    sitting in every field tree; the scan takes id + config and ignores the rest."""
     robot_dir.mkdir(parents=True, exist_ok=True)
     data = {"schema": 1, "id": rid, "plant": plant, "line": line, "robot": robot,
             "model": "", "f_number": "", "ips": [],
@@ -113,6 +115,9 @@ def test_relocate_records_alias_in_entry_and_sidecar(monkeypatch, tmp_path):
     assert ("P", "L", "R1") in keys                              # old identity remembered
     rj = json.loads((root / "P" / "L" / "R1NEW" / "robot.json").read_text(encoding="utf-8"))
     assert any(a["robot"] == "R1" for a in rj.get("aliases", []))   # and travels in the sidecar
+    # the rewrite also sheds the legacy identity fields: the folder IS the identity
+    assert rj["schema"] == 2
+    assert "plant" not in rj and "line" not in rj and "robot" not in rj
 
 
 def test_relocate_change_line_moves_under_new_line(monkeypatch, tmp_path):
@@ -433,6 +438,95 @@ def test_lib_resolve_names_classifies_clean_vs_collision(monkeypatch, tmp_path):
     assert items["rid-a"]["proposed"] == "ALPHA" and items["rid-a"]["action"] == "rename"
     assert items["rid-b"]["proposed"] == "BETA" and items["rid-b"]["action"] == "merge"
     assert items["rid-b"]["merge_into"] == "rid-c"
+    # name is the ONLY matching signal -> a maybe, previewed deselected
+    assert items["rid-b"]["confidence"] == "maybe"
+
+
+# -- evidence-based merge suggestions ---------------------------------------------
+
+def _ev_summary(hostname, fnum, ip):
+    """A SUMMARY.DG carrying the three cheap identity signals: 'F Number:' in
+    the first 400 bytes (manifest), $HOSTNAME + its own Host Table row (the
+    ethernet section parse)."""
+    return ("F Number: " + fnum + "\n"
+            '<H2><A NAME="1">Ethernet</A></H2><PRE>\n'
+            "$HOSTNAME : " + hostname + "\n"
+            "Host Table [1]:  " + hostname + "  addr: " + ip + "\n"
+            "</PRE>\n")
+
+
+def _ev_robot(root, plant, line, folder, hostname, fnum, ip, rid):
+    base = root / plant / line / folder
+    d = base / "2026_01_01" / "12_00_00"
+    d.mkdir(parents=True)
+    (d / "SUMMARY.DG").write_text(_ev_summary(hostname, fnum, ip), encoding="cp1252")
+    (d / "backup.json").write_text(json.dumps({
+        "robot": folder, "line": line, "plant": plant,
+        "taken": "2026-01-01T12:00:00", "files": 1, "bytes": 10}), encoding="utf-8")
+    _sidecar(base, rid, plant, line, folder, ips=[ip])
+    return base
+
+
+def test_merge_evidence_signals_and_veto():
+    from backupviewer.api import _merge_evidence
+    base = {"name": "RB080R01B01", "ips": {"192.0.2.84"}, "f_number": "F1", "counts": ((1, 2),)}
+    assert set(_merge_evidence(base, dict(base))) == {"name", "IP", "F-number", "master counts"}
+    # the factory-default hostname is NOT identity, even when both sides say it
+    a = {"name": "ROBOT", "ips": {"192.0.2.84"}, "f_number": "", "counts": None}
+    b = {"name": "ROBOT", "ips": {"192.0.2.99"}, "f_number": "", "counts": None}
+    assert _merge_evidence(a, b) == []
+    # F-numbers never change: a mismatch is a VETO no matter what else matches
+    c = dict(base)
+    d = dict(base, f_number="F2")
+    assert _merge_evidence(c, d) is None
+    # missing data is a missing signal, not a veto
+    assert _merge_evidence(a, {"name": "", "ips": {"192.0.2.84"}, "f_number": "F9",
+                               "counts": None}) == ["IP"]
+
+
+def test_resolve_default_hostname_merges_by_evidence_not_name(monkeypatch, tmp_path):
+    """The field bug: a robot whose backup reports the factory hostname ROBOT
+    must NOT merge into a robot literally named ROBOT — it must find its real
+    twin by IP + F-number evidence, and the ROBOT-named entry itself is a noop."""
+    from backupviewer.api import Api
+    _iso(monkeypatch, tmp_path)
+    root = _lib(tmp_path)
+    # the short ERBU folder: hostname never configured, same IP/F# as its twin
+    _ev_robot(root, "P", "RBB01", "080R01", "ROBOT", "F0080001", "192.0.2.84", "rid-short")
+    # the app-era full-name folder for the SAME physical robot
+    _ev_robot(root, "P", "RBB01", "RB080R01B01", "RB080R01B01", "F0080001", "192.0.2.84", "rid-full")
+    # a DIFFERENT robot whose folder is literally named ROBOT (default name)
+    _ev_robot(root, "P", "RBB01", "ROBOT", "ROBOT", "F0099999", "192.0.2.99", "rid-robot")
+    library.scan_library_root(root)
+
+    res = Api().lib_resolve_names(["rid-short", "rid-robot"])["data"]
+    items = {it["id"]: it for it in res["items"]}
+    short = items["rid-short"]
+    assert short["action"] == "merge"
+    assert short["merge_into"] == "rid-full"          # the twin, NOT the ROBOT entry
+    assert short["confidence"] == "sure"
+    assert {"IP", "F-number"} <= set(short["evidence"])
+    assert short["proposed"] == ""                    # ROBOT is never proposed as a name
+    # the ROBOT-named entry itself: nothing to do, and it says why
+    robot = items["rid-robot"]
+    assert robot["action"] == "noop"
+    assert "factory-default" in robot["reason"]
+
+
+def test_resolve_f_number_mismatch_vetoes_merge(monkeypatch, tmp_path):
+    """Same IP (recycled address) but different F-numbers: different robots -
+    no merge suggestion at all."""
+    from backupviewer.api import Api
+    _iso(monkeypatch, tmp_path)
+    root = _lib(tmp_path)
+    _ev_robot(root, "P", "RBB01", "080R01", "ROBOT", "F0080001", "192.0.2.84", "rid-short")
+    _ev_robot(root, "P", "RBB01", "RB080R01B01", "RB080R01B01", "F0555555", "192.0.2.84", "rid-full")
+    library.scan_library_root(root)
+
+    res = Api().lib_resolve_names(["rid-short"])["data"]
+    it = res["items"][0]
+    assert it["action"] == "noop"                     # veto: no rename, no merge
+    assert it["merge_into"] is None
 
 
 def test_lib_relocate_endpoint_returns_merge_action(monkeypatch, tmp_path):

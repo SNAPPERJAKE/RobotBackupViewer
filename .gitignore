@@ -12,5 +12,10 @@ dist/
 # tests skip gracefully without it; remove this line if you decide to track it.
 SampleBackup/
 
+# real building IP list (plant identifiers) - local reference only, NEVER commit
+robots.json
+robots.applied.txt
+Diag/
+
 # claude code local settings
 .claude/

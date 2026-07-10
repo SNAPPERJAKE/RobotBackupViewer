@@ -10,6 +10,7 @@ import functools
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -52,6 +53,39 @@ def _endpoint(fn):
             log.exception("api %s failed", fn.__name__)
             return {"ok": False, "error": {"code": "INTERNAL", "message": f"{type(e).__name__}: {e}"}}
     return wrapper
+
+
+# -- merge-identity evidence ------------------------------------------------------
+# What confirms two library entries are the SAME physical robot (Cody's field
+# checklist): hostname (sometimes changes), IP (sometimes changes), F-number
+# (never changes), master counts (rarely change; equal counts = same arm).
+# 2+ matches = a match; exactly 1 = maybe. FANUC's factory hostname carries no
+# identity, and full names follow the <LL><op>R<nn>B<bb> plant convention.
+
+_DEFAULT_HOSTNAMES = {"ROBOT"}
+_FULL_NAME_RE = re.compile(r"^[A-Z]{2}\d{2,4}R\d{2}B\d{2}$", re.IGNORECASE)
+
+
+def _merge_evidence(a: dict, b: dict) -> list | None:
+    """The identity signals two robot fingerprints share (see
+    Api._robot_fingerprint). Returns the matched signal names — or None when
+    the F-numbers actively DISAGREE: an F-number never changes, so a mismatch
+    means different robots no matter what else lines up (a veto, not merely
+    a missing signal)."""
+    ev = []
+    an, bn = (a.get("name") or "").upper(), (b.get("name") or "").upper()
+    if an and an == bn and an not in _DEFAULT_HOSTNAMES:
+        ev.append("name")
+    if (a.get("ips") or set()) & (b.get("ips") or set()):
+        ev.append("IP")
+    af, bf = (a.get("f_number") or "").upper(), (b.get("f_number") or "").upper()
+    if af and bf:
+        if af != bf:
+            return None
+        ev.append("F-number")
+    if a.get("counts") and b.get("counts") and a["counts"] == b["counts"]:
+        ev.append("master counts")
+    return ev
 
 
 def _watch_step(last: str | None, pending: bool, sig: str) -> tuple[str, bool, bool]:
@@ -135,7 +169,11 @@ class Api:
                     continue
                 sig = library.scan_signature(settings.library_root())
                 last, pending, fire = _watch_step(last, pending, sig)
-                if fire:
+                # fire only when the tree differs from what the UI last saw:
+                # an app-initiated change (rename/merge/backup) refreshes the
+                # library itself, and re-notifying it produces a second,
+                # jarring repaint a few seconds after the first
+                if fire and sig != self._lib_sig:
                     self._notify_library_changed()
             except Exception:  # noqa: BLE001 - the watcher must never die
                 log.exception("library watcher tick failed")
@@ -1249,7 +1287,7 @@ class Api:
             owner = library._read_json(sidecar)
             if owner.get("id") and owner["id"] != e.get("id"):
                 log.warning("not adopting %s: folder already belongs to %r",
-                            d, owner.get("robot", ""))
+                            d, owner.get("robot", "") or d.name)
                 return e
         try:
             d.mkdir(parents=True, exist_ok=True)
@@ -1322,63 +1360,151 @@ class Api:
     # on-disk tree WITH the entry (see library.py); these endpoints just preview,
     # release any open session over the affected tree, and apply.
 
+    def _robot_fingerprint(self, e: dict) -> dict:
+        """Merge-confirmation evidence for one robot, read from its latest
+        backup: reported hostname, F-number, its OWN IP (the host-table entry
+        matching the hostname — not the whole table, which lists servers and
+        neighbours too), and master counts — plus the entry's recorded IPs.
+        The folder name is deliberately NOT the name signal here: fingerprints
+        exist exactly because folder names lie. Best-effort — a missing or
+        sparse backup just yields fewer signals."""
+        fp = {"name": "", "ips": set(e.get("ips") or []),
+              "f_number": (e.get("f_number") or ""), "counts": None, "drafted": False}
+        lp = e.get("latest_path") or ""
+        if not lp or not Path(lp).is_dir():
+            return fp
+        try:
+            s = BackupSession(Path(lp))
+            m = s.manifest()
+            ident, hosts = {}, []
+            try:
+                ov = self._build_summary(s)
+                ident = ov.get("identity") or {}
+                hosts = (ov.get("ethernet") or {}).get("hosts", []) or []
+            except ApiError:
+                pass
+            fp["drafted"] = True
+            fp["name"] = (m["robot_name"] or ident.get("robot_name", "") or "").strip()
+            fp["f_number"] = m["f_number"] or ident.get("f_number", "") or fp["f_number"]
+            own = next((h.get("addr") for h in hosts
+                        if (h.get("name") or "").upper() == fp["name"].upper() and h.get("addr")),
+                       None) or next((h.get("addr") for h in hosts
+                                      if h.get("slot") == 1 and h.get("addr")), None)
+            if own:
+                fp["ips"].add(own)
+            try:
+                groups = self._build_mastering(s)
+                counts = tuple(tuple(g.get("master_counts") or ()) for g in groups)
+                if any(any(c) for c in counts):        # all-zero = unmastered = no signal
+                    fp["counts"] = counts
+            except ApiError:
+                pass
+        except Exception:  # noqa: BLE001 - a sparse/locked backup just yields fewer signals
+            log.exception("fingerprint failed for %r", e.get("robot", ""))
+        return fp
+
     @_endpoint
     def lib_resolve_names(self, ids: list):
-        """Preview 'fix names from backups' for the given robots: read each robot's
-        REAL name from its latest backup and classify the change as noop / rename
-        (clean) / merge (the proposed name+line collides with another robot - in the
-        library OR within this very selection). Pure preview; the UI applies on
-        confirm. Returns {items:[{id,current,proposed,plant,line,action,merge_into,
-        reason}]}."""
+        """Preview 'fix names from backups' for the given robots: read each
+        robot's REAL name from its latest backup and classify the change as
+        noop / rename / merge. A merge is suggested on EVIDENCE that two
+        entries are the same physical robot — hostname, shared IP, F-number,
+        master counts (see _merge_evidence): 2+ signals = confidence "sure",
+        1 = "maybe" (the UI previews maybes deselected). The FANUC factory
+        hostname ("ROBOT") identifies nothing: it is never proposed as a name
+        and never counts as a name match — the field bug was three robots
+        whose backups all said ROBOT getting merged into a robot literally
+        named ROBOT on name alone. Merge targets are line-scoped (never
+        cross-line) and prefer the convention-named / richer-history side.
+        Pure preview; the UI applies on confirm. Returns {items:[{id, current,
+        proposed, plant, line, action, merge_into, target, evidence,
+        confidence, reason}]}."""
         ids = list(ids or [])
         data = library.list_robots()
         by_id = {e["id"]: e for e in data["robots"]}
+        fps: dict = {}
 
-        proposals: dict = {}
+        def fp_of(e: dict) -> dict:
+            if e["id"] not in fps:
+                fps[e["id"]] = self._robot_fingerprint(e)
+            return fps[e["id"]]
+
+        def better_target(c: dict, e: dict) -> bool:
+            """Should c survive a merge of the pair (c, e)? The convention-
+            named side wins, then the richer history, then stable id order."""
+            cf = bool(_FULL_NAME_RE.match(c.get("robot") or ""))
+            ef = bool(_FULL_NAME_RE.match(e.get("robot") or ""))
+            if cf != ef:
+                return cf
+            cb, eb = len(c.get("backups") or []), len(e.get("backups") or [])
+            if cb != eb:
+                return cb > eb
+            return (c.get("id") or "") < (e.get("id") or "")
+
+        items, claimed, paired = [], {}, set()
         for rid in ids:
             e = by_id.get(rid)
             if e is None:
                 continue
-            proposed = e.get("robot") or ""
-            lp = e.get("latest_path") or ""
-            if lp and Path(lp).is_dir():
-                try:
-                    d = self._draft_from_session(BackupSession(Path(lp)), lp)
-                    proposed = (d.get("robot") or "").strip() or proposed
-                except Exception:  # noqa: BLE001 - a sparse/locked backup just yields no change
-                    pass
-            proposals[rid] = proposed
+            cur, line = e.get("robot", ""), e.get("line", "")
+            fp = fp_of(e)
+            host = fp["name"] or ""
+            default_host = host.upper() in _DEFAULT_HOSTNAMES
+            proposed = "" if default_host else host
 
-        def _existing_collision(rid, name, line):
-            nm, ln = name.upper(), (line or "").upper()
-            for e in data["robots"]:
-                if e["id"] == rid:
+            # strongest same-line merge candidate, cheap prefilter first
+            best, best_ev = None, []
+            nm = cur.upper()
+            for c in data["robots"]:
+                if c["id"] == rid or (c.get("line", "") or "").upper() != (line or "").upper():
                     continue
-                if e.get("robot", "").upper() == nm and (e.get("line", "") or "").upper() == ln:
-                    return e["id"]
-            return None
+                cn = (c.get("robot") or "").upper()
+                pre = (bool(proposed) and cn == proposed.upper()) \
+                    or bool(set(c.get("ips") or []) & fp["ips"]) \
+                    or bool((c.get("f_number") or "") and fp["f_number"]
+                            and c["f_number"].upper() == fp["f_number"].upper()) \
+                    or (len(nm) >= 5 and (nm in cn or cn in nm))
+                if not pre:
+                    continue
+                ev = _merge_evidence(fp, fp_of(c))
+                if ev is None:
+                    continue                   # F-numbers disagree: NOT the same robot
+                if "name" not in ev and proposed and cn == proposed.upper():
+                    ev = ev + ["name"]         # proposed name == candidate's FOLDER name
+                if len(ev) > len(best_ev):
+                    best, best_ev = c, ev
 
-        items, seen_in_sel = [], {}
-        for rid in ids:
-            e = by_id.get(rid)
-            if e is None:
-                continue
-            cur, proposed, line = e.get("robot", ""), proposals[rid], e.get("line", "")
-            action, merge_into, reason = "rename", None, ""
-            if not proposed or proposed.upper() == cur.upper():
-                action, reason = "noop", "name already matches the backup"
-            else:
-                col = _existing_collision(rid, proposed, line)
+            action, merge_into, target, confidence, reason = "noop", None, "", "", ""
+            pair = frozenset((rid, best["id"])) if best is not None else None
+            name_coll = bool(proposed) and best is not None \
+                and (best.get("robot") or "").upper() == proposed.upper()
+            if best is not None and pair not in paired and (name_coll or better_target(best, e)):
+                # a name collision forces the direction (renaming onto that name
+                # would merge into its owner at apply time anyway)
+                action, merge_into, target = "merge", best["id"], best.get("robot", "")
+                confidence = "sure" if len(best_ev) >= 2 else "maybe"
+                reason = " + ".join(best_ev) + (" match" if len(best_ev) > 1 else " matches")
+                paired.add(pair)
+            elif proposed and proposed.upper() != nm:
                 key = (proposed.upper(), (line or "").upper())
-                if col is not None:
-                    action, merge_into, reason = "merge", col, "another robot already has this name"
-                elif key in seen_in_sel:
-                    action, merge_into, reason = "merge", seen_in_sel[key], "duplicate within the selection"
+                if key in claimed:
+                    action, merge_into = "merge", claimed[key]
+                    target = (by_id.get(claimed[key]) or {}).get("robot", "") or proposed
+                    confidence, reason = "maybe", "duplicate within the selection"
                 else:
-                    seen_in_sel[key] = rid
+                    claimed[key] = rid
+                    action = "rename"
+            elif not fp["drafted"]:
+                reason = "no backup to read a name from"
+            elif default_host:
+                reason = f"backup reports the factory-default name ({host})"
+            else:
+                reason = "name already matches the backup"
             items.append({"id": rid, "current": cur, "proposed": proposed,
                           "plant": e.get("plant", ""), "line": line,
-                          "action": action, "merge_into": merge_into, "reason": reason})
+                          "action": action, "merge_into": merge_into, "target": target,
+                          "evidence": best_ev if action == "merge" and merge_into == (best or {}).get("id") else [],
+                          "confidence": confidence, "reason": reason})
         return {"items": items}
 
     @_endpoint

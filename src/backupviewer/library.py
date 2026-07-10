@@ -53,6 +53,7 @@ def load() -> dict:
     data.setdefault("version", VERSION)
     data.setdefault("roots", [])
     data.setdefault("robots", [])
+    data.setdefault("empty_folders", {"plants": [], "lines": []})
     return data
 
 
@@ -99,12 +100,15 @@ def _normalize(entry: dict) -> dict:
 
 
 def _find_match(data: dict, match: dict):
-    """The existing entry a backup belongs to: same robot name, and same line
-    when a line is given (a robot name can repeat across lines). Falls back to an
-    entry's recorded aliases so a stray folder under a robot's *old* name re-merges
-    into it after a rename/merge instead of spawning a duplicate."""
+    """The existing entry a backup belongs to: same robot name, and same
+    line/plant when given (a robot name can repeat across lines, and a line
+    name across plants — ERBU-style short names like 010R01 repeat in EVERY
+    line). Falls back to an entry's recorded aliases so a stray folder under a
+    robot's *old* name re-merges into it after a rename/merge instead of
+    spawning a duplicate."""
     rname = (match.get("robot") or match.get("robot_name") or "").upper()
     line = (match.get("line") or "").upper()
+    plant = (match.get("plant") or "").upper()
     if not rname:
         return None
     for e in data["robots"]:                                   # tier 1: current identity
@@ -112,12 +116,20 @@ def _find_match(data: dict, match: dict):
             continue
         if line and e.get("line", "").upper() != line:
             continue
+        # plant is strict only when BOTH sides record one: a pre-plant-era
+        # entry (blank plant) is still the same robot when it gains a plant
+        eplant = e.get("plant", "").upper()
+        if plant and eplant and eplant != plant:
+            continue
         return e
     for e in data["robots"]:                                   # tier 2: a recorded alias
         for a in e.get("aliases", []) or []:
             if (a.get("robot", "") or "").upper() != rname:
                 continue
             if line and (a.get("line", "") or "").upper() != line:
+                continue
+            aplant = (a.get("plant", "") or "").upper()
+            if plant and aplant and aplant != plant:
                 continue
             return e
     return None
@@ -278,15 +290,20 @@ def register_backup(match: dict, backup: dict, *, latest_path: str = "") -> dict
         return e
 
 
-# -- robot.json sidecar (portable identity) -------------------------------------
+# -- robot.json sidecar (portable id + config) -----------------------------------
 # The library.json index is local + per-machine. To let a copied folder tree
 # carry its robots to another PC, we drop a robot.json at each robot folder
-# holding identity + config (NEVER a password). The library entry's id is reused
-# so a later scan re-matches the same robot. notes.txt / backup.json (written by
-# the backup engine) carry the per-snapshot note + stats alongside.
+# holding the stable id + config (NEVER a password — and NEVER identity: the
+# folder's own location and name say which plant/line/robot this is, and storing
+# that here too would only create a second source of truth that goes stale the
+# moment someone moves the folder in Explorer). The id is what makes an Explorer
+# move a MOVE instead of a delete+add. notes.txt / backup.json (written by the
+# backup engine) carry the per-snapshot note + stats alongside.
 
 SIDECAR = "robot.json"
-_DATE_RE = re.compile(r"^\d{4}_\d{2}_\d{2}$")     # YYYY_MM_DD  (dated snapshot)
+# YYYY_MM_DD dated snapshot; the ERBU-era tools wrote 2-digit years (YY_MM_DD),
+# and those imported snapshots are the same shape - accept both
+_DATE_RE = re.compile(r"^(?:\d{4}|\d{2})_\d{2}_\d{2}$")
 _TIME_RE = re.compile(r"^\d{2}_\d{2}_\d{2}$")     # HH_MM_SS
 
 
@@ -320,11 +337,12 @@ def _robot_folder(e: dict) -> Path | None:
 
 
 def _write_robot_sidecar(e: dict, folder: Path) -> None:
-    """Write robot.json for `e` into `folder`. Best-effort; no password."""
+    """Write robot.json for `e` into `folder`. Best-effort; no password. Schema 2
+    carries NO plant/line/robot — the folder's location/name is that truth;
+    legacy schema-1 identity fields are shed whenever a sidecar is rewritten."""
     ftp = e.get("ftp") or {}
     data = {
-        "schema": 1, "id": e.get("id", ""),
-        "plant": e.get("plant", ""), "line": e.get("line", ""), "robot": e.get("robot", ""),
+        "schema": 2, "id": e.get("id", ""),
         "model": e.get("model", ""), "f_number": e.get("f_number", ""),
         "ips": list(e.get("ips", []) or []),
         "ftp": {"user": ftp.get("user", ""), "passive": ftp.get("passive", True)},
@@ -360,7 +378,10 @@ def _snap_taken(snap: Path, meta: dict) -> str:
     if meta.get("taken"):
         return meta["taken"]
     if _is_dated(snap):
-        return snap.parent.name.replace("_", "-") + "T" + snap.name.replace("_", ":")
+        date = snap.parent.name
+        if len(date) == 8:                    # ERBU-era 2-digit year (YY_MM_DD)
+            date = "20" + date                # -> ISO-comparable with app snapshots
+        return date.replace("_", "-") + "T" + snap.name.replace("_", ":")
     try:
         return _dt.datetime.fromtimestamp(snap.stat().st_mtime).isoformat(timespec="seconds")
     except OSError:
@@ -444,12 +465,13 @@ def scan_signature(root: str | Path) -> str:
     return h.hexdigest()
 
 
-def _scan_disk(root: Path, stats: dict | None = None) -> dict:
-    """Walk the tree for backup snapshots and group them by robot. Returns
-    {key: disk_entry}, each with backups[] newest-first + identity from sidecars
-    (robot.json / backup.json) falling back to the path. Also surfaces robot
-    folders that hold a robot.json but NO snapshots yet (a discovery-added robot
-    awaiting its first backup is a real robot). Read-only."""
+def _scan_disk(root: Path, stats: dict | None = None) -> tuple:
+    """Walk the tree for backup snapshots and group them by robot. Identity is
+    the folder's LOCATION (<root>/[plant/]<line>/<robot> — files are law);
+    sidecars supply id + config only. Also surfaces the folder skeleton: robot
+    folders with no snapshots yet, empty plant folders at root, empty line
+    folders inside plants. Read-only. Returns ({key: disk_entry} with backups[]
+    newest-first, {"plants": [...], "lines": [{plant, line}]})."""
     from . import session  # local import: avoids any import-time coupling
 
     groups: dict = {}
@@ -459,11 +481,12 @@ def _scan_disk(root: Path, stats: dict | None = None) -> dict:
         meta = _read_json(snap / "backup.json")
         robot_dir = snap.parent.parent if _is_dated(snap) else snap
         rjson = _read_json(robot_dir / SIDECAR)
-        robot = rjson.get("robot") or meta.get("robot") or ""
-        line = rjson.get("line") or meta.get("line") or ""
-        plant = rjson.get("plant") or meta.get("plant") or ""
-        if not robot:
-            plant, line, robot = _path_identity(robot_dir, root)
+        # WHERE the folder sits is the identity — files are law. The sidecar
+        # supplies id + config (ips/ftp/notes) and nothing else: any plant/
+        # line/robot a legacy schema-1 sidecar (or a copied-along backup.json)
+        # still claims is ignored outright — trusting it teleported robots out
+        # of the folder the user can SEE them in.
+        plant, line, robot = _path_identity(robot_dir, root)
         if not robot:
             continue
         rid = rjson.get("id") or ""
@@ -490,42 +513,79 @@ def _scan_disk(root: Path, stats: dict | None = None) -> dict:
             g["_absorbed"] = g.get("_absorbed", 0) + 1
         g["_snaps"].append(_backup_record(snap, meta))
 
-    # second pass: robot folders with a robot.json but no snapshots yet. Bounded
-    # walk that never descends into dated/mirror/staging dirs or known robots.
+    # second pass: the folder SKELETON. The tree the user built in Explorer IS
+    # the library: a folder at robot depth is a robot even with no backups yet
+    # (an imported ERBU skeleton / discovery-added robot awaiting its first
+    # backup is a real robot), an empty folder at root is a plant, an empty
+    # folder inside a plant is a line. The PRESENCE of a robot.json anywhere
+    # marks a robot decisively (legacy layouts park robots at other depths) —
+    # presence, not contents: a schema-2 sidecar carries no identity to key on.
+    # Never descends into dated/mirror/staging dirs or folders already grouped
+    # as robots.
     seen_dirs = {Path(g["history_root"]) for g in groups.values()}
-    stack = [(root, 0)]
-    while stack:
-        d, depth = stack.pop()
+    empty_plants: list = []
+    empty_lines: list = []
+
+    def _skip_name(n: str) -> bool:
+        return (n.endswith((".__part", ".__tmp")) or n.lower() == "latest"
+                or bool(_DATE_RE.match(n)) or bool(_TIME_RE.match(n)))
+
+    def _dir_children(d: Path) -> list:
         try:
-            children = [p for p in d.iterdir() if p.is_dir()]
+            return [p for p in d.iterdir() if p.is_dir() and not _skip_name(p.name)]
         except OSError:
+            return []
+
+    def _add_skeleton_robot(c: Path, rj: dict) -> None:
+        plant, line, robot = _path_identity(c, root)
+        if not robot:
+            return
+        rid = rj.get("id") or ""
+        key = rid or (plant.upper(), line.upper(), robot.upper())
+        if key in groups:
+            return
+        ftp = rj.get("ftp") if isinstance(rj.get("ftp"), dict) else {}
+        groups[key] = {
+            "id": rid, "plant": plant, "line": line, "robot": robot,
+            "model": rj.get("model", ""), "f_number": rj.get("f_number", "") or "",
+            "ips": list(rj.get("ips", []) or []),
+            "ftp": {"user": ftp.get("user", ""), "passive": ftp.get("passive", True)},
+            "notes": rj.get("notes", "") or "",
+            "aliases": list(rj.get("aliases", []) or []),
+            "history_root": str(c), "_snaps": [],
+        }
+
+    def _sidecar(d: Path) -> dict | None:
+        """The folder's robot.json ({} when unreadable) — None when the file is
+        absent. Presence alone marks a robot folder; contents never carry
+        identity."""
+        return _read_json(d / SIDECAR) if (d / SIDECAR).is_file() else None
+
+    for p1 in _dir_children(root):                     # tier 1: plants
+        if p1 in seen_dirs:
+            continue                                   # a robot folder sitting at root
+        rj = _sidecar(p1)
+        if rj is not None:
+            _add_skeleton_robot(p1, rj)
             continue
-        for c in children:
-            n = c.name
-            if n.endswith((".__part", ".__tmp")) or n.lower() == "latest" or _DATE_RE.match(n):
+        line_dirs = _dir_children(p1)
+        if not line_dirs:
+            empty_plants.append(p1.name)
+            continue
+        for p2 in line_dirs:                           # tier 2: lines
+            if p2 in seen_dirs:
+                continue                               # legacy <root>/<line>/<robot>
+            rj = _sidecar(p2)
+            if rj is not None:
+                _add_skeleton_robot(p2, rj)
                 continue
-            if c in seen_dirs:
-                continue                               # already grouped via its snapshots
-            rj = _read_json(c / SIDECAR) if (c / SIDECAR).is_file() else {}
-            if rj.get("robot"):
-                rid = rj.get("id") or ""
-                key = rid or ((rj.get("plant") or "").upper(), (rj.get("line") or "").upper(),
-                              (rj.get("robot") or "").upper())
-                if key not in groups:
-                    ftp = rj.get("ftp") if isinstance(rj.get("ftp"), dict) else {}
-                    groups[key] = {
-                        "id": rid, "plant": rj.get("plant", ""), "line": rj.get("line", ""),
-                        "robot": rj.get("robot", ""), "model": rj.get("model", ""),
-                        "f_number": rj.get("f_number", "") or "",
-                        "ips": list(rj.get("ips", []) or []),
-                        "ftp": {"user": ftp.get("user", ""), "passive": ftp.get("passive", True)},
-                        "notes": rj.get("notes", "") or "",
-                        "aliases": list(rj.get("aliases", []) or []),
-                        "history_root": str(c), "_snaps": [],
-                    }
-                continue                               # a robot folder — stop descending
-            if depth + 1 < 5:
-                stack.append((c, depth + 1))
+            robot_dirs = _dir_children(p2)
+            if not robot_dirs:
+                empty_lines.append({"plant": p1.name, "line": p2.name})
+                continue
+            for p3 in robot_dirs:                      # tier 3: robots (even empty)
+                if p3 not in seen_dirs:
+                    _add_skeleton_robot(p3, _sidecar(p3) or {})
 
     out: dict = {}
     for key, g in groups.items():
@@ -534,19 +594,28 @@ def _scan_disk(root: Path, stats: dict | None = None) -> dict:
         g["latest_path"] = snaps[0]["path"] if snaps else ""
         g["last_backup"] = snaps[0]["taken"] if snaps else ""
         out[key] = g
-    return out
+    return out, {"plants": sorted(empty_plants),
+                 "lines": sorted(empty_lines, key=lambda x: (x["plant"], x["line"]))}
 
 
 def _apply_disk(e: dict, disk: dict) -> None:
-    """Fold a disk-scanned robot onto an overlay entry. Disk is authoritative for
-    what exists on disk (backups/latest_path/history_root); the overlay (user
-    edits) wins for identity + config, filled only where empty."""
+    """Fold a disk-scanned robot onto an overlay entry. Disk is authoritative
+    for what exists on disk — backups/latest_path/history_root AND identity:
+    the folder's location says which plant/line the robot is in and its folder
+    name IS its name (files are law; renames/moves in the app go through
+    relocate, which moves the folder, so the two never disagree). The entry's
+    old identity is remembered as an alias. The overlay (user edits) wins for
+    config, filled only where empty."""
     e["backups"] = disk["backups"]
     e["latest_path"] = disk["latest_path"]
     e["history_root"] = disk["history_root"]
     if disk.get("last_backup"):
         e["last_backup"] = disk["last_backup"]
-    for k in ("plant", "line", "model", "f_number", "notes"):
+    old = (e.get("plant", ""), e.get("line", ""), e.get("robot", ""))
+    e["plant"], e["line"], e["robot"] = disk["plant"], disk["line"], disk["robot"]
+    if old[2]:
+        _add_alias(e, *old)                            # no-op when identity unchanged
+    for k in ("model", "f_number", "notes"):
         if not e.get(k) and disk.get(k):
             e[k] = disk[k]
     ips = e.get("ips", []) or []
@@ -589,16 +658,24 @@ def _merge_scan(data: dict, scanned: dict, absorbed: list | None = None) -> set:
     entry from a SECOND folder (alias re-match) — the scan's absorption report."""
     by_id = {e["id"]: e for e in data["robots"] if e.get("id")}
     applied: set = set()                        # entries already filled from disk this scan
-    for disk in scanned.values():
+    # An entry's HOME folder (the one carrying its sidecar id) must apply
+    # before any alias-matched stray: a leftover copy under the robot's OLD
+    # name can sort ahead of the renamed folder, and whichever folder applies
+    # first sets the identity — a stray must fold in as history, not rename
+    # the robot back.
+    ordered = sorted(scanned.values(),
+                     key=lambda d: 0 if d.get("id") and d["id"] in by_id else 1)
+    for disk in ordered:
         e = None
         did = disk.get("id")
         if did and did in by_id:
-            cand = by_id[did]
-            # trust a carried id only if the name reconciles (guards a copied id)
-            if not cand.get("robot") or cand["robot"].upper() == (disk.get("robot") or "").upper():
-                e = cand
+            # the sidecar travels WITH its folder, so its id is the robot even
+            # after an Explorer rename/move — identity refreshes from the path
+            # in _apply_disk (a same-id COPY was already absorbed in _scan_disk)
+            e = by_id[did]
         if e is None:
-            e = _find_match(data, {"robot": disk.get("robot"), "line": disk.get("line")})
+            e = _find_match(data, {"robot": disk.get("robot"), "line": disk.get("line"),
+                                   "plant": disk.get("plant")})
         if e is None:
             ne = _normalize(disk)
             data["robots"].append(ne)
@@ -631,7 +708,8 @@ def scan_library_root(root: str | Path) -> dict:
         absorbed_raw: list = []
         if root.is_dir():
             stats: dict = {}
-            scanned = _scan_disk(root, stats)
+            scanned, empty_folders = _scan_disk(root, stats)
+            data["empty_folders"] = empty_folders
             # snapshots folded into a robot by IDENTITY while living in another
             # folder (a copied tree carrying its robot.json) — pull the counts
             # out before the groups become entries, so they never hit the cache

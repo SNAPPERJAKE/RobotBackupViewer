@@ -17,7 +17,9 @@ def _iso(monkeypatch, tmp_path):
 def _make_robot(root, plant, line, robot, snaps, *, rid="", notes="", ips=None, mirror=False):
     """snaps = [(date, time, mtime)]. Writes SUMMARY.DG + backup.json + notes.txt
     per snapshot, a robot.json at the robot folder, and optionally a Latest/
-    mirror whose backup.json claims to be the newest (to prove it's excluded)."""
+    mirror whose backup.json claims to be the newest (to prove it's excluded).
+    The sidecar is deliberately LEGACY schema-1 (identity fields included) —
+    the shape still sitting in every field tree, which the scan must ignore."""
     base = root / plant / line / robot
     for i, (date, time, ts) in enumerate(snaps):
         d = base / date / time
@@ -67,7 +69,11 @@ def test_scan_builds_history_newest_first_excluding_mirror(monkeypatch, tmp_path
     assert "Latest" not in e["latest_path"]    # never the mirror
 
 
-def test_rescan_preserves_overlay_edits(monkeypatch, tmp_path):
+def test_rescan_preserves_config_but_identity_follows_disk(monkeypatch, tmp_path):
+    """Files are law: the folder's location/name IS the identity, so a rescan
+    reverts a registry-only rename (real renames go through relocate_robot,
+    which moves the folder). User CONFIG (notes, hidden) survives, and the
+    registry-only name is kept as an alias."""
     _iso(monkeypatch, tmp_path)
     root = tmp_path / "lib"
     _make_robot(root, "P", "L", "R1", [("2026_01_01", "12_00_00", 1_600_000_000)], rid="rid-1")
@@ -76,13 +82,14 @@ def test_rescan_preserves_overlay_edits(monkeypatch, tmp_path):
     e = library.list_robots()["robots"][0]
     library.update_robot(e["id"], {"robot": "R1-RENAMED", "notes": "field note", "hidden": True})
 
-    data = library.scan_library_root(root)     # a second scan must not clobber edits
+    data = library.scan_library_root(root)
     assert len(data["robots"]) == 1
     e2 = data["robots"][0]
-    assert e2["robot"] == "R1-RENAMED"         # overlay/user wins for identity
+    assert e2["robot"] == "R1"                 # the folder name wins
+    assert {(a["robot"]) for a in e2["aliases"]} >= {"R1-RENAMED"}
     assert e2["notes"] == "field note"
     assert e2["hidden"] is True
-    assert len(e2["backups"]) == 1             # disk still authoritative for history
+    assert len(e2["backups"]) == 1             # disk authoritative for history
 
 
 def test_vanished_folder_dropped_on_rescan(monkeypatch, tmp_path):
@@ -153,6 +160,115 @@ def test_sidecar_only_folder_discovered_as_robot(monkeypatch, tmp_path):
     assert e["stale"] is False                 # 'no backup yet', not 'missing'
 
 
+def test_stale_sidecar_identity_loses_to_folder_location(monkeypatch, tmp_path):
+    """A copied-in tree can carry legacy robot.json / backup.json files claiming
+    the plant/line they lived in years ago. The folder's LOCATION is the identity
+    (files are law) - the sidecar supplies config (id/IPs) ONLY and its stale
+    claim is ignored outright (not even kept as an alias: a claim is not a
+    recorded rename). The robot displays where its folder actually sits (the
+    'my robots scattered outside the plant I copied them into' field bug)."""
+    _iso(monkeypatch, tmp_path)
+    root = tmp_path / "lib"
+    # folder lives at NewPlant/L9/R1; sidecar+backup.json claim OldPlant/L1
+    _make_robot(root, "NewPlant", "L9", "R1",
+                [("2026_01_01", "12_00_00", 1_600_000_000)], rid="rid-1")
+    d = root / "NewPlant" / "L9" / "R1"
+    (d / "robot.json").write_text(json.dumps({
+        "schema": 1, "id": "rid-1", "plant": "OldPlant", "line": "L1", "robot": "R1",
+        "ips": ["10.1.1.5"], "ftp": {"user": "", "passive": True}, "notes": ""}),
+        encoding="utf-8")
+    bj = d / "2026_01_01" / "12_00_00" / "backup.json"
+    meta = json.loads(bj.read_text(encoding="utf-8"))
+    meta.update({"plant": "OldPlant", "line": "L1"})
+    bj.write_text(json.dumps(meta), encoding="utf-8")
+
+    data = library.scan_library_root(root)
+    assert len(data["robots"]) == 1
+    e = data["robots"][0]
+    assert (e["plant"], e["line"], e["robot"]) == ("NewPlant", "L9", "R1")
+    assert e["id"] == "rid-1"                  # sidecar still supplies id + config
+    assert e["ips"] == ["10.1.1.5"]
+    # the stale claim is NOT imported as an alias — it never becomes match bait
+    assert ("OldPlant", "L1") not in {(a["plant"], a["line"]) for a in e["aliases"]}
+
+
+def test_schema2_sidecar_presence_marks_robot_at_any_depth(monkeypatch, tmp_path):
+    """A schema-2 sidecar has NO identity fields, so the skeleton scan keys on
+    the FILE's presence: a folder carrying robot.json is a robot wherever it
+    sits — normal depth, and the legacy layouts that park robots at line depth
+    (<root>/<line>/<robot>) or even at the root. Identity comes from the path."""
+    _iso(monkeypatch, tmp_path)
+    root = tmp_path / "lib"
+    for folder in [root / "P" / "L" / "FRESH2",       # normal plant/line/robot depth
+                   root / "LEGACYLINE" / "OLDBOT",    # legacy <root>/<line>/<robot>
+                   root / "ROOTBOT"]:                 # parked at the root itself
+        folder.mkdir(parents=True)
+        (folder / "robot.json").write_text(json.dumps({
+            "schema": 2, "id": "rid-" + folder.name.lower(), "ips": ["10.2.2.2"],
+            "ftp": {"user": "", "passive": True}, "notes": ""}), encoding="utf-8")
+
+    data = library.scan_library_root(root)
+    by = {e["robot"]: e for e in data["robots"]}
+    assert set(by) == {"FRESH2", "OLDBOT", "ROOTBOT"}
+    assert (by["FRESH2"]["plant"], by["FRESH2"]["line"]) == ("P", "L")
+    assert (by["OLDBOT"]["plant"], by["OLDBOT"]["line"]) == ("", "LEGACYLINE")
+    assert (by["ROOTBOT"]["plant"], by["ROOTBOT"]["line"]) == ("", "")
+    assert by["FRESH2"]["id"] == "rid-fresh2"          # id + config still carried
+    assert by["FRESH2"]["ips"] == ["10.2.2.2"]
+    # none of them misread as plant/line structure
+    assert data["empty_folders"]["plants"] == []
+    assert data["empty_folders"]["lines"] == []
+
+
+def test_empty_folder_skeleton_surfaces(monkeypatch, tmp_path):
+    """The tree the user builds in Explorer IS the library: an empty folder at
+    root is a plant, an empty folder inside a plant is a line, and a folder at
+    robot depth is a robot with no backups yet - even with nothing inside."""
+    _iso(monkeypatch, tmp_path)
+    root = tmp_path / "lib"
+    _make_robot(root, "P", "L", "R1", [("2026_01_01", "12_00_00", 1_600_000_000)], rid="rid-1")
+    (root / "EmptyPlant").mkdir(parents=True)
+    (root / "P" / "EmptyLine").mkdir()
+    (root / "P" / "L" / "NEWBOT").mkdir()      # empty robot folder, no sidecar
+
+    data = library.scan_library_root(root)
+    by = {e["robot"]: e for e in data["robots"]}
+    assert set(by) == {"R1", "NEWBOT"}
+    nb = by["NEWBOT"]
+    assert (nb["plant"], nb["line"]) == ("P", "L")
+    assert nb["backups"] == [] and nb["latest_path"] == "" and nb["stale"] is False
+    assert nb["id"]                            # gets a usable id for the UI
+    assert data["empty_folders"]["plants"] == ["EmptyPlant"]
+    assert data["empty_folders"]["lines"] == [{"plant": "P", "line": "EmptyLine"}]
+
+    # empty-robot entries keep the SAME id across rescans (matched by identity)
+    data2 = library.scan_library_root(root)
+    by2 = {e["robot"]: e for e in data2["robots"]}
+    assert by2["NEWBOT"]["id"] == nb["id"]
+
+    # skeleton never invents robots out of dated/mirror/staging dirs
+    (root / "P" / "L" / "Latest").mkdir()
+    (root / "P" / "L2").mkdir()
+    (root / "P" / "L2" / "2026_01_01").mkdir()
+    data3 = library.scan_library_root(root)
+    assert {e["robot"] for e in data3["robots"]} == {"R1", "NEWBOT"}
+
+
+def test_same_names_in_two_plants_stay_separate(monkeypatch, tmp_path):
+    """ERBU-style short names (010R01) repeat in every line, and line names can
+    repeat across plants - two folders in two RECORDED plants are two robots."""
+    _iso(monkeypatch, tmp_path)
+    root = tmp_path / "lib"
+    _make_robot(root, "PlantA", "L1", "010R01",
+                [("2026_01_01", "12_00_00", 1_600_000_000)], rid="rid-a")
+    _make_robot(root, "PlantB", "L1", "010R01",
+                [("2026_02_02", "09_00_00", 1_700_000_000)], rid="rid-b")
+
+    data = library.scan_library_root(root)
+    plants = sorted((e["plant"], e["robot"]) for e in data["robots"])
+    assert plants == [("PlantA", "010R01"), ("PlantB", "010R01")]
+
+
 def _settled_signature(root):
     """NTFS flushes directory-mtime updates lazily; the first walk after writes
     can observe pre-flush values. Walk until two consecutive reads agree — the
@@ -200,6 +316,10 @@ def test_sidecar_round_trip_carries_identity_to_a_fresh_library(monkeypatch, tmp
     assert rj["id"] == e["id"] and rj["notes"] == "travels with the folder"
     assert "passwd" not in rj and "password" not in json.dumps(rj)   # never a password
     assert rj["ftp"]["user"] == "fanuc"
+    # schema 2: identity lives in the tree, NEVER in the sidecar — nothing to go
+    # stale when the folder is later moved/renamed in Explorer
+    assert rj["schema"] == 2
+    assert "plant" not in rj and "line" not in rj and "robot" not in rj
 
     (settings.app_dir() / "library.json").unlink()      # a fresh machine
     data = library.scan_library_root(root)

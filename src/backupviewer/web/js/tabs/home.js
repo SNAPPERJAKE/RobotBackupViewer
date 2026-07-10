@@ -34,6 +34,8 @@
     _sortMode = mode;
     if (BV.state.settings) BV.state.settings.lib_sort = mode;
     BV.api.call("set_setting", "lib_sort", mode).catch(function () {});
+    var b = _libWrap && _libWrap.querySelector(".lib-sort");
+    if (b) b.textContent = "sort: " + SORT_LABELS[mode];   /* head persists across refreshes */
     refresh();
   }
 
@@ -96,11 +98,50 @@
 
   function loadLibrary() {
     if (!_libWrap) return;
-    _libWrap.innerHTML = "";
+    var body = _libWrap.querySelector(".home-lib-body");
+    if (!body) {                                 /* first paint: build the shell once */
+      _libWrap.innerHTML = "";
+      _libWrap.appendChild(buildLibraryHead());
+      body = BV.el("div", { class: "home-lib-body" }, '<div class="dim">loading…</div>');
+      _libWrap.appendChild(body);
+    }
 
-    /* ONE sticky header row: title · selection actions (act on checked robots
-       anywhere in the tree) · library actions. It stays pinned while the 50-line
-       plants scroll — the per-line button rows are gone. */
+    BV.api.call("lib_list").then(function (data) {
+      _robots = (data && data.robots) || [];
+      /* repaint IN PLACE: the old tree stays on screen until the new one is
+         built, and the scroll position survives — refreshes (post-action or
+         watcher-triggered) stop flashing and jumping back to the top */
+      var scroller = document.getElementById("view");
+      var keep = scroller ? scroller.scrollTop : 0;
+      renderTree(body, data);
+      if (scroller) scroller.scrollTop = keep;
+      reattachProgress();   /* repaint any backups already running */
+      if (data && data.scan_truncated && !_warnedTruncated) {
+        _warnedTruncated = true;
+        BV.toast("backup scan hit its safety cap — some backups may not be listed", 4000);
+      }
+      /* copied folders that carried a robot.json get folded into that robot's
+         history by identity — SAY so, or the copy looks like it never arrived */
+      if (data && data.scan_absorbed && data.scan_absorbed.length) {
+        var absorbMsg = data.scan_absorbed.map(function (a) {
+          return a.count + " copied snapshot" + (a.count === 1 ? "" : "s") +
+            " joined " + (a.robot || "a robot");
+        }).join(" · ");
+        if (absorbMsg !== _lastAbsorbMsg) {
+          _lastAbsorbMsg = absorbMsg;
+          BV.toast(absorbMsg, 4200);
+        }
+      }
+    }).catch(function (e) {
+      body.innerHTML = '<div class="dim">library unavailable: ' + BV.esc(e.message) + "</div>";
+    });
+  }
+
+  /* ONE sticky header row: title · selection actions (act on checked robots
+     anywhere in the tree) · library actions. It stays pinned while the 50-line
+     plants scroll — the per-line button rows are gone. Built once per mount;
+     refreshes repaint only the body, so button state must self-maintain. */
+  function buildLibraryHead() {
     var head = BV.el("div", { class: "home-lib-head" });
     head.appendChild(BV.el("h2", null, "library"));
 
@@ -147,7 +188,7 @@
     rescanBtn.addEventListener("click", function () {
       rescanBtn.disabled = true;
       BV.api.call("lib_rescan")
-        .then(function () { BV.toast("library rescanned"); refresh(); })
+        .then(function () { BV.toast("library rescanned"); rescanBtn.disabled = false; refresh(); })
         .catch(function (e) { BV.toast(e.message); rescanBtn.disabled = false; });
     });
     var addBtn = BV.el("button", { class: "btn lib-add-robot", id: "lib-add-robot",
@@ -167,34 +208,7 @@
     headActs.appendChild(rescanBtn);
     headActs.appendChild(addBtn);
     head.appendChild(headActs);
-    _libWrap.appendChild(head);
-
-    var body = BV.el("div", { class: "home-lib-body" }, '<div class="dim">loading…</div>');
-    _libWrap.appendChild(body);
-
-    BV.api.call("lib_list").then(function (data) {
-      _robots = (data && data.robots) || [];
-      renderTree(body, data);
-      reattachProgress();   /* repaint any backups already running */
-      if (data && data.scan_truncated && !_warnedTruncated) {
-        _warnedTruncated = true;
-        BV.toast("backup scan hit its safety cap — some backups may not be listed", 4000);
-      }
-      /* copied folders that carried a robot.json get folded into that robot's
-         history by identity — SAY so, or the copy looks like it never arrived */
-      if (data && data.scan_absorbed && data.scan_absorbed.length) {
-        var absorbMsg = data.scan_absorbed.map(function (a) {
-          return a.count + " copied snapshot" + (a.count === 1 ? "" : "s") +
-            " joined " + (a.robot || "a robot");
-        }).join(" · ");
-        if (absorbMsg !== _lastAbsorbMsg) {
-          _lastAbsorbMsg = absorbMsg;
-          BV.toast(absorbMsg, 4200);
-        }
-      }
-    }).catch(function (e) {
-      body.innerHTML = '<div class="dim">library unavailable: ' + BV.esc(e.message) + "</div>";
-    });
+    return head;
   }
 
   /* the backend watcher saw the library folder change on disk (Explorer copy /
@@ -249,7 +263,13 @@
 
   function renderTree(body, data) {
     var robots = (data && data.robots) || [];
-    if (!robots.length) {
+    /* the folder skeleton: empty plant/line folders are real structure the
+       user built in Explorer — show them, so "make the folder, see the plant"
+       holds even before any robots/backups exist inside */
+    var empties = (data && data.empty_folders) || {};
+    var emptyPlants = empties.plants || [];
+    var emptyLines = empties.lines || [];
+    if (!robots.length && !emptyPlants.length && !emptyLines.length) {
       body.innerHTML = '<div class="empty-lib">no robots yet — copy backups into the library folder, ' +
         "or discover robots on the network.</div>";
       updateHiddenToggle(0);
@@ -258,6 +278,16 @@
       return;
     }
     var plants = {}, hiddenCount = 0, anyVisible = false;
+    emptyPlants.forEach(function (pl) {
+      plants[pl || "—"] = plants[pl || "—"] || {};
+      anyVisible = true;
+    });
+    emptyLines.forEach(function (g) {
+      var pl = g.plant || "—", ln = g.line || "—";
+      plants[pl] = plants[pl] || {};
+      plants[pl][ln] = plants[pl][ln] || [];
+      anyVisible = true;
+    });
     robots.forEach(function (r) {
       if (r.hidden) { hiddenCount++; if (!_showHidden) return; }
       anyVisible = true;
@@ -283,12 +313,21 @@
       var plantHead = BV.el("div", { class: "lib-plant-h" }, BV.esc(pl));
       var plantBody = BV.el("div", { class: "lib-plant-body" });
       var lines = plants[pl];
-      groupKeys(lines).forEach(function (ln) {
+      var lineKeys = groupKeys(lines);
+      if (!lineKeys.length) {
+        plantBody.appendChild(BV.el("div", { class: "dim lib-empty-note" },
+          "empty plant folder — add line folders inside"));
+      }
+      lineKeys.forEach(function (ln) {
         var lineRobots = lines[ln].sort(cmp);
         lineRobots.forEach(function (r) { _visibleRobots.push(r); });
         var lineNode = BV.el("div", { class: "lib-line" });
         var lineHead = buildLineHead(ln, lineRobots);
         var lineBody = BV.el("div", { class: "lib-line-body" });
+        if (!lineRobots.length) {
+          lineBody.appendChild(BV.el("div", { class: "dim lib-empty-note" },
+            "empty line folder — no robot folders yet"));
+        }
         lineRobots.forEach(function (r) { lineBody.appendChild(robotRow(r)); });
         makeCollapsible(lineNode, lineHead, lineBody, pl + "|||" + ln);
         plantBody.appendChild(lineNode);
@@ -573,9 +612,10 @@
           var nRenamed = (rr.renamed || []).length;
           if ((rr.failed || []).length) BV.toast((rr.failed.length) + " rename(s) failed");
           if (!merges.length) { done(nRenamed, (rr.merged || []).length); return; }
-          confirmMergeBatch(merges, function () {
+          confirmMergeBatch(merges, function (chosen) {
+            if (!chosen.length) { done(nRenamed, 0); return; }
             var byTarget = {};
-            merges.forEach(function (it) {
+            chosen.forEach(function (it) {
               (byTarget[it.merge_into] = byTarget[it.merge_into] || []).push(it.id);
             });
             Promise.all(Object.keys(byTarget).map(function (primId) {
@@ -706,7 +746,11 @@
     });
   }
 
-  /* the batched "Duplicate robots detected. Merge?" confirm (fix-names path) */
+  /* the batched "Duplicate robots detected. Merge?" confirm (fix-names path).
+     Every row is a checkbox (like the rename preview): merges backed by 2+
+     identity signals (IP / F-number / hostname / master counts) come checked;
+     weak single-signal suggestions come UNCHECKED and say why. onConfirm
+     receives the checked subset. */
   function confirmMergeBatch(merges, onConfirm, onSkip) {
     var body = BV.el("div", { class: "lib-form" });
     body.appendChild(BV.el("div", { class: "del-warn" },
@@ -715,19 +759,41 @@
     var list = BV.el("ul", { class: "merge-list" });
     var byId = {};
     _robots.forEach(function (e) { byId[e.id] = e; });
+    function savedCount(id) {
+      var e = byId[id];
+      var n = e && e.backups ? e.backups.length : 0;
+      return " (" + n + " saved)";
+    }
+    var rows = [];
     merges.forEach(function (it) {
-      var into = (byId[it.merge_into] || {}).robot || it.proposed;
-      list.appendChild(BV.el("li", null,
-        BV.esc(it.current || "(unnamed)") + " → " + BV.esc(into)));
+      var into = it.target || (byId[it.merge_into] || {}).robot || it.proposed;
+      var sure = it.confidence !== "maybe";
+      var li = BV.el("li", { class: "merge-row" + (sure ? "" : " weak") });
+      var lab = BV.el("label", { class: "rename-row" });
+      var cb = BV.el("input", { type: "checkbox", class: "lf-check" });
+      cb.checked = sure;                   /* weak evidence never merges by default */
+      lab.appendChild(cb);
+      lab.appendChild(BV.el("span", null,
+        " " + BV.esc(it.current || "(unnamed)") + savedCount(it.id) +
+        " → " + BV.esc(into) + savedCount(it.merge_into)));
+      li.appendChild(lab);
+      var why = it.reason || (it.evidence || []).join(" + ");
+      li.appendChild(BV.el("div", { class: "merge-why dim" },
+        (sure ? "" : "⚠ weak — ") + BV.esc(why)));
+      rows.push({ cb: cb, it: it });
+      list.appendChild(li);
     });
     body.appendChild(list);
     var acts = BV.el("div", { class: "lf-actions" });
-    var skip = BV.el("button", { class: "btn" }, "skip merge");
+    var skip = BV.el("button", { class: "btn" }, "skip merges");
     var go = BV.el("button", { class: "btn primary" }, "merge");
     acts.appendChild(skip); acts.appendChild(go); body.appendChild(acts);
     var m = BV.modal("merge duplicates", body);
     skip.addEventListener("click", function () { m.close(); if (onSkip) onSkip(); });
-    go.addEventListener("click", function () { m.close(); onConfirm(); });
+    go.addEventListener("click", function () {
+      m.close();
+      onConfirm(rows.filter(function (r) { return r.cb.checked; }).map(function (r) { return r.it; }));
+    });
   }
 
   /* single "are you sure?" merge confirm (explicit merge + edit-modal collision).
