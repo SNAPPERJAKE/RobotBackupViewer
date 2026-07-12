@@ -197,6 +197,25 @@ window.BV = {};
     });
   };
 
+  /* right-click on a head: expand/collapse everything UNDER the node. The
+     clicked node itself never collapses as a side effect — you right-clicked
+     to fold the children, not the folder you're holding — but expanding DOES
+     open a closed node, so the result is never invisible. Leaf nodes (no
+     collapsible children) are a no-op: left-click is the toggle. */
+  BV.subtreeToggle = function (node) {
+    var kids = Array.prototype.slice.call(node.querySelectorAll(".bv-collapsible"));
+    if (!kids.length) return;
+    var expand = !kids.every(function (n) { return n.classList.contains("open"); });
+    kids.forEach(function (n) {
+      BV.setOpen(n, expand);
+      if (n._bvOnToggle) n._bvOnToggle(expand);
+    });
+    if (expand && !node.classList.contains("open")) {
+      BV.setOpen(node, true);
+      if (node._bvOnToggle) node._bvOnToggle(true);
+    }
+  };
+
   BV.collapsible = function (node, head, body, opts) {
     opts = opts || {};
     node.classList.add("bv-collapsible");
@@ -206,8 +225,10 @@ window.BV = {};
       head.insertBefore(BV.el("span", { class: "bv-caret" }, "▸"), head.firstChild);
     }
     if (opts.onToggle) node._bvOnToggle = opts.onToggle;
+    /* no onToggle echo here: construction just PAINTS opts.open. Notifying it
+       let a forced-open render (library filter) overwrite remembered fold
+       state — onToggle now means "the user toggled it", nothing else. */
     BV.setOpen(node, !!opts.open);
-    if (opts.onToggle && opts.open) opts.onToggle(true);
     head.addEventListener("click", function () {
       var open = !node.classList.contains("open");
       BV.setOpen(node, open);
@@ -215,10 +236,7 @@ window.BV = {};
     });
     head.addEventListener("contextmenu", function (e) {
       e.preventDefault();
-      /* if everything under here is already open, collapse all; else expand all */
-      var all = [node].concat(Array.prototype.slice.call(node.querySelectorAll(".bv-collapsible")));
-      var allOpen = all.every(function (n) { return n.classList.contains("open"); });
-      BV.collapseAll(node, !allOpen);
+      BV.subtreeToggle(node);
     });
     return node;
   };

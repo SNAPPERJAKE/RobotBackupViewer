@@ -7,8 +7,10 @@
 (function () {
   "use strict";
 
-  var FONT_SIZES = [12, 13, 14, 15, 16, 18];
-  var CHROME_SCALES = [0.85, 1.0, 1.1, 1.25];
+  /* caps raised for the shop floor (v1.0): 18px text / 125% chrome wasn't
+     enough on high-DPI laptops viewed at arm's length. The seg row wraps. */
+  var FONT_SIZES = [12, 13, 14, 15, 16, 18, 20, 22, 24];
+  var CHROME_SCALES = [0.85, 1.0, 1.1, 1.25, 1.4, 1.6];
   var CHROME_BASE_PX = 15;
   /* shop-floor friendly defaults - old eyes and young eyes both read this */
   var DEFAULT_FONT = 15;

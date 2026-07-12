@@ -20,6 +20,15 @@
     this.filter = "";
     this.active = 0;       /* pane index that owns the selection */
     this.linked = true;    /* side-by-side panes scroll together until unlocked */
+    /* opts.stateKey: persist scroll/sort (per pane, via each inner VTable) plus
+       the active pane and the scroll lock across navigating in/out of the tab —
+       the same in-session persistence single VTables get from their stateKey */
+    this.stateKey = opts.stateKey || null;
+    if (this.stateKey) {
+      var saved = BV.tabState(this.stateKey);
+      if (saved.active) this.active = saved.active;
+      if (saved.linked === false) this.linked = false;
+    }
     this.tables = [];
     this.host.classList.add("multitable");
     this._onResize = BV.debounce(this._layout.bind(this), 120);
@@ -69,13 +78,17 @@
         data: [],
         rowHeight: self.opts.rowHeight,
         rowClass: pane.rowClass || self.opts.rowClass,
+        stateKey: self.stateKey ? self.stateKey + ".p" + i : null,
         onOpen: function (row) {
           self.active = i;
+          self._remember();
           if (self.opts.onOpen) self.opts.onOpen(row);
         },
       });
       self.tables.push({ vt: vt, pane: pane });
     });
+    /* a remembered pane index from a wider layout must not point past the end */
+    if (this.active >= this.tables.length) this.active = 0;
     /* two panes always get the lock + linked scroll, including when the window
        shrinks and they stack - the lock must never silently vanish */
     if (this.tables.length === 2) this._setupLinkedScroll();
@@ -100,13 +113,18 @@
     follow(a, b);
     follow(b, a);
 
-    var lock = BV.el("button", { class: "mt-lock", title: "panes scroll together — click to scroll independently" }, "🔒");
-    lock.addEventListener("click", function () {
-      self.linked = !self.linked;
+    function paintLock() {
       lock.textContent = self.linked ? "🔒" : "🔓";
       lock.title = self.linked
         ? "panes scroll together — click to scroll independently"
         : "panes scroll independently — click to link them";
+    }
+    var lock = BV.el("button", { class: "mt-lock" }, "");
+    paintLock();   /* the restored lock state must paint, not just apply */
+    lock.addEventListener("click", function () {
+      self.linked = !self.linked;
+      paintLock();
+      self._remember();
       if (self.linked) b.scrollTop = a.scrollTop;
     });
     this.host.appendChild(lock);
@@ -150,6 +168,13 @@
     if (this.opts.onCount) this.opts.onCount(this.totalShown, this.totalAll);
   };
 
+  MultiTable.prototype._remember = function () {
+    if (!this.stateKey) return;
+    var st = BV.tabState(this.stateKey);
+    st.active = this.active;
+    st.linked = this.linked;
+  };
+
   /* ---- duck-typed surface ---- */
 
   MultiTable.prototype.setFilter = function (q) {
@@ -177,6 +202,7 @@
     if (this.tables.length < 2) return;
     var from = this.tables[this.active];
     this.active = (this.active + d + this.tables.length) % this.tables.length;
+    this._remember();
     var to = this.tables[this.active];
     var idx = Math.max(0, Math.min(from.vt.selected, to.vt.total - 1));
     from.vt.selected = -1;
@@ -197,6 +223,7 @@
       var idx = vt.view.findIndex(pred);
       if (idx >= 0) {
         this.active = i;
+        this._remember();
         vt.select(idx, true);
         return true;
       }

@@ -29,8 +29,13 @@
       { id: "pos", label: "pr (position)" },
       { id: "str", label: "sr (string)" },
     ];
+    /* the hash picks the kind when present (#registers/pos); otherwise return
+       to the kind you were on last (per-backup, via BV.tabState) */
+    var ts = BV.tabState("registers");
     var cur = params && params[0] && kinds.some(function (k) { return k.id === params[0]; })
-      ? params[0] : "num";
+      ? params[0]
+      : (kinds.some(function (k) { return k.id === ts.kind; }) ? ts.kind : "num");
+    ts.kind = cur;
     var jumpIndex = params && params[1] === "jump" ? parseInt(params[2] || "0", 10) : null;
 
     var seg = BV.segmented(kinds, {
@@ -40,10 +45,11 @@
     });
     toolbar.appendChild(seg.el);
 
-    var hideEmpty = true;
-    var ht = BV.el("button", { class: "btn" }, "show empty");
+    var hideEmpty = ts.hideEmpty !== false;
+    var ht = BV.el("button", { class: "btn" }, hideEmpty ? "show empty" : "hide empty");
     ht.addEventListener("click", function () {
       hideEmpty = !hideEmpty;
+      ts.hideEmpty = hideEmpty;
       ht.textContent = hideEmpty ? "show empty" : "hide empty";
       load();
     });
@@ -125,6 +131,7 @@
         }
         function show(panesOrData) {
           if (mt) mt.destroy();
+          panesOrData.stateKey = (vs ? "registers.vs." : "registers.") + cur;
           mt = new BV.MultiTable(host, panesOrData);
           BV.currentVTable = mt;
           mt.setFilter(sb.value());

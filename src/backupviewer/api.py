@@ -1511,14 +1511,17 @@ class Api:
     def lib_apply_renames(self, items: list):
         """Apply clean renames (relocating their folders). `items` = [{id, plant?,
         line?, robot}]. A collision discovered at apply time surfaces as a 'merged'
-        result rather than aborting the batch."""
+        result rather than aborting the batch. Failures carry the robot's label and
+        the reason ({id, robot, error}) - the UI shows them verbatim."""
         renamed, merged, failed = [], [], []
         for it in (items or []):
             rid = it.get("id")
             e = library.get_robot(rid)
             if e is None:
-                failed.append({"id": rid, "error": "robot not in library"})
+                failed.append({"id": rid, "robot": it.get("robot", "") or str(rid),
+                               "error": "robot not in library"})
                 continue
+            label = e.get("robot", "") or str(rid)
             plant = it.get("plant", e.get("plant", ""))
             line = it.get("line", e.get("line", ""))
             robot = it.get("robot", e.get("robot", ""))
@@ -1527,10 +1530,15 @@ class Api:
             try:
                 res = library.relocate_robot(rid, plant, line, robot)
             except library.PathGuard as ex:
-                failed.append({"id": rid, "error": f"BAD_PATH: {ex}"})
+                failed.append({"id": rid, "robot": label, "error": f"BAD_PATH: {ex}"})
                 continue
             except (ValueError, OSError) as ex:
-                failed.append({"id": rid, "error": str(ex)})
+                failed.append({"id": rid, "robot": label, "error": str(ex)})
+                continue
+            if res.get("action") == "blocked":
+                # the collision-merge had nothing to fold: the move did NOT happen
+                failed.append({"id": rid, "robot": label,
+                               "error": "not merged: " + res.get("reason", "")})
                 continue
             (merged if res.get("action") == "merged" else renamed).append(res)
         return {"renamed": renamed, "merged": merged, "failed": failed}
@@ -1538,10 +1546,11 @@ class Api:
     @_endpoint
     def lib_merge(self, primary_id: str, secondary_ids):
         """Merge one or more secondary robots INTO a primary (folders + history).
-        Cross-line pairs are refused (reported, not merged)."""
+        Cross-line pairs are refused (reported, not merged); a secondary the merge
+        could fold nothing from comes back in `blocked` with its reason."""
         if isinstance(secondary_ids, str):
             secondary_ids = [secondary_ids]
-        merged, refused, failed = [], [], []
+        merged, refused, failed, blocked = [], [], [], []
         for sid in (secondary_ids or []):
             prim, sec = library.get_robot(primary_id), library.get_robot(sid)
             if prim is None or sec is None:
@@ -1557,8 +1566,13 @@ class Api:
             except (ValueError, OSError) as ex:
                 failed.append({"id": sid, "error": str(ex)})
                 continue
-            (refused if res.get("action") == "refused" else merged).append(res)
-        return {"merged": merged, "refused": refused, "failed": failed}
+            if res.get("action") == "refused":
+                refused.append(res)
+            elif res.get("action") == "blocked":
+                blocked.append(res)
+            else:
+                merged.append(res)
+        return {"merged": merged, "refused": refused, "blocked": blocked, "failed": failed}
 
     @_endpoint
     def lib_relocate(self, robot_id: str, plant: str, line: str, robot: str):

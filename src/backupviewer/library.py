@@ -1052,6 +1052,15 @@ def _merge_pair(data: dict, prim: dict, sec: dict, root: Path) -> dict:
     sec_latest = _latest_dir_for(root, sec.get("plant", ""), sec.get("line", ""), sec.get("robot", "")) \
         if sec_dir is not None else None
     result = _merge_into(sec_dir, prim_dir, root, sec_latest)
+    if sec_dir is not None and not result["moved"] and not result["skipped"] \
+            and not result["conflicts"] and not result["source_removed"]:
+        # The fold was a total no-op: sec's folder holds only non-dated content
+        # (a flat import / stray files) that a merge never moves. Report it and
+        # change NOTHING - an alias/config fold here would leave half-merged
+        # state behind a result that claims "merged" while both robots visibly
+        # survive untouched.
+        result["blocked"] = "no dated snapshots to fold in (non-dated files are never moved by a merge)"
+        return result
     # Record sec's identity as an alias on prim either way, so a future scan of any
     # leftover sec folder re-merges into prim instead of duplicating.
     _add_alias(prim, sec.get("plant", ""), sec.get("line", ""), sec.get("robot", ""))
@@ -1112,8 +1121,10 @@ def relocate_robot(robot_id: str, plant: str, line: str, robot: str) -> dict:
     (snapshot-by-snapshot, duplicate <date>/<time> skipped/flagged). The id is
     preserved; the old identity is recorded as an alias; the sidecar is rewritten.
 
-    Returns {"action": "noop"|"renamed"|"merged", ...}. Raises ValueError (bad
-    args / unknown id), PathGuard (escapes root), OSError (move failure)."""
+    Returns {"action": "noop"|"renamed"|"merged"|"blocked", ...} - "blocked"
+    when a collision-merge had nothing to fold (see merge_robots). Raises
+    ValueError (bad args / unknown id), PathGuard (escapes root), OSError
+    (move failure)."""
     plant = (plant or "").strip()
     line = (line or "").strip()
     robot = (robot or "").strip()
@@ -1153,6 +1164,11 @@ def relocate_robot(robot_id: str, plant: str, line: str, robot: str) -> dict:
                     raise ValueError(
                         f"destination folder name collides with a different robot ({owner.get('robot', '')})")
                 res = _merge_pair(data, owner, e, root)
+                if res.get("blocked"):
+                    # nothing was folded and e keeps its identity: surface the
+                    # block instead of claiming a merge (nothing to persist)
+                    return {"action": "blocked", "reason": res["blocked"], "id": e["id"],
+                            "from": _ident(old), "to": _ident_e(owner)}
                 _reconcile(data)
                 _write(data)
                 _persist_sidecar(owner)
@@ -1200,8 +1216,10 @@ def relocate_robot(robot_id: str, plant: str, line: str, robot: str) -> dict:
 
 def merge_robots(primary_id: str, secondary_id: str) -> dict:
     """Explicitly merge secondary INTO primary (folders + history). Refuses a
-    cross-line merge (a robot name can legitimately repeat across lines). Returns
-    {"action": "merged"|"refused", ...}."""
+    cross-line merge (a robot name can legitimately repeat across lines). A
+    secondary whose folder gives the merge nothing to fold (only non-dated
+    content) comes back "blocked" with a reason - never a claimed merge that
+    was a silent no-op. Returns {"action": "merged"|"refused"|"blocked", ...}."""
     if primary_id == secondary_id:
         raise ValueError("cannot merge a robot into itself")
     with _LOCK:
@@ -1215,6 +1233,10 @@ def merge_robots(primary_id: str, secondary_id: str) -> dict:
                     "primary": _ident_e(prim), "secondary": _ident_e(sec)}
         root = _root()
         res = _merge_pair(data, prim, sec, root)
+        if res.get("blocked"):
+            # a total no-op is NOT a merge: report it honestly, persist nothing
+            return {"action": "blocked", "reason": res["blocked"],
+                    "primary": _ident_e(prim), "secondary": _ident_e(sec)}
         _reconcile(data)
         _write(data)
         _persist_sidecar(prim)

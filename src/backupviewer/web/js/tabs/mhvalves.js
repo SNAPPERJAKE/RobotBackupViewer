@@ -27,16 +27,20 @@
       "</div>" + sigs.map(sigRow).join("") + "</div>";
   }
 
-  function valveCard(v) {
+  function valveCard(v, mem, toolNum) {
+    var key = "valve:" + toolNum + ":" + v.num;
     var co = BV.card({
       title: v.name,
       count: "valve " + v.num,
       collapsible: true,
+      startCollapsed: !!mem.cards[key],
       class: "mhv-valve",
     });
     co.head.insertAdjacentHTML("beforeend",
       " " + BV.pill(v.type, v.type === "vacuum" ? "acc" : "ghost"));
-    co.head.addEventListener("click", function () { co.el.classList.toggle("collapsed"); });
+    co.head.addEventListener("click", function () {
+      mem.cards[key] = co.el.classList.toggle("collapsed");
+    });
 
     var st = v.setup || {};
     co.body.insertAdjacentHTML("beforeend", BV.kv.html([
@@ -91,6 +95,12 @@
     view.innerHTML = "";
     toolbar.innerHTML = "";
 
+    /* which tool / cards / config branches you had open, remembered per backup
+       (same store the tab's scroll position already lives in) */
+    var st = BV.tabState("mhvalves");
+    if (!st.open) st.open = {};
+    if (!st.cards) st.cards = {};
+
     Promise.all([
       BV.api.call("get_mhvalves"),
       BV.api.call("get_magnet").catch(function () { return null; }),
@@ -105,7 +115,10 @@
       /* tool selector (pendant "Select Tool") - a header line for one tool, a
          segmented control when several tools carry valves */
       var valvesEl = BV.el("div");
-      var active = tools.length ? tools[0] : null;
+      var active = null;
+      if (tools.length) {
+        active = tools.find(function (t) { return String(t.tool) === st.tool; }) || tools[0];
+      }
 
       function drawValves() {
         valvesEl.innerHTML = "";
@@ -118,9 +131,12 @@
           '<div class="mhv-tool-line">Tool ' + active.tool + "</div>");
         var cards = BV.el("div", {
           class: "cards",
-          style: "grid-template-columns:repeat(auto-fill,minmax(280px,1fr));margin-bottom:1.2rem",
+          /* rem-based track minimum (≈ the old 280px at the default root) so the
+             cards widen with the text-size setting instead of squishing the
+             setup values into a one-character column at 20-24px text */
+          style: "grid-template-columns:repeat(auto-fill,minmax(min(19rem,100%),1fr));margin-bottom:1.2rem",
         });
-        (active.valves || []).forEach(function (v) { cards.appendChild(valveCard(v)); });
+        (active.valves || []).forEach(function (v) { cards.appendChild(valveCard(v, st, active.tool)); });
         valvesEl.appendChild(cards);
       }
 
@@ -130,6 +146,7 @@
         }), {
           value: String(active.tool),
           onChange: function (id) {
+            st.tool = id;
             active = tools.filter(function (t) { return String(t.tool) === id; })[0];
             drawValves();
           },
@@ -178,7 +195,7 @@
       var list = BV.el("div", { class: "sysvar-list" });
       view.appendChild(list);
       var nodes = (d.records || []).map(function (rec) {
-        var el = BV.sysvars.treeNode(rec, "sysvar-node");
+        var el = BV.sysvars.treeNode(rec, "sysvar-node", st);
         list.appendChild(el);
         return { el: el, name: (rec.name || "").toLowerCase() };
       });

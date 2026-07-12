@@ -1,5 +1,70 @@
 # Changelog
 
+## v0.99 — polish pass: one of everything, everywhere
+- **Every checkbox list is the same checklist now.** Robot rows, the per-line
+  select-alls, the fix-names rename/merge previews, and discover results all
+  share one selection controller, so what works in one place works in all of
+  them — shift+click selects the visible range everywhere, not just in the
+  library. (The other lists were hand-rolled copies that never learned it.)
+- **Select-all boxes stopped lying.** A line's box shows "−" when only some
+  of its robots are selected — clicking it now clears the line (the minus is
+  a reset) instead of silently selecting the rest. From an empty line one
+  click still selects everything. The rename / merge previews gained the same
+  "all" box.
+- **Right-click expand/collapse leaves the clicked folder alone.** It folds or
+  unfolds only what's under the folder you right-clicked — no more slamming
+  the folder itself shut along with its children. (Expanding a closed folder
+  still opens it, so the result is never invisible.) Same fix in the programs
+  call-tree, which carried its own copy of the old behavior.
+- **Text and chrome can go bigger.** Text size now reaches 24px (was 18) and
+  chrome scale 160% (was 125%) — for high-DPI screens read at arm's length.
+- **The library has a filter.** A search box in the library header narrows the
+  tree as you type — by robot name, model, IP, or note text — and a matching
+  plant/line name keeps its whole group visible. Groups render expanded while
+  a filter is active (your fold state comes back when it clears), the match
+  count shows in the box, and `/` focuses it. The selection toolbar acts on
+  what you can see, never on filtered-out robots.
+- **The compare picker IS the library now.** "Compare → from library" shows
+  the same plant/line tree as the home screen (one shared tree component,
+  not a look-alike), just stripped to click-to-pick rows and sized for a
+  modal: LINE folders finally collapse (they were fixed labels), the open
+  robot's plant starts expanded, folded groups show how many robots they
+  hold, rows carry model + IP, and a filter box narrows the tree — finding
+  one robot across 71 lines no longer means scrolling for it. Esc clears an
+  active filter first; a second Esc closes the picker.
+- **Filtering can't wipe your fold state anymore.** Rendering the tree
+  expanded during a filter used to overwrite which folders you'd collapsed —
+  clear the filter and everything sprang open. Folders now only remember
+  toggles you actually click.
+- **Every tab now remembers where you were.** io and registers — the two
+  split-pane tables — get the same leave-and-return memory the other tabs
+  already had: scroll, sort, category, in/out sides, register kind,
+  "show empty", the active pane and the scroll lock all come back. system
+  vars and mh valves now also remember WHICH records and branches you had
+  open (and mh valves: the selected tool and collapsed valve cards), not
+  just how far down you'd scrolled. All of it per-backup, in-session, like
+  the rest.
+- **"Merged" now means merged.** Merging a robot whose folder holds no dated
+  snapshots (a flat copied-in backup, stray files) used to move nothing and
+  still report "merged" — with both robots sitting there untouched. It now
+  comes back "nothing merged — no dated snapshots to fold in", and a blocked
+  merge changes truly nothing (no alias, no config fold, no writes). The
+  same honesty applies when a rename/move collides into a merge.
+- **Failed renames and moves say who failed and why.** The "3 rename(s)
+  failed" count toast became per-robot reasons, shown verbatim for both
+  fix-names and bulk "move to…" (long batches clamp to the first few).
+- **Big text stopped crushing the valve cards.** At 20–24px text the
+  MH-valves setup values squeezed into a one-character-wide column (12px
+  wide, measured). Card grids' minimum width was a fixed 280/330px designed
+  for 14px text; it now scales with the text size — measured at 24px text,
+  the narrowest value column went 12px → 196px. The fix covers every card
+  grid, so overview cards can't pull the same trick.
+- **Discover got a real layout.** The modal is wide, network picker on the
+  left, results on the right — the network row and the scan/add buttons are
+  always visible and ONLY the results list scrolls (the whole modal body
+  used to scroll, sinking the buttons below the fold on small screens).
+  Falls back to one column on narrow windows.
+
 ## v0.99 — the folder tree is the whole truth
 - **Where a folder sits is who the robot is.** The scan now derives every
   robot's plant/line/name from its folder's location — a stale `robot.json` or

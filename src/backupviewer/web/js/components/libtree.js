@@ -1,0 +1,159 @@
+/* components/libtree.js - ONE library tree for every robot listing.
+   The home screen and the compare-from-library picker show the same saved
+   library, so this component owns the STRUCTURE they share: grouping into
+   PLANT -> LINE folders (the '—' no-name bucket pinned last), robot sort
+   order, collapsible folders (left-click toggles, right-click folds the
+   subtree), the filter semantics (a matching plant/line name keeps its whole
+   group; groups render forced-open while a filter is live and the remembered
+   fold state comes back when it clears), and the empty-folder skeleton notes.
+   Callers own the ROWS and what happens on them: what a robot row looks like,
+   what clicking one does, extra line-head controls (the library's select-all
+   boxes), and when to re-render. Fold state lives on the instance — a
+   module-level instance keeps it across re-renders and screen remounts. */
+(function () {
+  "use strict";
+
+  /* group keys alphabetically with the '—' (no plant/line) bucket pinned last */
+  function groupKeys(obj) {
+    return Object.keys(obj).sort(function (a, b) {
+      if (a === "—") return 1;
+      if (b === "—") return -1;
+      return a.localeCompare(b);
+    });
+  }
+
+  function nameCmp(a, b) { return (a.robot || "").localeCompare(b.robot || ""); }
+
+  function defaultMatches(r, q) {
+    return [r.robot || "", r.model || "", r.notes || "", (r.ips || []).join(" ")]
+      .join(" ").toLowerCase().indexOf(q) >= 0;
+  }
+
+  /* opts (all per-instance):
+       row(r) -> node          REQUIRED: one robot row, click behavior included
+       lineExtras(ln, lineRobots, key) -> node|null   appended to a line head
+                               (home hangs its select-all checkbox here)
+       matches(r, q) -> bool   row filter (default: robot/model/IP/notes text)
+       skeleton: true          show the "empty plant/line folder" notes (the
+                               files-are-law skeleton; leave off for pickers)
+       counts: true            robot-count badge on plant + line heads (for
+                               mostly-folded views where rows are out of sight)
+       startOpen(key, kind) -> bool   first-seen fold state, kind 'plant'|'line'
+                               (default open); user toggles are remembered over it
+     render(body, data, ropts) — data {robots, emptyPlants, emptyLines},
+       ropts {q, cmp} (q = filter text, cmp = robot comparator; both optional).
+       Returns {shown, total, visible} — visible is the rendered robots in
+       render order, for anything order-sensitive (shift+click ranges). */
+  BV.libTree = function (opts) {
+    opts = opts || {};
+    var state = {};   /* fold state: key -> bool(open); unset = startOpen/default */
+
+    function isOpen(key, kind) {
+      if (key in state) return state[key];
+      return opts.startOpen ? !!opts.startOpen(key, kind) : true;
+    }
+
+    function fold(node, head, body, key, kind, forceOpen) {
+      node.appendChild(head);
+      node.appendChild(body);
+      BV.collapsible(node, head, body, {
+        /* a filtered render forces groups open so matches are never folded
+           away; only USER toggles write, so the fold state returns on clear */
+        open: forceOpen || isOpen(key, kind),
+        onToggle: function (open) { state[key] = open; },
+      });
+      return node;
+    }
+
+    function countSpan(head) {
+      if (!opts.counts) return null;
+      var c = BV.el("span", { class: "lib-count" });
+      head.appendChild(c);
+      return c;
+    }
+
+    return {
+      render: function (body, data, ropts) {
+        ropts = ropts || {};
+        var q = (ropts.q || "").toLowerCase();
+        var cmp = ropts.cmp || nameCmp;
+        var matches = opts.matches || defaultMatches;
+
+        var plants = {};
+        ((data && data.emptyPlants) || []).forEach(function (pl) {
+          plants[pl || "—"] = plants[pl || "—"] || {};
+        });
+        ((data && data.emptyLines) || []).forEach(function (g) {
+          var pl = g.plant || "—", ln = g.line || "—";
+          plants[pl] = plants[pl] || {};
+          plants[pl][ln] = plants[pl][ln] || [];
+        });
+        ((data && data.robots) || []).forEach(function (r) {
+          var pl = r.plant || "—", ln = r.line || "—";
+          plants[pl] = plants[pl] || {};
+          plants[pl][ln] = plants[pl][ln] || [];
+          plants[pl][ln].push(r);
+        });
+
+        body.innerHTML = "";
+        var visible = [], total = 0, shown = 0;
+        groupKeys(plants).forEach(function (pl) {
+          var plMatch = !!q && pl.toLowerCase().indexOf(q) >= 0;
+          var plantNode = BV.el("div", { class: "lib-plant" });
+          var plantHead = BV.el("div", { class: "lib-plant-h" }, BV.esc(pl));
+          var plantCount = countSpan(plantHead);
+          var plantBody = BV.el("div", { class: "lib-plant-body" });
+          var lines = plants[pl];
+          var lineKeys = groupKeys(lines);
+          var renderedLines = 0, plantRobots = 0;
+          if (opts.skeleton && !lineKeys.length && (!q || plMatch)) {
+            plantBody.appendChild(BV.el("div", { class: "dim lib-empty-note" },
+              "empty plant folder — add line folders inside"));
+          }
+          lineKeys.forEach(function (ln) {
+            total += lines[ln].length;
+            /* a matching plant/line name keeps its whole group; otherwise only
+               matching robots survive, and a line with none drops out */
+            var lnMatch = plMatch || (!!q && ln.toLowerCase().indexOf(q) >= 0);
+            var lineRobots = (q && !lnMatch) ? lines[ln].filter(function (r) {
+              return matches(r, q);
+            }) : lines[ln];
+            if (q && !lnMatch && !lineRobots.length) return;
+            lineRobots = lineRobots.slice().sort(cmp);
+            shown += lineRobots.length;
+            plantRobots += lineRobots.length;
+            lineRobots.forEach(function (r) { visible.push(r); });
+            var key = pl + "|||" + ln;
+            var lineNode = BV.el("div", { class: "lib-line" });
+            var lineHead = BV.el("div", { class: "lib-line-h" });
+            lineHead.appendChild(BV.el("span", { class: "lib-line-name" }, BV.esc(ln)));
+            var lineCount = countSpan(lineHead);
+            if (lineCount) lineCount.textContent = String(lineRobots.length);
+            if (opts.lineExtras) {
+              var extras = opts.lineExtras(ln, lineRobots, key);
+              if (extras) lineHead.appendChild(extras);
+            }
+            var lineBody = BV.el("div", { class: "lib-line-body" });
+            if (opts.skeleton && !lineRobots.length) {
+              lineBody.appendChild(BV.el("div", { class: "dim lib-empty-note" },
+                "empty line folder — no robot folders yet"));
+            }
+            lineRobots.forEach(function (r) { lineBody.appendChild(opts.row(r)); });
+            fold(lineNode, lineHead, lineBody, key, "line", !!q);
+            plantBody.appendChild(lineNode);
+            renderedLines++;
+          });
+          if (q && !renderedLines && !plMatch) return;   /* nothing here matches */
+          if (plantCount) plantCount.textContent = String(plantRobots);
+          fold(plantNode, plantHead, plantBody, pl, "plant", !!q);
+          body.appendChild(plantNode);
+        });
+        if (q && !body.childNodes.length) {
+          body.innerHTML = '<div class="empty-lib">no robots match “' + BV.esc(ropts.q) +
+            '” — clear the filter to see the library.</div>';
+        }
+        return { shown: shown, total: total, visible: visible };
+      },
+    };
+  };
+})();

@@ -600,8 +600,7 @@
       });
       toggle.addEventListener("contextmenu", function (e) {
         e.preventDefault();
-        var all = [el].concat(Array.prototype.slice.call(el.querySelectorAll(".bv-collapsible")));
-        BV.collapseAll(el, !all.every(function (n) { return n.classList.contains("open"); }));
+        BV.subtreeToggle(el);
       });
     }
     return el;
