@@ -135,22 +135,6 @@
      ethernet / wizard / motors call sites below */
   var kvHtml = BV.kv.html;
 
-  /* independently-collapsible section INSIDE a card */
-  function subsection(parent, title, bodyEl, opts) {
-    opts = opts || {};
-    var wrap = BV.el("div", { class: "subsec" + (opts.startCollapsed ? " collapsed" : "") });
-    var h = BV.el("h4", { class: "subsec-h" }, BV.esc(title) +
-      (opts.count !== undefined ? ' <span class="count">' + opts.count + "</span>" : ""));
-    var body = BV.el("div", { class: "subsec-body" });
-    if (typeof bodyEl === "string") body.innerHTML = bodyEl;
-    else if (bodyEl) body.appendChild(bodyEl);
-    h.addEventListener("click", function () { wrap.classList.toggle("collapsed"); });
-    wrap.appendChild(h);
-    wrap.appendChild(body);
-    parent.appendChild(wrap);
-    return body;
-  }
-
   /* ---- mh valves + magnet: collapsible entries for the combined overview card ----
      headers are colored, values plain, and DI/DO/R designations are lit pills
      (the same .pill.on used by running/mastered). */

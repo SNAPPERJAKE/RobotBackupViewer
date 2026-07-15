@@ -14,7 +14,8 @@ def _iso(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "app_dir", lambda: appdir)
 
 
-def _make_robot(root, plant, line, robot, snaps, *, rid="", notes="", ips=None, mirror=False):
+def _make_robot(root, plant, line, robot, snaps, *, rid="", notes="", ips=None, mirror=False,
+                ftp=None):
     """snaps = [(date, time, mtime)]. Writes SUMMARY.DG + backup.json + notes.txt
     per snapshot, a robot.json at the robot folder, and optionally a Latest/
     mirror whose backup.json claims to be the newest (to prove it's excluded).
@@ -35,7 +36,7 @@ def _make_robot(root, plant, line, robot, snaps, *, rid="", notes="", ips=None, 
     (base / "robot.json").write_text(json.dumps({
         "schema": 1, "id": rid, "plant": plant, "line": line, "robot": robot,
         "model": "", "f_number": "", "ips": ips or [],
-        "ftp": {"user": "", "passive": True}, "notes": notes,
+        "ftp": ftp or {"user": "", "passive": True}, "notes": notes,
     }), encoding="utf-8")
     if mirror:
         md = root / plant / line / "Latest" / robot
@@ -90,6 +91,36 @@ def test_rescan_preserves_config_but_identity_follows_disk(monkeypatch, tmp_path
     assert e2["notes"] == "field note"
     assert e2["hidden"] is True
     assert len(e2["backups"]) == 1             # disk authoritative for history
+
+
+def test_rescan_adopts_sidecar_ftp_passive(monkeypatch, tmp_path):
+    """A sidecar recording passive=False must survive a RESCAN, not just a
+    merge: when _apply_disk adopts the sidecar's ftp user it carries the
+    passive flag too, unless the overlay already recorded one - the same
+    rule _merge_pair applies (the pre-fix drift lost the flag on rescan)."""
+    _iso(monkeypatch, tmp_path)
+    root = tmp_path / "lib"
+    _make_robot(root, "P", "L", "R1", [("2026_01_01", "12_00_00", 1_600_000_000)],
+                rid="rid-1", ftp={"user": "bob", "passive": False})
+    # a pre-ftp-era overlay entry: no ftp recorded at all (load() never
+    # normalizes, so this shape genuinely occurs in old library.json files)
+    data = library.load()
+    data["robots"].append({"id": "rid-1", "plant": "P", "line": "L", "robot": "R1",
+                           "notes": "keep me"})
+    library.save(data)
+
+    e = library.scan_library_root(root)["robots"][0]
+    assert e["notes"] == "keep me"             # matched the overlay entry, not recreated
+    assert e["ftp"]["user"] == "bob"
+    assert e["ftp"]["passive"] is False        # the rescan carried the flag
+
+    # but an overlay that HAS recorded a passive preference keeps it
+    data = library.load()
+    data["robots"][0]["ftp"] = {"user": "", "passive": True}
+    library.save(data)
+    e = library.scan_library_root(root)["robots"][0]
+    assert e["ftp"]["user"] == "bob"           # user still adopted
+    assert e["ftp"]["passive"] is True         # overlay's own flag never clobbered
 
 
 def test_vanished_folder_dropped_on_rescan(monkeypatch, tmp_path):
@@ -434,6 +465,102 @@ def test_lib_list_rescans_when_tree_changes(monkeypatch, tmp_path):
     monkeypatch.setattr(library, "scan_library_root", lambda r: calls.append(r) or real(r))
     api.lib_list()                                                 # unchanged tree
     assert calls == []                                             # -> served from cache, no scan
+
+
+def test_lib_list_persisted_sig_skips_boot_scan(monkeypatch, tmp_path):
+    """The 1000-robot boot fix: the tree signature survives restarts, so a fresh
+    process (a new Api) on an UNCHANGED tree serves the cached library without
+    the full rescan. Any tree change still takes the scan path."""
+    from backupviewer.api import Api
+    _iso(monkeypatch, tmp_path)
+    root = tmp_path / "lib"
+    _make_robot(root, "P", "L", "R1", [("2026_01_01", "12_00_00", 1_600_000_000)], rid="rid-1")
+    settings.set_value("library_root", str(root))
+    assert [e["robot"] for e in Api().lib_list()["data"]["robots"]] == ["R1"]   # first run scans
+
+    calls = []
+    real = library.scan_library_root
+    monkeypatch.setattr(library, "scan_library_root",
+                        lambda r, progress=None: calls.append(r) or real(r, progress=progress))
+    api2 = Api()                                       # "next boot"
+    assert [e["robot"] for e in api2.lib_list()["data"]["robots"]] == ["R1"]
+    assert calls == []                                 # unchanged tree -> no scan at all
+
+    _make_robot(root, "P", "L", "R2", [("2026_02_02", "09_00_00", 1_700_000_000)], rid="rid-2")
+    api3 = Api()                                       # another boot, tree changed meanwhile
+    names = sorted(e["robot"] for e in api3.lib_list()["data"]["robots"])
+    assert names == ["R1", "R2"]
+    assert len(calls) == 1                             # -> scanned exactly once
+
+
+def test_lib_list_persisted_sig_rejected_when_root_or_cache_differ(monkeypatch, tmp_path):
+    """The persisted signature is a shortcut ONLY for the exact root it was
+    stamped for, with the cache still present — a wiped library.json or a
+    switched root must rescan, never serve stale or empty."""
+    from backupviewer.api import Api
+    _iso(monkeypatch, tmp_path)
+    root = tmp_path / "lib"
+    _make_robot(root, "P", "L", "R1", [("2026_01_01", "12_00_00", 1_600_000_000)], rid="rid-1")
+    settings.set_value("library_root", str(root))
+    Api().lib_list()                                   # scan + persist the signature
+
+    # hand-wiped cache: the sig still matches, but an empty library.json must
+    # NOT be served as "no robots" — the seed is refused and the tree rescanned
+    (settings.app_dir() / "library.json").unlink()
+    assert [e["robot"] for e in Api().lib_list()["data"]["robots"]] == ["R1"]
+
+    # switched root: the stamp doesn't transfer
+    other = tmp_path / "lib2"
+    _make_robot(other, "P", "L", "RX", [("2026_01_01", "12_00_00", 1_600_000_000)], rid="rid-x")
+    settings.set_value("library_root", str(other))
+    assert [e["robot"] for e in Api().lib_list()["data"]["robots"]] == ["RX"]
+
+
+def test_scan_progress_ticks(monkeypatch, tmp_path):
+    """progress(done, total, current) ticks once per snapshot; total is the
+    previous scan's snapshot count (0 = first ever, unknown) and never less
+    than done; current names the robot folder being read."""
+    _iso(monkeypatch, tmp_path)
+    root = tmp_path / "lib"
+    _make_robot(root, "P", "L", "R1", [("2026_01_01", "12_00_00", 1_600_000_000),
+                                       ("2026_02_02", "09_30_00", 1_700_000_000)])
+    _make_robot(root, "P", "L", "R2", [("2026_03_03", "10_00_00", 1_710_000_000)])
+
+    first: list = []
+    library.scan_library_root(root, progress=lambda d, t, c: first.append((d, t, c)))
+    snaps = [x for x in first if x[0] > 0]
+    assert [x[0] for x in snaps] == [1, 2, 3]          # one tick per snapshot
+    assert all(t == 0 for _d, t, _c in snaps)          # first ever: no estimate yet
+
+    second: list = []
+    library.scan_library_root(root, progress=lambda d, t, c: second.append((d, t, c)))
+    snaps2 = [x for x in second if x[0] > 0]
+    assert [x[0] for x in snaps2] == [1, 2, 3]
+    assert all(t == 3 for _d, t, _c in snaps2)         # estimate = last scan's 3 snapshots
+    assert {c for _d, _t, c in snaps2} == {"R1", "R2"}
+
+
+def test_scan_reads_sidecar_once_per_robot(monkeypatch, tmp_path):
+    """robot.json is read once per robot folder, not once per snapshot — on a
+    plant-scale tree the per-snapshot re-reads were thousands of redundant
+    file opens."""
+    _iso(monkeypatch, tmp_path)
+    root = tmp_path / "lib"
+    _make_robot(root, "P", "L", "R1", [("2026_01_01", "12_00_00", 1_600_000_000),
+                                       ("2026_02_02", "09_30_00", 1_700_000_000),
+                                       ("2026_03_03", "10_00_00", 1_710_000_000)])
+    reads: list = []
+    real = library._read_json
+
+    def counting(p):
+        if p.name == library.SIDECAR:
+            reads.append(p)
+        return real(p)
+
+    monkeypatch.setattr(library, "_read_json", counting)
+    e = library.scan_library_root(root)["robots"][0]
+    assert len(e["backups"]) == 3
+    assert len(reads) == 1                             # one sidecar read for three snapshots
 
 
 def test_scan_reports_absorbed_copies(monkeypatch, tmp_path):

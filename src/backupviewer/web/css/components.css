@@ -368,7 +368,6 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
 }
 .card.expanded .calltree { max-height: none; }
-.card .card-close { float: right; padding: 0.2rem 0.5rem; margin-left: 0.3rem; }
 
 /* detail split view */
 .split { display: grid; grid-template-columns: minmax(0, 5fr) minmax(15em, 3fr); gap: 0.9rem; height: 100%; min-height: 0; }
@@ -784,10 +783,12 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .sysvar-title { color: color-mix(in srgb, var(--accent) 55%, var(--sub)); font-size: 0.82em;
   margin-left: 0.5em; font-style: italic; }
 
-/* stapled DCS dashboard (signatures + small sections inline) */
+/* stapled DCS dashboard (signatures + small sections inline). Scrolls with the
+   page: the cells show the FULL mastering table and every signature now, and a
+   pinned bar that tall would squeeze the section list under it */
 .dcs-dash {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.7rem;
-  position: sticky; top: -0.8rem; z-index: 5; background: var(--bg);
+  background: var(--bg);
   margin: -0.75rem -1.25rem 0.5rem; padding: 0.85rem 1.45rem 0.7rem;
   border-bottom: 1px solid var(--edge);
 }
@@ -796,12 +797,15 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .dcs-dash-cell.clickable:hover { background: color-mix(in srgb, var(--sub-alt) 20%, var(--bg2)); }
 .dcs-dash-h { font-size: 0.74rem; color: var(--sub); text-transform: lowercase; font-weight: 600; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.4rem; }
 .dcs-dash-body, .dcs-dash-line { font-size: 0.8rem; color: var(--text); }
+/* the mastering cell holds a real (small) table - tighten it to cell scale */
+.dcs-dash-cell .tbl-wrap { border: none; background: transparent; }
+.dcs-dash-cell .tbl { font-size: 0.78rem; }
+.dcs-dash-cell .tbl th, .dcs-dash-cell .tbl td { padding: 0.12rem 0.6rem 0.12rem 0; }
 .dcs-dash-line { display: flex; justify-content: space-between; gap: 0.6rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0.05rem 0; }
 /* signatures: one row per signature, the real current/latch value on show
-   (not just an OK pill), stacked in a column; long lists scroll within the cell
-   instead of ballooning the sticky dashboard */
-.dcs-sig-col { display: flex; flex-direction: column; gap: 0.15rem; max-height: 10rem;
-  overflow-y: auto; overflow-x: hidden; }
+   (not just an OK pill), stacked in a column - every signature visible, the
+   cell grows to fit (the dashboard scrolls with the page, so tall is fine) */
+.dcs-sig-col { display: flex; flex-direction: column; gap: 0.15rem; overflow-x: hidden; }
 .dcs-sig-row {
   display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.1rem 0.5rem;
   font-size: 0.78rem; padding: 0.12rem 0.1rem; border-radius: 5px;
@@ -930,6 +934,9 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 /* the ONE action row, pinned while the plant tree scrolls (same sticky recipe
    as .hero.stick: negative top cancels #view's padding, full-bleed margins +
    opaque background stop rows peeking past its edges) */
+/* boot/rescan scan progress (the membar drawn by renderScanBar lives inside) */
+.home-lib-loading { margin: 0.4rem 0 0.7rem; max-width: 30rem; }
+
 .home-lib-head {
   position: sticky; top: -0.8rem; z-index: 5; background: var(--bg);
   margin: -0.75rem -1.25rem 1.1rem; padding: 0.95rem 1.45rem 0.6rem;

@@ -60,7 +60,7 @@
           var head2 = BV.el("div", { class: "sr-head" },
             '<span class="sr-name">' + BV.esc(p.program) + "</span>" +
             '<span class="sr-cnt">' + p.count + " hit" + (p.count > 1 ? "s" : "") + "</span>" +
-            '<span class="sr-cnt" style="margin-left:auto">▾</span>');
+            '<span class="sr-cnt sr-caret" style="margin-left:auto">▾</span>');
           box.appendChild(head2);
           var hits = BV.el("div");
           p.hits.forEach(function (h) {
@@ -78,7 +78,9 @@
           }
           box.appendChild(hits);
           head2.addEventListener("click", function () {
-            hits.style.display = hits.style.display === "none" ? "" : "none";
+            var open = hits.style.display === "none";
+            hits.style.display = open ? "" : "none";
+            head2.querySelector(".sr-caret").textContent = open ? "▾" : "▸";
           });
           sec.appendChild(box);
         });

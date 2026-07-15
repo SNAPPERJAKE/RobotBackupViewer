@@ -4,6 +4,15 @@ window.BV = {};
 (function () {
   "use strict";
 
+  /* Compound-key separator: the NUL character — it can never appear in robot
+     names, program names, or file paths. Built at RUNTIME on purpose: a raw
+     NUL byte in source makes git/grep treat the whole file as binary, and
+     spelling it as a backslash-u escape in source has repeatedly been decoded
+     into a raw NUL by editing tools (that exact bug has shipped three times).
+     Always use BV.KEYSEP; never inline either form. api.js (in-flight request
+     keys) and compare.js (hide keys) build their compound keys from this. */
+  BV.KEYSEP = String.fromCharCode(0);
+
   BV.esc = function (s) {
     if (s === null || s === undefined) return "";
     return String(s).replace(/[&<>"']/g, function (c) {

@@ -465,22 +465,44 @@ def scan_signature(root: str | Path) -> str:
     return h.hexdigest()
 
 
-def _scan_disk(root: Path, stats: dict | None = None) -> tuple:
+def _scan_disk(root: Path, stats: dict | None = None, progress=None, expect: int = 0) -> tuple:
     """Walk the tree for backup snapshots and group them by robot. Identity is
     the folder's LOCATION (<root>/[plant/]<line>/<robot> — files are law);
     sidecars supply id + config only. Also surfaces the folder skeleton: robot
     folders with no snapshots yet, empty plant folders at root, empty line
     folders inside plants. Read-only. Returns ({key: disk_entry} with backups[]
-    newest-first, {"plants": [...], "lines": [{plant, line}]})."""
+    newest-first, {"plants": [...], "lines": [{plant, line}]}).
+    `progress(done, total, current)` ticks once per snapshot read; `expect` is
+    the previous scan's snapshot count (0 = first ever, total unknown)."""
     from . import session  # local import: avoids any import-time coupling
 
     groups: dict = {}
-    for snap in session.find_backup_roots(root, stats=stats):
+    sidecars: dict = {}   # robot_dir -> parsed sidecar: one read per robot, not per snapshot
+    done = 0
+
+    def _tick(current: str) -> None:
+        if progress:
+            # never report done > total: a tree that GREW since the estimate
+            # pins near 100% instead of overshooting it
+            progress(done, (max(expect, done) if expect else 0), current)
+
+    def _on_root(n: int) -> None:
+        if n % 25 == 0:
+            _tick("finding backup folders… %d found" % n)
+
+    _tick("finding backup folders…")
+    for snap in session.find_backup_roots(root, stats=stats,
+                                          on_root=_on_root if progress else None):
         if _is_latest_mirror(snap, root):
             continue                                   # mirror = copy of a dated snap
         meta = _read_json(snap / "backup.json")
         robot_dir = snap.parent.parent if _is_dated(snap) else snap
-        rjson = _read_json(robot_dir / SIDECAR)
+        done += 1
+        _tick(robot_dir.name)
+        rjson = sidecars.get(robot_dir)
+        if rjson is None:
+            rjson = _read_json(robot_dir / SIDECAR)
+            sidecars[robot_dir] = rjson
         # WHERE the folder sits is the identity — files are law. The sidecar
         # supplies id + config (ips/ftp/notes) and nothing else: any plant/
         # line/robot a legacy schema-1 sidecar (or a copied-along backup.json)
@@ -532,7 +554,9 @@ def _scan_disk(root: Path, stats: dict | None = None) -> tuple:
 
     def _dir_children(d: Path) -> list:
         try:
-            return [p for p in d.iterdir() if p.is_dir() and not _skip_name(p.name)]
+            with os.scandir(d) as it:   # scandir: is_dir comes with the listing, no per-entry stat
+                return [Path(e.path) for e in it
+                        if not _skip_name(e.name) and session._entry_is_dir(e)]
         except OSError:
             return []
 
@@ -623,8 +647,15 @@ def _apply_disk(e: dict, disk: dict) -> None:
         if ip and ip not in ips:
             ips.append(ip)
     e["ips"] = ips
-    if not (e.get("ftp") or {}).get("user") and (disk.get("ftp") or {}).get("user"):
-        e.setdefault("ftp", {})["user"] = disk["ftp"]["user"]
+    eftp = e.get("ftp") or {}
+    dftp = disk.get("ftp") or {}
+    if dftp.get("user") and not eftp.get("user"):
+        # same rule as _merge_pair: adopting the sidecar's user carries its
+        # passive flag too (unless the overlay already recorded one) — a
+        # passive=False robot must survive a rescan, not just a merge
+        eftp["user"] = dftp["user"]
+        eftp.setdefault("passive", dftp.get("passive", True))
+        e["ftp"] = eftp
     for a in disk.get("aliases", []) or []:                     # union: aliases are additive memory
         _add_alias(e, a.get("plant", ""), a.get("line", ""), a.get("robot", ""))
 
@@ -692,7 +723,7 @@ def _merge_scan(data: dict, scanned: dict, absorbed: list | None = None) -> set:
     return applied
 
 
-def scan_library_root(root: str | Path) -> dict:
+def scan_library_root(root: str | Path, progress=None) -> dict:
     """Rebuild the library from the backup folder tree — THE source of truth.
     A robot exists because its folder exists: folders found on disk are
     added/refreshed (overlay data like the hidden flag and user edits survive
@@ -701,14 +732,19 @@ def scan_library_root(root: str | Path) -> dict:
 
     The one deliberate exception: an UNREACHABLE root (offline network drive /
     unplugged USB) is not the same as deleted folders — the last known library
-    is served with everything marked stale instead of being wiped."""
+    is served with everything marked stale instead of being wiped.
+
+    `progress(done, total, current)`, when given, ticks as snapshots are read —
+    total is the previous scan's snapshot count (an estimate; 0 = first ever),
+    so a boot-time progress bar has something honest to draw."""
     root = Path(root)
     with _LOCK:
         data = load()
         absorbed_raw: list = []
         if root.is_dir():
             stats: dict = {}
-            scanned, empty_folders = _scan_disk(root, stats)
+            expect = sum(len(e.get("backups", []) or []) for e in data.get("robots", []))
+            scanned, empty_folders = _scan_disk(root, stats, progress=progress, expect=expect)
             data["empty_folders"] = empty_folders
             # snapshots folded into a robot by IDENTITY while living in another
             # folder (a copied tree carrying its robot.json) — pull the counts

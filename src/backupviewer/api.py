@@ -110,6 +110,9 @@ class Api:
         self._jobs: dict[str, ftpbackup.BackupJob] = {}  # active/finished backup jobs
         self._scans: dict[str, discover._ScanJob] = {}  # folder + network scan jobs
         self._lib_sig: str | None = None  # tree signature at the last scan (None = never)
+        self._lib_seeded = False  # _lib_sig lazily seeded from settings on the first listing
+        self._lib_progress = {"active": False, "done": 0, "total": 0, "current": ""}
+        self._lib_progress_lock = threading.Lock()
 
     def bind(self, window, initial_backup: str | None = None):
         self._window = window
@@ -378,9 +381,7 @@ class Api:
 
     def _build_mastering(self, s: BackupSession | None = None) -> list:
         s = s or self._need_session()
-        mast_text = s.text("SYSMAST.VA")
-        if mast_text is None:
-            raise ApiError("MISSING_FILE", f"SYSMAST.VA not found in {s.root.name}")
+        mast_text = self._need_text("SYSMAST.VA", s)
         return s.cached("mastering", lambda: mastering.parse_mastering(mast_text))
 
     # -- tab data ---------------------------------------------------------------
@@ -666,9 +667,7 @@ class Api:
     ]
 
     def _dcs_report(self, s: BackupSession, name: str) -> dict:
-        text = s.text(name)
-        if text is None:
-            raise ApiError("MISSING_FILE", f"{name} not found in this backup")
+        text = self._need_text(name, s)
         return s.cached(f"dcs:{name.upper()}", lambda: dcs.parse_dcs_report(text))
 
     @_endpoint
@@ -700,9 +699,7 @@ class Api:
     def _sysvar_index(self, s: BackupSession):
         """Cached (records list, name->record) for SYSTEM.VA."""
         def build():
-            text = s.text("SYSTEM.VA")
-            if text is None:
-                raise ApiError("MISSING_FILE", "SYSTEM.VA not found in this backup")
+            text = self._need_text("SYSTEM.VA", s)
             recs = sysvars.records(text)
             return recs, {r.name.upper(): r for r in recs}
         return s.cached("sysvar_index", build)
@@ -728,9 +725,7 @@ class Api:
         # tables stored in MHGRIPDT (VALVE_TAB/PARTP_TAB/CLAMP_TAB/VMADE_TAB); the
         # parser resolves them to real DI/DO (name + number). See parsers/mhvalves.
         s = self._side_session(side)
-        text = s.text("MHGRIPDT.VA")
-        if text is None:
-            raise ApiError("MISSING_FILE", "MHGRIPDT.VA not found in this backup")
+        text = self._need_text("MHGRIPDT.VA", s)
         model = s.cached("mhvalves", lambda: mhvalves.build_mhvalves(text))
         # the full, untouched config as a nested tree (every field, headers on
         # headers) - MHGRIPDT (gripper data) + MHGRIPSU (valve setup) if present
@@ -761,9 +756,7 @@ class Api:
     @_endpoint
     def get_payloads(self, side: str = "a"):
         s = self._side_session(side)
-        text = s.text("SYMOTN.VA")
-        if text is None:
-            raise ApiError("MISSING_FILE", "SYMOTN.VA not found in this backup")
+        text = self._need_text("SYMOTN.VA", s)
         return s.cached("payloads", lambda: payloads.build_payloads_model(text))
 
     # -- compare two backups ---------------------------------------------------------
@@ -1250,9 +1243,61 @@ class Api:
         """Rebuild the library from the folder tree (picks up copied-in folders)
         and return the reconciled set."""
         root = settings.library_root()
-        data = library.scan_library_root(root)
-        self._lib_sig = library.scan_signature(root)   # this scan IS the fresh baseline
+        data = self._scan_with_progress(root)
+        self._set_lib_sig(root, library.scan_signature(root))   # this scan IS the fresh baseline
         return data
+
+    def _saved_lib_sig(self) -> str | None:
+        """The tree signature persisted by the previous run's scan — trusted only
+        when it was stamped for THIS root and the cached library actually holds
+        robots. Lets an unchanged tree boot straight off library.json instead of
+        paying a full rescan every launch (the cheap signature walk still runs
+        on every listing, so any tree change is caught exactly as before)."""
+        v = settings.get("lib_sig")
+        if not isinstance(v, dict) or not v.get("sig"):
+            return None
+        if v.get("root") != settings.library_root():
+            return None
+        try:
+            if not library.load().get("robots"):
+                return None   # wiped/empty cache: rescan, never serve an empty tree
+        except Exception:  # noqa: BLE001 - unreadable cache = no shortcut
+            return None
+        return v["sig"]
+
+    def _set_lib_sig(self, root, sig: str) -> None:
+        """Remember which tree the library cache reflects — in memory for this
+        run and in settings for the next boot. A falsy sig (unreachable root)
+        is not persisted: it's not a baseline, and keeping the old stamp means
+        the drive coming back unchanged still boots off the cache."""
+        self._lib_sig = sig
+        if not sig:
+            return
+        try:
+            settings.set_value("lib_sig", {"root": str(root), "sig": sig})
+        except OSError:
+            log.exception("could not persist the library signature")
+
+    def _scan_with_progress(self, root):
+        """library.scan_library_root with the shared progress snapshot raised so
+        lib_scan_progress polls (the home tab's loading bar) can watch it move."""
+        def tick(done, total, current):
+            with self._lib_progress_lock:
+                self._lib_progress.update(done=done, total=total, current=current)
+        with self._lib_progress_lock:
+            self._lib_progress.update(active=True, done=0, total=0, current="")
+        try:
+            return library.scan_library_root(root, progress=tick)
+        finally:
+            with self._lib_progress_lock:
+                self._lib_progress["active"] = False
+
+    @_endpoint
+    def lib_scan_progress(self):
+        """The running library scan's snapshot (inactive zeros between scans) —
+        polled by the home tab while a lib_list/lib_rescan call is in flight."""
+        with self._lib_progress_lock:
+            return dict(self._lib_progress)
 
     @_endpoint
     def lib_list(self):
@@ -1262,13 +1307,16 @@ class Api:
         no scan and no library.json rewrite. An unreachable root always takes
         the scan path, which serves the last known library marked stale."""
         root = settings.library_root()
+        if self._lib_sig is None and not self._lib_seeded:
+            self._lib_seeded = True
+            self._lib_sig = self._saved_lib_sig()
         sig = library.scan_signature(root)
         if sig != self._lib_sig or not sig:
-            data = library.scan_library_root(root)
+            data = self._scan_with_progress(root)
             # store the POST-scan signature: NTFS flushes directory-mtime
             # updates lazily, and the scan's own walk forces the flush - the
             # settled value is the one future listings will see.
-            self._lib_sig = library.scan_signature(root)
+            self._set_lib_sig(root, library.scan_signature(root))
             return data
         return library.list_robots()
 

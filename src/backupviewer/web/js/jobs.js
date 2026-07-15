@@ -26,6 +26,9 @@
   }
 
   BV.jobs = {
+    /* the one home of the job-status vocabulary — a future status (say
+       "timeout") lands here once instead of half-landing in screen copies */
+    isTerminal: isTerminal,
     /* remember which library row a just-started job belongs to, and watch it */
     track: function (jobId, meta) {
       tracked[jobId] = meta || {};

@@ -56,7 +56,6 @@
     toolbar.appendChild(ht);
 
     var vs = false;
-    var regsB = null;
     var hlState = null;
 
     var sb = BV.searchBox({
@@ -79,7 +78,6 @@
         vs = !vs;
         vsBtn.classList.toggle("primary", vs);
         hlWrap.style.display = vs ? "flex" : "none";
-        regsB = null; /* refetch per kind */
         load();
       });
       toolbar.appendChild(vsBtn);

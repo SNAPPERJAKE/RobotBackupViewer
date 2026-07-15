@@ -98,17 +98,40 @@
     BV.currentSearch = _filterBox;   /* '/' focuses the library filter */
   }
 
+  /* poll the backend's library-scan snapshot into `el` while a lib_list /
+     lib_rescan call is in flight; returns stop(). The first look at a plant-
+     scale tree is a full rescan (10s+), and a dead "loading…" reads as a
+     crash - this shows the scan actually moving (done/total · current robot). */
+  function watchScanProgress(el) {
+    var iv = setInterval(function () {
+      BV.api.call("lib_scan_progress").then(function (p) {
+        if (!p || !p.active) return;   /* signature check / cache path: keep the quiet label */
+        renderScanBar(el, {
+          status: "scanning", scanned: p.done, total: p.total, current: p.current,
+          found: p.total ? 0 : p.done, /* first-ever scan has no estimate: show a count instead */
+        });
+      }).catch(function () {});        /* no bridge / transient: stay quiet */
+    }, 400);
+    return function stop() { clearInterval(iv); };
+  }
+
   function loadLibrary() {
     if (!_libWrap) return;
     var body = _libWrap.querySelector(".home-lib-body");
+    var stopProgress = null;
     if (!body) {                                 /* first paint: build the shell once */
       _libWrap.innerHTML = "";
       _libWrap.appendChild(buildLibraryHead());
-      body = BV.el("div", { class: "home-lib-body" }, '<div class="dim">loading…</div>');
+      body = BV.el("div", { class: "home-lib-body" });
       _libWrap.appendChild(body);
+      var loading = BV.el("div", { class: "home-lib-loading" },
+        '<div class="dim">checking library…</div>');
+      body.appendChild(loading);
+      stopProgress = watchScanProgress(loading);
     }
 
     BV.api.call("lib_list").then(function (data) {
+      if (stopProgress) stopProgress();
       _robots = (data && data.robots) || [];
       _lastData = data;
       /* repaint IN PLACE: the old tree stays on screen until the new one is
@@ -136,6 +159,7 @@
         }
       }
     }).catch(function (e) {
+      if (stopProgress) stopProgress();
       body.innerHTML = '<div class="dim">library unavailable: ' + BV.esc(e.message) + "</div>";
     });
   }
@@ -204,9 +228,24 @@
       title: "re-read the library folder from disk (picks up copied-in backups)" }, "rescan");
     rescanBtn.addEventListener("click", function () {
       rescanBtn.disabled = true;
+      /* the tree stays up during the rescan; a slim bar above it shows the
+         scan actually moving (a plant-scale tree takes a while) */
+      var body = _libWrap && _libWrap.querySelector(".home-lib-body");
+      var strip = null;
+      var stopProgress = null;
+      if (body) {
+        strip = BV.el("div", { class: "home-lib-loading" });
+        body.insertBefore(strip, body.firstChild);
+        stopProgress = watchScanProgress(strip);
+      }
+      function settle() {
+        if (stopProgress) stopProgress();
+        if (strip) strip.remove();
+        rescanBtn.disabled = false;
+      }
       BV.api.call("lib_rescan")
-        .then(function () { BV.toast("library rescanned"); rescanBtn.disabled = false; refresh(); })
-        .catch(function (e) { BV.toast(e.message); rescanBtn.disabled = false; });
+        .then(function () { settle(); BV.toast("library rescanned"); refresh(); })
+        .catch(function (e) { settle(); BV.toast(e.message); });
     });
     var addBtn = BV.el("button", { class: "btn lib-add-robot", id: "lib-add-robot",
       title: "add a robot to the library" }, "+ add robot");
@@ -245,7 +284,7 @@
     var anyActive = false;
     ids.forEach(function (jobId) {
       var p = ev.jobs[jobId];
-      var terminal = p.status === "done" || p.status === "error" || p.status === "cancelled";
+      var terminal = BV.jobs.isTerminal(p);
       if (!terminal) anyActive = true;
       /* paint running jobs every tick; terminal ones once, when they land */
       if (terminal && (ev.newlyDone || []).indexOf(jobId) < 0) return;
@@ -852,7 +891,7 @@
   function renderRowProgress(robotId, p) {
     var slot = rowProgressSlot(robotId);
     if (!slot) return;
-    if (p.status === "done" || p.status === "error" || p.status === "cancelled") {
+    if (BV.jobs.isTerminal(p)) {
       var cls, txt;
       if (p.status === "done") { cls = "ok"; txt = "✓ " + p.done + " files"; }
       else if (p.status === "cancelled") { cls = ""; txt = "cancelled"; }
@@ -894,7 +933,7 @@
     var any = false;
     Object.keys(jobs).forEach(function (jobId) {
       var p = jobs[jobId];
-      if (p.status === "done" || p.status === "error" || p.status === "cancelled") return;
+      if (BV.jobs.isTerminal(p)) return;
       any = true;
       var rid = robotIdForJob(p);
       if (rid) renderRowProgress(rid, p);
@@ -1016,6 +1055,7 @@
     save.addEventListener("click", function () {
       var robot = fRobot.value.trim();
       if (!robot) { BV.toast("robot name required"); return; }
+      save.disabled = true;   /* double-click can't double-submit; re-enabled on failure */
       var fields = {
         plant: fPlant.value.trim(), line: fLine.value.trim(),
         robot: robot, model: fModel.value.trim(),
@@ -1032,7 +1072,7 @@
         Object.keys(fields).forEach(function (k) { draft[k] = fields[k]; });
         BV.api.call("lib_add", draft)
           .then(function () { m.close(true); BV.toast("added"); refresh(); })
-          .catch(function (e) { BV.toast(e.message); });
+          .catch(function (e) { BV.toast(e.message); save.disabled = false; });
         return;
       }
 
@@ -1044,7 +1084,7 @@
       if (!moveFolders) {
         BV.api.call("lib_update", entry.id, fields)
           .then(function () { m.close(true); BV.toast("saved"); refresh(); })
-          .catch(function (e) { BV.toast(e.message); });
+          .catch(function (e) { BV.toast(e.message); save.disabled = false; });
         return;
       }
 
@@ -1076,7 +1116,7 @@
               })
               .catch(function (e) { m.close(true); BV.toast(e.message); refresh(); });
           })
-          .catch(function (e) { BV.toast(e.message); });
+          .catch(function (e) { BV.toast(e.message); save.disabled = false; });
       }
 
       var collide = collidesWithExisting(entry.id, fields.robot, fields.line);
@@ -1121,7 +1161,7 @@
     var iv = setInterval(function () {
       BV.api.call("scan_progress", jobId).then(function (p) {
         onTick(p);
-        if (p.status === "done" || p.status === "error" || p.status === "cancelled") {
+        if (BV.jobs.isTerminal(p)) {
           clearInterval(iv);
           onDone(p);
         }
@@ -1320,8 +1360,11 @@
       });
       back.addEventListener("click", function () { m2.close(true); openMain(); });
       go.addEventListener("click", function () {
+        var line = fLine.value.trim();
+        /* same rule as the move flow: a robot never lands without a line */
+        if (!line) { BV.toast("a line name is required"); fLine.focus(); return; }
         go.disabled = true;
-        BV.api.call("lib_bulk_add", drafts, fPlant.value.trim(), fLine.value.trim()).then(function (r) {
+        BV.api.call("lib_bulk_add", drafts, fPlant.value.trim(), line).then(function (r) {
           m2.close(true);
           var added = (r.added || []).length, skipped = (r.skipped || []).length;
           BV.toast("added " + added + (skipped ? " · skipped " + skipped + " already in library" : ""));

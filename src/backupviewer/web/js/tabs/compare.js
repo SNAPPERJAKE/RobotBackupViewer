@@ -16,10 +16,8 @@
     expanded: {}, scrollTop: 0, hidden: {}, showHidden: false,
   };
 
-  /* compound-key separator: NUL cannot appear in names or paths. Built at
-     runtime because a literal NUL byte in the source makes git/grep treat
-     the whole file as binary (same fix as api.js). */
-  var KEYSEP = String.fromCharCode(0);
+  /* compound-key separator — see BV.KEYSEP in util.js for the NUL footgun */
+  var KEYSEP = BV.KEYSEP;
   function hideKey(catId, name) { return catId + KEYSEP + name; }
 
   function countsHtml(cat) {

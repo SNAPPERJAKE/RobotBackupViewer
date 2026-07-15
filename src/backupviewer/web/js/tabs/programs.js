@@ -44,7 +44,11 @@
         var progs = res[0], styleTable = res[1];
         var showSystem = listState.showSystem;
         var showBinary = listState.showBinary;
-        var typeFilter = listState.typeFilter || null;
+        /* the type filter is per-backup (tabState, wiped on backup switch) so
+           robot A's "TP only" never silently filters robot B; the rest of
+           listState is deliberately sticky across backups */
+        var pst = BV.tabState("programs");
+        var typeFilter = pst.typeFilter || null;
         /* inverted rank so clicking the ★ header once (ascending) floats
            starred style programs to the top */
         progs.forEach(function (p) {
@@ -53,7 +57,7 @@
         var typeSet = {};
         progs.forEach(function (p) { if (p.prog_type) typeSet[p.prog_type] = 1; });
         var progTypes = Object.keys(typeSet).sort();
-        if (typeFilter && progTypes.indexOf(typeFilter) < 0) typeFilter = listState.typeFilter = null;
+        if (typeFilter && progTypes.indexOf(typeFilter) < 0) typeFilter = pst.typeFilter = null;
 
         var sb = BV.searchBox({
           placeholder: "filter programs…",
@@ -107,7 +111,7 @@
               return { id: t, label: t.toLowerCase() };
             })),
             { value: typeFilter || "all", onChange: function (id) {
-                typeFilter = listState.typeFilter = (id === "all" ? null : id);
+                typeFilter = pst.typeFilter = (id === "all" ? null : id);
                 refill();
               } }
           );
@@ -137,6 +141,7 @@
                 vs = false;
                 vsBtn.classList.remove("primary");
                 diffBtn.style.display = "none";
+                hlWrap.style.display = "none";   /* var-hoisted; assigned before any click */
                 BV.toast(e.message);
               });
             } else build();
@@ -444,17 +449,6 @@
         expandBtn.addEventListener("click", function () {
           var big = tc.classList.toggle("expanded");
           expandBtn.title = big ? "shrink" : "expand to half-screen";
-          if (big && !tc.querySelector(".card-close")) {
-            var close = BV.el("button", { class: "btn card-close", title: "close" }, "✕");
-            close.addEventListener("click", function () {
-              tc.classList.remove("expanded");
-              close.remove();
-            });
-            th.appendChild(close);
-          } else if (!big) {
-            var c = tc.querySelector(".card-close");
-            if (c) c.remove();
-          }
         });
         th.appendChild(expandBtn);
         tc.appendChild(th);
