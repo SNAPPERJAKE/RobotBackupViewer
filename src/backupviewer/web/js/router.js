@@ -48,10 +48,50 @@
     });
   }
 
+  /* the credit is a clickable pill: it's the app's only "who made this / how do
+     I reach you" affordance, so it has to LOOK clickable without shouting over
+     the status line. Delegated below (statusR is innerHTML-rebuilt constantly,
+     so a per-render listener would leak). */
+  var CONTACT = "cmbeach96+backupviewer@gmail.com";
+  var REPO = "https://github.com/Kaptain-Kronic/RobotBackupViewer";
+
   function rightStatusHtml() {
     var v = BV.state.version ? "ver. " + BV.state.version.split(".").slice(0, 2).join(".") : "";
-    return v + ' <span class="credit">cody beach+claude code</span>';
+    return v + ' <span class="pill ghost credit-pill" title="about + contact">' +
+      "cody beach+claude code</span>";
   }
+
+  function aboutModal() {
+    var body = BV.el("div", { class: "about-box" });
+    body.appendChild(BV.el("div", { class: "about-line" },
+      "backupviewer <span class=\"accent\">" +
+      BV.esc(BV.state.version || "") + "</span>"));
+    body.appendChild(BV.el("div", { class: "about-line dim" }, "cody beach + claude code"));
+    body.appendChild(BV.el("div", { class: "about-lbl" }, "questions, bugs, suggestions"));
+    var mail = BV.el("div", { class: "about-mail" }, BV.esc(CONTACT));
+    body.appendChild(mail);
+    var acts = BV.el("div", { class: "lf-actions" });
+    var copyBtn = BV.el("button", { class: "btn primary", title: "copy the address" },
+      "copy email");
+    copyBtn.addEventListener("click", function () { BV.copyText(CONTACT, "email copied"); });
+    var repoBtn = BV.el("button", { class: "btn", title: "open the source on GitHub" },
+      "source");
+    repoBtn.addEventListener("click", function () {
+      BV.api.call("open_url", REPO).catch(function () { BV.copyText(REPO, "link copied"); });
+    });
+    var closeBtn = BV.el("button", { class: "btn" }, "close");
+    acts.appendChild(copyBtn);
+    acts.appendChild(repoBtn);
+    acts.appendChild(closeBtn);
+    body.appendChild(acts);
+    var m = BV.modal("about", body);
+    closeBtn.addEventListener("click", function () { m.close(); });
+  }
+
+  /* ONE delegated listener for the life of the app */
+  document.getElementById("statusbar").addEventListener("click", function (e) {
+    if (e.target.closest(".credit-pill")) aboutModal();
+  });
 
   function updateStatus() {
     var m = BV.state.manifest;

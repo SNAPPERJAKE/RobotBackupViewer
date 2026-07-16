@@ -220,6 +220,16 @@ body { overflow: hidden; }
 #statusbar .sep { margin: 0 0.5em; opacity: 0.45; }
 #statusbar .accent { color: var(--accent); }
 #statusbar .credit { font-size: 0.88em; color: var(--sub-alt); margin-left: 0.6em; }
+/* the credit pill: reads as a quiet chip at rest, lights up accent on hover so
+   it's discoverably clickable without competing with the status line */
+#statusbar .credit-pill {
+  margin-left: 0.6em; cursor: pointer; font-size: 0.72em;
+  transition: color var(--trans), border-color var(--trans), background var(--trans);
+}
+#statusbar .credit-pill:hover {
+  color: var(--accent); border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
 
 .hidden { display: none !important; }
 

@@ -1675,6 +1675,19 @@ class Api:
                 pass
         return str(rp)
 
+    @_endpoint
+    def open_url(self, url: str):
+        """Open a link in the user's default browser (the about box's source link).
+        Guarded to http/https so this can never become an arbitrary-scheme or
+        local-file launcher for anything that reaches the bridge."""
+        import webbrowser
+
+        u = (url or "").strip()
+        if not u.lower().startswith(("http://", "https://")):
+            raise ApiError("BAD_URL", "only http/https links can be opened")
+        webbrowser.open(u)
+        return u
+
     # -- take a new backup (FTP pull) ------------------------------------------
 
     @_endpoint

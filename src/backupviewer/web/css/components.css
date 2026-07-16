@@ -1133,6 +1133,19 @@ button.btn.danger:disabled { opacity: 0.5; cursor: default; }
 }
 .hs-chip-x:hover { color: var(--error); background: color-mix(in srgb, var(--error) 14%, transparent); }
 
+/* about box (the credit pill in the status bar) */
+.about-box { padding: 0.4rem 0.6rem 0.2rem; }
+.about-line { font-size: 0.95rem; }
+.about-line.dim { font-size: 0.84rem; margin-top: 0.1rem; }
+.about-lbl { color: var(--sub); font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.08em; margin: 0.8rem 0 0.25rem; }
+/* selectable on purpose: the address is the whole point of the box, and the
+   app-wide user-select allow-list doesn't reach here (there's a copy button too) */
+.about-mail {
+  user-select: text; font-family: var(--font-mono); font-size: 0.9rem;
+  color: var(--accent); background: var(--bg); border: 1px solid var(--edge);
+  border-radius: 6px; padding: 0.4rem 0.6rem; word-break: break-all;
+}
+
 /* manage-backups modal (manage_ui.js): the tidy-up actions bar on top (ready
    to fire, greyed without a selection), the partial strip full-width under it,
    then the two HEAVY lists (last run | stale) side by side. Same no-scroll
