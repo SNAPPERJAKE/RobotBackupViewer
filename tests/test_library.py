@@ -89,6 +89,73 @@ def test_bulk_add_dedupes(monkeypatch, tmp_path):
         assert e["plant"] == "P" and e["line"] == "L1"
 
 
+def _snap(root, plant, line, robot, date, hhmmss, meta=None):
+    """One dated snapshot folder; meta=None means no backup.json (a hand-import).
+    Carries a SUMMARY.DG so the scan's looks_like_backup test recognises it."""
+    import json
+    d = root / plant / line / robot / date / hhmmss
+    d.mkdir(parents=True)
+    (d / "SUMMARY.DG").write_text("x", encoding="utf-8")
+    if meta is not None:
+        (d / "backup.json").write_text(json.dumps(meta), encoding="utf-8")
+    return d
+
+
+def test_partial_backup_never_becomes_latest(monkeypatch, tmp_path):
+    """A pull that died mid-download (backup.json complete:false) is listed but
+    never adopted as latest_path/last_backup - the 'library says fresh backup,
+    files are missing' lie from the field. Sidecar-less imports keep today's
+    behavior, and a legacy sidecar without the field counts as complete."""
+    _iso(monkeypatch, tmp_path)
+    root = tmp_path / "lib"
+    old = _snap(root, "P", "L1", "R1", "2026_07_10", "08_00_00",
+                {"taken": "2026-07-10T08:00:00", "source": "ftp"})       # legacy = complete
+    part = _snap(root, "P", "L1", "R1", "2026_07_15", "09_00_00",
+                 {"taken": "2026-07-15T09:00:00", "source": "ftp", "complete": False})
+    imp = _snap(root, "P", "L1", "R2", "2026_07_14", "07_00_00", None)   # hand-import
+
+    data = library.scan_library_root(root)
+    by = {e["robot"]: e for e in data["robots"]}
+    r1 = by["R1"]
+    assert [b["path"] for b in r1["backups"]] == [str(part), str(old)]   # listed, newest first
+    assert r1["backups"][0].get("partial") is True
+    assert "partial" not in r1["backups"][1]
+    assert r1["backups"][0]["source"] == "ftp"       # no more "import" mislabel
+    assert r1["latest_path"] == str(old)             # the partial never becomes latest
+    assert r1["last_backup"] == "2026-07-10T08:00:00"
+
+    r2 = by["R2"]
+    assert "partial" not in r2["backups"][0]         # imports are not partials
+    assert r2["backups"][0]["source"] == "import"
+    assert r2["latest_path"] == str(imp)             # and stay fully eligible
+
+
+def test_partial_only_robot_still_opens(monkeypatch, tmp_path):
+    _iso(monkeypatch, tmp_path)
+    root = tmp_path / "lib"
+    part = _snap(root, "P", "L1", "R1", "2026_07_15", "09_00_00",
+                 {"taken": "2026-07-15T09:00:00", "source": "ftp", "complete": False})
+    data = library.scan_library_root(root)
+    e = next(x for x in data["robots"] if x["robot"] == "R1")
+    assert e["latest_path"] == "" and e["last_backup"] == ""   # nothing ever completed
+    assert len(e["backups"]) == 1
+    # ...but files are law: the robot still opens, falling back to the partial
+    assert library.resolve_open_path(e) == str(part)
+
+
+def test_resolve_open_path_prefers_complete(monkeypatch, tmp_path):
+    _iso(monkeypatch, tmp_path)
+    new_part = tmp_path / "R1" / "2026_07_15" / "09_00_00"
+    old_ok = tmp_path / "R1" / "2026_07_10" / "08_00_00"
+    new_part.mkdir(parents=True)
+    old_ok.mkdir(parents=True)
+    e = {"latest_path": "", "backups": [
+        {"path": str(new_part), "taken": "2026-07-15 09:00", "partial": True},
+        {"path": str(old_ok), "taken": "2026-07-10 08:00"},
+    ]}
+    assert library.resolve_open_path(e) == str(old_ok)
+
+
 def test_resolve_open_path(monkeypatch, tmp_path):
     """'latest' falls back to the newest dated snapshot that exists on disk when
     the Latest mirror is missing/stale; explicit paths pass through untouched."""

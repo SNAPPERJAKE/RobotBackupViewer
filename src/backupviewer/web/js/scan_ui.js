@@ -306,7 +306,7 @@
         });
 
         copyBtn.addEventListener("click", function () {
-          copyText(reportText(results, checks, queries));
+          BV.copyText(reportText(results, checks, queries), "report copied");
         });
         againBtn.addEventListener("click", function () { pickView(checks); });
       }
@@ -358,22 +358,6 @@
           });
         });
         return lines.join("\n");
-      }
-
-      function copyText(text) {
-        function fallback() {
-          var ta = BV.el("textarea");
-          ta.value = text;
-          document.body.appendChild(ta);
-          ta.select();
-          try { document.execCommand("copy"); BV.toast("report copied"); }
-          catch (e) { BV.toast("copy failed"); }
-          document.body.removeChild(ta);
-        }
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(text)
-            .then(function () { BV.toast("report copied"); }, fallback);
-        } else fallback();
       }
 
       /* boot: fetch the registry, then show the picker */

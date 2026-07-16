@@ -82,6 +82,24 @@ window.BV = {};
     toastTimer = setTimeout(function () { toastEl.classList.remove("show"); }, ms || 1800);
   };
 
+  /* clipboard with the WebView2-safe fallback; every report/copy button in the
+     app (scan report, backup log, future exports) shares this one path */
+  BV.copyText = function (text, okMsg) {
+    function done() { BV.toast(okMsg || "copied"); }
+    function fallback() {
+      var ta = BV.el("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); done(); }
+      catch (e) { BV.toast("copy failed"); }
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else fallback();
+  };
+
   /* simple modal helper; returns {close}. opts.beforeClose() -> false blocks a
      dismissal (backdrop / Esc / cancel) — the unsaved-work guard. close(true)
      bypasses it for a committed save or an explicit discard; the check is

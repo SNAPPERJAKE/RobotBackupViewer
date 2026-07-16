@@ -13,8 +13,10 @@ import os
 import re
 import threading
 import time
+import uuid
 from pathlib import Path
 
+from . import backuplog
 from . import compare
 from . import __version__
 from . import discover
@@ -1699,8 +1701,12 @@ class Api:
 
     @_endpoint
     def start_backup(self, spec: dict):
-        """Kick off an FTP backup on a worker thread; returns a job_id to poll."""
-        spec = spec or {}
+        """Kick off an FTP backup on a worker thread; returns a job_id to poll.
+        spec.run_id (the frontend stamps one per bulk click) groups the jobs of
+        one user action in the durable backup log."""
+        return self._start_backup_job(spec or {})
+
+    def _start_backup_job(self, spec: dict) -> dict:
         host = (spec.get("host") or "").strip()
         if not host:
             raise ApiError("BAD_SPEC", "robot host/IP is required")
@@ -1722,8 +1728,45 @@ class Api:
             recurse_fr=spec.get("recurse_fr", False), on_complete=_register,
         )
         self._jobs[job.id] = job
-        threading.Thread(target=job.run, name="backup-" + job.id, daemon=True).start()
-        return {"job_id": job.id}
+        run_id = (spec.get("run_id") or "").strip() or uuid.uuid4().hex
+        backuplog.start_job(run_id, job.id, spec)
+
+        def _run_and_log():
+            snap = job.run()          # returns the final snapshot on every path
+            try:
+                backuplog.finish_job(run_id, job.id, snap)
+            except Exception:  # noqa: BLE001 - the log must never kill a backup thread
+                log.exception("backup log write failed for %s", job.id)
+
+        threading.Thread(target=_run_and_log, name="backup-" + job.id, daemon=True).start()
+        return {"job_id": job.id, "run_id": run_id}
+
+    @_endpoint
+    def backup_log(self):
+        """The persisted backup-run history, newest run first (passwords are
+        never stored). Powers the Manage-backups "last run" panel."""
+        return backuplog.load()
+
+    @_endpoint
+    def retry_failed_backups(self, run_id: str = "", passwd: str = ""):
+        """Re-fire exactly the FAILED jobs of a run (default: the newest run)
+        as a fresh run. passwd, when given, applies to retried robots whose
+        saved spec carries an FTP user - the same shared-password model the
+        bulk flow uses; nothing is persisted."""
+        specs = backuplog.failed_specs(run_id or None)
+        if not specs:
+            raise ApiError("NOTHING_TO_RETRY", "that run has no failed backups")
+        new_run = uuid.uuid4().hex
+        fired = []
+        for sp in specs:
+            sp = dict(sp)
+            sp["run_id"] = new_run
+            if sp.get("user") and passwd:
+                sp["passwd"] = passwd
+            res = self._start_backup_job(sp)
+            fired.append({"robot_id": sp.get("robot_id", ""), "robot": sp.get("robot", ""),
+                          "job_id": res["job_id"]})
+        return {"run_id": new_run, "jobs": fired}
 
     @_endpoint
     def get_backup_progress(self, job_id: str):

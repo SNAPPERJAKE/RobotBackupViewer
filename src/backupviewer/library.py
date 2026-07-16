@@ -257,10 +257,16 @@ def resolve_open_path(e: dict, which: str = "latest") -> str:
     lp = e.get("latest_path", "")
     if lp and Path(lp).is_dir():
         return lp
-    for b in e.get("backups", []):          # newest-first
-        p = b.get("path", "")
-        if p and Path(p).is_dir():
-            return p
+    # fall back to the newest COMPLETE snapshot; a partial (died mid-download)
+    # only opens when it is literally all the robot has - better than nothing,
+    # and the UI pills it as partial either way
+    for want_partial in (False, True):
+        for b in e.get("backups", []):      # newest-first
+            if bool(b.get("partial")) != want_partial:
+                continue
+            p = b.get("path", "")
+            if p and Path(p).is_dir():
+                return p
     return ""
 
 
@@ -415,13 +421,32 @@ def _backup_record(snap: Path, meta: dict) -> dict:
                 note = nt.read_text(encoding="utf-8", errors="replace").strip()
         except OSError:
             pass
-    return {
+    rec = {
         "path": str(snap), "taken": _snap_taken(snap, meta),
         "type": meta.get("type", "") or "", "files": meta.get("files", 0) or 0,
         "bytes": meta.get("bytes", 0) or 0,
         "source": meta.get("source", "") or ("ftp" if meta else "import"),
         "note": note,
     }
+    # complete:false = OUR OWN pull that died mid-download (the backup engine
+    # writes the marker first and only flips it true as its last step). Only an
+    # explicit false marks a partial - a legacy sidecar without the field was
+    # written by code that only wrote on success, and a sidecar-less folder is
+    # a hand-import (labeled by `source` above), not a partial.
+    if meta.get("complete") is False:
+        rec["partial"] = True
+    return rec
+
+
+def _pick_latest(backups: list) -> dict | None:
+    """The newest record eligible to be 'the latest'. Partial snapshots never
+    become latest_path/last_backup - a pull that died mid-download would read
+    as a fresh complete backup while silently missing files (the exact lie
+    this app exists to prevent). backups is newest-first."""
+    for b in backups:
+        if not b.get("partial"):
+            return b
+    return None
 
 
 def robot_folder_of(snap) -> Path:
@@ -633,8 +658,9 @@ def _scan_disk(root: Path, stats: dict | None = None, progress=None, expect: int
     for key, g in groups.items():
         snaps = sorted(g.pop("_snaps"), key=lambda b: b.get("taken", ""), reverse=True)
         g["backups"] = snaps
-        g["latest_path"] = snaps[0]["path"] if snaps else ""
-        g["last_backup"] = snaps[0]["taken"] if snaps else ""
+        newest = _pick_latest(snaps)
+        g["latest_path"] = newest["path"] if newest else ""
+        g["last_backup"] = newest["taken"] if newest else ""
         out[key] = g
     return out, {"plants": sorted(empty_plants),
                  "lines": sorted(empty_lines, key=lambda x: (x["plant"], x["line"]))}
@@ -691,9 +717,10 @@ def _union_disk(e: dict, disk: dict) -> int:
             have.add(b.get("path"))
             added += 1
     e["backups"].sort(key=lambda b: b.get("taken", ""), reverse=True)
-    if e["backups"]:
-        e["latest_path"] = e["backups"][0]["path"]
-        e["last_backup"] = e["backups"][0].get("taken", e.get("last_backup", ""))
+    newest = _pick_latest(e["backups"])
+    if newest:
+        e["latest_path"] = newest["path"]
+        e["last_backup"] = newest.get("taken", e.get("last_backup", ""))
     for a in disk.get("aliases", []) or []:
         _add_alias(e, a.get("plant", ""), a.get("line", ""), a.get("robot", ""))
     return added
@@ -983,8 +1010,10 @@ def _rebuild_backups(e: dict, robot_dir, root) -> None:
     out = dated + extra
     out.sort(key=lambda b: b.get("taken", ""), reverse=True)
     e["backups"] = out
-    e["latest_path"] = out[0]["path"] if out else ""
-    e["last_backup"] = out[0].get("taken", "") if out else e.get("last_backup", "")
+    newest = _pick_latest(out)
+    e["latest_path"] = newest["path"] if newest else ""
+    e["last_backup"] = newest.get("taken", "") if newest else \
+        ("" if out else e.get("last_backup", ""))
 
 
 def _regen_latest(e: dict, root: Path):
@@ -993,6 +1022,8 @@ def _regen_latest(e: dict, root: Path):
     mirror untouched (don't destroy a good-but-currently-offline mirror)."""
     newest = None
     for b in e.get("backups", []):                     # newest-first
+        if b.get("partial"):
+            continue                                   # a partial never becomes the mirror
         p = Path(b.get("path", ""))
         if p.is_dir():
             newest = p

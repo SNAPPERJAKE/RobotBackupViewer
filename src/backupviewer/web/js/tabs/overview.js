@@ -265,9 +265,14 @@
     var btn = BV.el("button", { class: "btn ov-datepick", title: "switch to another dated backup" },
       "🕓 " + BV.esc(label));
     btn.addEventListener("click", function () {
+      /* "latest" tags the newest COMPLETE snapshot - a partial (a pull that
+         died mid-download) can sit newest in the list but is never "latest" */
+      var latestIdx = -1;
+      backups.some(function (b, i) { return !b.partial && (latestIdx = i, true); });
       BV.menu(btn, backups.map(function (b, i) {
         return {
-          label: fmtBackupDate(b.taken) + (i === 0 ? "  · latest" : "") + (b.path === current ? "  ✓" : ""),
+          label: fmtBackupDate(b.taken) + (b.partial ? "  · partial ⚠" : "") +
+            (i === latestIdx ? "  · latest" : "") + (b.path === current ? "  ✓" : ""),
           onClick: function () { if (b.path !== current) switchBackup(b.path); },
           /* every row except the open one gets a "vs" pill */
           action: b.path === current ? undefined : {

@@ -1133,6 +1133,44 @@ button.btn.danger:disabled { opacity: 0.5; cursor: default; }
 }
 .hs-chip-x:hover { color: var(--error); background: color-mix(in srgb, var(--error) 14%, transparent); }
 
+/* manage-backups modal (manage_ui.js): the tidy-up actions bar on top (ready
+   to fire, greyed without a selection), the partial strip full-width under it,
+   then the two HEAVY lists (last run | stale) side by side. Same no-scroll
+   discipline as the discover modal: the body never scrolls — only the lists
+   do — so the bar, summaries and buttons can never sink below the fold. */
+.modal.mb-modal { width: min(92vw, 60rem); max-width: none; max-height: 86vh; }
+.modal.mb-modal .modal-body { display: flex; overflow: hidden; min-height: 0; }
+.mb-host { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.mb-actbar {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  padding: 0.4rem 0.3rem 0.6rem;
+  border-bottom: 1px solid var(--edge-soft, transparent);
+}
+.mb-actbar .hs-cat-title { margin-right: 0.5rem; }
+.mb-partial { flex: 0 0 auto; }
+.mb-partial .mb-list { max-height: 18vh; }   /* the strip never starves the columns */
+.mb-cols { display: flex; gap: 1.4rem; flex: 1 1 auto; min-height: 0; }
+.mb-col { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.mb-colfill { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.mb-col .mb-list { flex: 1 1 auto; max-height: none; }
+@media (max-width: 760px) {
+  .mb-cols { flex-direction: column; flex: none; }
+  .mb-col .mb-list { max-height: 24vh; }
+  .mb-host { overflow-y: auto; }   /* narrow-window safety valve — never hide content */
+}
+.mb-sum { font-size: 0.86rem; padding: 0.12rem 0.3rem 0.3rem; }
+.mb-none { color: var(--sub); font-size: 0.8rem; padding: 0.1rem 0.3rem 0.45rem; }
+.mb-list { display: flex; flex-direction: column; gap: 0.15rem; min-height: 0; overflow-y: auto; margin: 0.1rem 0 0.25rem; }
+.mb-acts { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; padding: 0.15rem 0.3rem 0.5rem; }
+.mb-static { cursor: default; }
+.mb-static:hover { background: transparent; }
+.mb-stale-days {
+  width: 3.4rem; appearance: none; font: inherit; font-size: 0.82rem; text-align: right;
+  background: var(--bg2); color: var(--text);
+  border: 1px solid var(--edge); border-radius: 6px; padding: 0.14rem 0.35rem;
+}
+.mb-stale-days:focus { outline: none; border-color: var(--accent); }
+
 /* bulk-add + discover scan modals */
 .scan-info { font-size: 0.82rem; margin-bottom: 0.2rem; }
 .scan-bar { margin: 0.2rem 0 0.3rem; }

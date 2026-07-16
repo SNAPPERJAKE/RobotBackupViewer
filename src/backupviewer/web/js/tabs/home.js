@@ -194,15 +194,6 @@
     var hd = BV.el("button", { class: "btn lib-act-hide", title: "hide the selected robots from view" },
       "hide");
     hd.addEventListener("click", function () { hideSelectedInLine(_visibleRobots); });
-    var fx = BV.el("button", { class: "btn lib-act-fix",
-      title: "fix the selected robots' names from their backup contents" }, "fix names");
-    fx.addEventListener("click", function () { fixNamesInLine(_visibleRobots); });
-    var mg = BV.el("button", { class: "btn lib-act-merge",
-      title: "merge 2 selected duplicate robots into one" }, "merge");
-    mg.addEventListener("click", function () { mergeSelectedInLine(_visibleRobots); });
-    var mv = BV.el("button", { class: "btn lib-act-move",
-      title: "move the selected robots (and their backups) to another plant/line" }, "move to…");
-    mv.addEventListener("click", function () { moveSelectedFlow(_visibleRobots); });
     var sc = BV.el("button", { class: "btn lib-act-scan",
       title: "scan the selected robots' backups — DCS options, signatures, mastering, unused programs, or a find" },
       "scan");
@@ -211,12 +202,18 @@
       if (!sel.length) { BV.toast("select robots first"); return; }
       BV.scanUI.open(sel);
     });
+    /* fix names / merge / move live INSIDE manage backups now (with the backup
+       health panels) - the selection row stays backup / hide / scan / manage */
+    var mb = BV.el("button", { class: "btn lib-act-manage",
+      title: "backup health (last run, retries, partial + stale backups) and robot tidy-up (fix names, merge, move)" },
+      "manage backups");
+    mb.addEventListener("click", function () {
+      if (BV.manageUI) BV.manageUI.open();
+    });
     selActs.appendChild(bk);
     selActs.appendChild(hd);
-    selActs.appendChild(fx);
-    selActs.appendChild(mg);
-    selActs.appendChild(mv);
     selActs.appendChild(sc);
+    selActs.appendChild(mb);
     head.appendChild(selActs);
 
     var headActs = BV.el("div", { class: "home-lib-actions" });
@@ -386,6 +383,12 @@
     if (r.last_backup) meta.push("last " + BV.esc(r.last_backup));
     if (r.backups && r.backups.length) meta.push(r.backups.length + " saved");
     if (r.stale) meta.push('<span class="pill warn">missing</span>');
+    /* newest snapshot is a partial (a pull that died mid-download): say so -
+       "last <date>" above is already the last COMPLETE one */
+    if (r.backups && r.backups.length && r.backups[0].partial) {
+      meta.push('<span class="pill warn" title="the newest snapshot is a partial backup ' +
+        '(the pull never finished) — opening latest uses the last complete one">partial</span>');
+    }
     if (!r.latest_path && !(r.backups && r.backups.length) && !r.stale) {
       meta.push('<span class="pill ghost">no backup</span>');
     }
@@ -483,10 +486,12 @@
     var selN = selRobots.length;
     var count = _libWrap.querySelector(".lib-sel-count");
     if (count) count.textContent = selN ? selN + " selected" : "";
-    ["backup", "hide", "fix", "move", "scan"].forEach(function (k) {
+    ["backup", "hide", "scan"].forEach(function (k) {
       var b = _libWrap.querySelector(".lib-act-" + k);
       if (b) b.disabled = selN === 0;
     });
+    /* manage backups stays enabled with NO selection - its backup-health side
+       (last run / partial / stale) needs no robots picked */
     var hd = _libWrap.querySelector(".lib-act-hide");
     if (hd) {
       /* the button says what it will DO: all-hidden selection -> unhide */
@@ -495,9 +500,18 @@
       hd.title = unhide ? "unhide the selected robots"
                         : "hide the selected robots from view";
     }
-    var mg = _libWrap.querySelector(".lib-act-merge");
-    if (mg) mg.disabled = selN !== 2;                /* merge is strictly a pair */
   }
+
+  /* the manage-backups modal (manage_ui.js) drives the selected-robot flows
+     without owning selection state or the flows themselves */
+  BV.libActions = {
+    selected: function () {
+      return _visibleRobots.filter(function (r) { return _cl.has(r.id); });
+    },
+    fixNames: function () { fixNamesInLine(_visibleRobots); },
+    merge: function () { mergeSelectedInLine(_visibleRobots); },
+    moveTo: function () { moveSelectedFlow(_visibleRobots); },
+  };
 
   /* ---- per-line actions ---- */
 
@@ -854,9 +868,13 @@
 
     var needsPw = runnable.some(function (r) { return r.ftp && r.ftp.user; });
     promptSharedPassword(needsPw, function (pw) {
+      /* one run_id per click: the durable backup log groups these jobs as ONE
+         run, so "last run" + retry-failed survive the post-backup refresh */
+      var runId = "run-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
       runnable.forEach(function (r) {
         var spec = {
           host: r.ips[0], robot: r.robot, line: r.line, plant: r.plant,
+          robot_id: r.id, run_id: runId,
           user: (r.ftp && r.ftp.user) || "",
           passive: !r.ftp || r.ftp.passive !== false,
           passwd: (r.ftp && r.ftp.user) ? pw : "",
@@ -898,6 +916,7 @@
     ok.addEventListener("click", go);
     body.addEventListener("keydown", function (e) { if (e.key === "Enter") go(); });
   }
+  BV.promptSharedPassword = promptSharedPassword;   /* manage-backups retry reuses it */
 
   function rowProgressSlot(robotId) {
     if (!_libWrap) return null;
