@@ -1,5 +1,29 @@
 # Changelog
 
+## LibraryImporter 0.1 — the hand-out library seeder (companion exe)
+- **New standalone tool** (`dist/LibraryImporter.exe`, built from
+  `packaging/libraryimporter.spec`): give a coworker the exe + a robots.json
+  and their library exists in under a minute — no CLI, no BackupViewer needed
+  on the machine first.
+- Drag a robots.json onto the window (or click to browse), pick the plant
+  folder (`Documents\RobotBackups\<Plant>`), tick lines or robots — per-line
+  select-alls, one master "all", shift+click ranges, the same honest tri-state
+  checklist as the app — and **import** writes `<LINE>\<FULL NAME>\robot.json`
+  skeletons (schema 2, IP attached) that BackupViewer's scan adopts as-is.
+- **Never duplicates:** robots already in the destination (same folder, or the
+  IP already claimed anywhere in that line — even under a different name) show
+  grayed "already in library" and are skipped again at write time. Safe to
+  re-run as the list grows.
+- Soft warnings when the destination looks wrong (the library root itself,
+  nested too deep, a date-looking name the scanner would skip, or outside the
+  machine's configured library).
+- Carries the WebView2 boot rescue (one automatic software-rendering relaunch
+  on the 0x8007139F field failure) and logs to
+  `%LOCALAPPDATA%\LibraryImporter\app.log`.
+- The seeding core is a stdlib-only module (`libraryimporter/core.py`) with a
+  pluggable source-parser seam — a future DCDL parser (or absorbing the whole
+  flow into BackupViewer 2.0) slots in without touching the GUI.
+
 ## v0.99 — polish pass: one of everything, everywhere
 - **Every checkbox list is the same checklist now.** Robot rows, the per-line
   select-alls, the fix-names rename/merge previews, and discover results all

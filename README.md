@@ -152,6 +152,9 @@ src/backupviewer/
   backuplog.py    the durable backup-run log (survives the post-backup refresh)
   parsers/        pure text -> dict parsers (one per file family)
   web/            vanilla JS frontend, no build step (classic scripts, BV namespace)
+src/libraryimporter/
+  core.py         stdlib-only seeding core (parse -> plan -> seed), pluggable parsers
+  api.py, app.py  the LibraryImporter companion exe (see below)
 ```
 
 ```powershell
@@ -174,6 +177,20 @@ python -m PyInstaller packaging/backupviewer.spec --noconfirm
 
 Produces `dist/BackupViewer.exe` (onefile, no console). Target machines need the WebView2
 runtime (preinstalled on Windows 10/11; the app shows a download link if missing).
+
+## LibraryImporter (companion exe)
+
+A stripped hand-out tool that sets up a coworker's library fast: drag a robots.json
+(`{"LINE": {"ROBOT": "ip"}}`) onto it, pick the plant folder, tick the lines or robots
+to import (shift+click ranges work), hit **import** — it writes the same skeleton
+folders + `robot.json` sidecars the app scans in, IPs attached, ready to back up.
+Robots already in the destination are grayed out and never duplicated, so it's safe
+to re-run as the list grows.
+
+```powershell
+python -m PyInstaller packaging/libraryimporter.spec --noconfirm   # dist/LibraryImporter.exe
+python run_libraryimporter.py                                      # dev run
+```
 
 ## License
 

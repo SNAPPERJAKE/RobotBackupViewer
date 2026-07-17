@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Library Importer</title>
+<link rel="stylesheet" href="css/importer.css">
+</head>
+<body>
+<div id="app">
+  <header id="top">
+    <span class="logo">library<span class="logo-accent">importer</span></span>
+    <span id="ver" class="dim small"></span>
+    <span class="tagline dim small">robots.json &rarr; BackupViewer library</span>
+  </header>
+
+  <main id="steps">
+    <section class="step" id="step-source">
+      <div id="drop-zone" title="click to browse for a robots.json">
+        <div class="dz-idle">
+          <div class="dz-big">drag robots.json here</div>
+          <div class="dz-sub dim">or click to select</div>
+        </div>
+        <div class="dz-loaded">
+          <span id="src-name"></span>
+          <span id="src-meta" class="dim"></span>
+          <span class="dz-change">change</span>
+        </div>
+      </div>
+      <div id="src-warnings" class="dim small"></div>
+    </section>
+
+    <section class="step" id="step-dest">
+      <div class="dest-row">
+        <button id="btn-dest" class="btn">select destination&hellip;</button>
+        <span id="dest-path" class="dim"></span>
+      </div>
+      <div class="dim small">the plant folder, e.g. Documents\RobotBackups\YourPlant</div>
+      <div id="dest-warnings"></div>
+    </section>
+
+    <section class="step" id="step-robots">
+      <div id="robots-head" class="hidden">
+        <label class="selall"><input type="checkbox" id="sel-all" class="lf-check"><span>all</span></label>
+        <span id="head-count" class="dim small"></span>
+      </div>
+      <div id="lines"></div>
+    </section>
+  </main>
+
+  <div id="result" class="hidden"></div>
+
+  <footer id="gobar">
+    <span id="go-summary" class="dim small"></span>
+    <button id="btn-go" class="btn primary" disabled>import</button>
+  </footer>
+</div>
+<script src="js/util.js"></script>
+<script src="js/api.js"></script>
+<script src="js/checklist.js"></script>
+<script src="js/importer.js"></script>
+</body>
+</html>
