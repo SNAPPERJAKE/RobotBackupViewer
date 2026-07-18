@@ -142,6 +142,11 @@ shareable:
 
 ## Development
 
+Contributing or building alongside? Read [CLAUDE.md](CLAUDE.md) (project
+principles — also auto-loaded by Claude Code sessions in this repo) and
+[ROADMAP.md](ROADMAP.md) (what's planned, decided, and up for grabs).
+[CHANGELOG.md](CHANGELOG.md) tracks what already shipped.
+
 ```
 src/backupviewer/
   app.py          window boot (resource_path works in dev + PyInstaller)
