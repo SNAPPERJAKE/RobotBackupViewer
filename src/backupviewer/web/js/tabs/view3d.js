@@ -1,0 +1,594 @@
+/* tabs/view3d.js - "3D View": DCS zone geometry drawn to scale.
+
+   Viewport (left) = hand-rolled SVG projection (BV.proj3d) - no WebGL, no
+   libraries, so it renders fine even on the software-rendering rescue
+   path. Side panel (right) = every DCS check as a row: cartesian zones
+   get a show/hide checkbox + a color swatch matching the viewport;
+   joint/speed checks carry data only (nothing honest to draw without a
+   robot model); each row expands to its pendant-style detail
+   (BV.dcsDetail). Six fixed views + pan (drag) / zoom (wheel) / fit.
+   The robot itself is a base marker + axes today - an imported robot
+   model would slot in as one more draw layer between grid and zones. */
+(function () {
+  "use strict";
+
+  var NICE = [100, 250, 500, 1000, 2000, 5000, 10000, 20000];
+
+  function st() {
+    var s = BV.tabState("view3d");
+    if (!s.init) {
+      s.init = true;
+      s.view = "iso";
+      s.showDisabled = false;
+      s.hidden = {};   /* zone n -> true when unchecked */
+      s.group = 0;     /* 0 = all groups */
+      s.box = {};      /* per-view viewBox override from pan/zoom */
+    }
+    if (s.az === undefined) { s.az = -24.8; s.el = 36.8; } /* live orbit angles */
+    if (s.persp === undefined) s.persp = false; /* orthographic by default */
+    return s;
+  }
+
+  /* ---- zone colors: rotate the theme accent's hue (golden angle) so
+     every theme keeps its own character and 32 zones stay tellable ---- */
+
+  function accentHsl() {
+    var v = getComputedStyle(document.body).getPropertyValue("--accent").trim();
+    var m = /^#?([0-9a-f]{6})$/i.exec(v);
+    if (!m) return [200, 70, 55]; /* non-hex theme value: neutral fallback hue */
+    var r = parseInt(m[1].slice(0, 2), 16) / 255;
+    var g = parseInt(m[1].slice(2, 4), 16) / 255;
+    var b = parseInt(m[1].slice(4, 6), 16) / 255;
+    var max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+    var h = 0, l = (max + min) / 2;
+    var sat = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+    if (d) {
+      if (max === r) h = 60 * (((g - b) / d) % 6);
+      else if (max === g) h = 60 * ((b - r) / d + 2);
+      else h = 60 * ((r - g) / d + 4);
+    }
+    return [(h + 360) % 360, sat * 100, l * 100];
+  }
+
+  function zoneColor(base, n) {
+    var h = (base[0] + (n - 1) * 137.508) % 360;
+    var s = Math.min(90, Math.max(45, base[1]));
+    var l = Math.min(65, Math.max(45, base[2]));
+    return "hsl(" + h.toFixed(1) + "," + s.toFixed(0) + "%," + l.toFixed(0) + "%)";
+  }
+
+  function statusPill(stat) {
+    if (!stat || /^-+$/.test(stat)) return "";
+    var v = (stat === "OK" || stat === "SAFE") ? "ok-soft"
+      : (stat === "CHGD" || stat === "PEND" || stat === "WARN") ? "warn" : "err";
+    return BV.pill(stat.toLowerCase(), v);
+  }
+
+  function niceStep(raw) {
+    for (var i = 0; i < NICE.length; i++) if (NICE[i] >= raw) return NICE[i];
+    return NICE[NICE.length - 1];
+  }
+
+  /* ---- viewport ---- */
+
+  function visibleZones(data, s) {
+    return data.cpc.filter(function (z) {
+      if (!s.showDisabled && !z.enabled) return false;
+      if (s.group && z.group !== s.group) return false;
+      return !s.hidden[z.n];
+    });
+  }
+
+  function draw(svg, data, s, colors) {
+    var zones = visibleZones(data, s);
+
+    /* world geometry per zone + world bounds (grid and fit both use them) */
+    var wmin = [-1000, -1000, 0], wmax = [1000, 1000, 0];
+    var wpts = [[0, 0, 0]];
+    var geo = [];   /* {z, W, faces, edges} */
+    zones.forEach(function (z) {
+      var toW = BV.proj3d.frameTransform(z.frame);
+      var pr = BV.proj3d.prism(z.poly, z.z1, z.z2);
+      var W = pr.pts.map(toW);
+      wpts = wpts.concat(W);
+      geo.push({ z: z, W: W, faces: pr.faces, edges: pr.edges });
+    });
+    var tcpW = data.tcp ? BV.proj3d.frameTransform(data.tcp.frame)(data.tcp.xyz) : null;
+    if (tcpW) wpts.push(tcpW);
+    wpts.forEach(function (p) {
+      for (var k = 0; k < 3; k++) {
+        if (p[k] < wmin[k]) wmin[k] = p[k];
+        if (p[k] > wmax[k]) wmax[k] = p[k];
+      }
+    });
+
+    /* bounding sphere BEFORE the projector - perspective pivots on its
+       center, and rotation math pins depths there */
+    var C = [(wmin[0] + wmax[0]) / 2, (wmin[1] + wmax[1]) / 2, (wmin[2] + wmax[2]) / 2];
+    var R = 0;
+    wpts.forEach(function (p) {
+      var d = Math.hypot(p[0] - C[0], p[1] - C[1], p[2] - C[2]);
+      if (d > R) R = d;
+    });
+    R = R || 800;
+
+    var persp = s.persp ? { center: C, dist: 3.5 * R } : null;
+    var proj = s.view === "orbit"
+      ? BV.proj3d.orbitProjector(s.az, s.el, persp)
+      : BV.proj3d.projector(s.view, persp);
+    svg._proj = proj;
+    svg._center = C;
+    svg._persp = persp;
+    var scr = geo.map(function (g) {
+      return { z: g.z, spts: g.W.map(proj.project), faces: g.faces, edges: g.edges };
+    });
+
+    /* rotation-invariant fit: the content's world bounding SPHERE projects
+       to the same circle at EVERY angle, so auto-fit cannot "breathe"
+       while orbiting. (Fitting the projected bounding box did exactly
+       that - its extent changes with the angle, even spinning in place
+       over the top.) Bonus: mm-per-px now matches across all views.
+       Perspective magnifies the near side by up to D/(D-R) = 1.4 - the
+       pad covers it. */
+    var fitR = R * 1.12 * (persp ? 1.4 : 1);
+    var c2 = proj.project(C);
+    var fit = { x: c2[0] - fitR, y: c2[1] - fitR, w: 2 * fitR, h: 2 * fitR };
+    svg._fitBox = fit;
+    var box = s.box[s.view] || fit;
+    svg.setAttribute("viewBox", box.x + " " + box.y + " " + box.w + " " + box.h);
+
+    /* ---- scene layer (viewBox space): geometry only, never text ---- */
+    var out = [];
+
+    /* floor grid (world Z=0): side views collapse it to the floor line */
+    var step = niceStep(Math.max(wmax[0] - wmin[0], wmax[1] - wmin[1]) / 10);
+    var gx0 = Math.floor(wmin[0] / step) - 1, gx1 = Math.ceil(wmax[0] / step) + 1;
+    var gy0 = Math.floor(wmin[1] / step) - 1, gy1 = Math.ceil(wmax[1] / step) + 1;
+    var i, a, b;
+    for (i = gx0; i <= gx1; i++) {
+      a = proj.project([i * step, gy0 * step, 0]); b = proj.project([i * step, gy1 * step, 0]);
+      out.push('<line class="v3-grid" x1="' + a[0] + '" y1="' + a[1] + '" x2="' + b[0] + '" y2="' + b[1] + '"/>');
+    }
+    for (i = gy0; i <= gy1; i++) {
+      a = proj.project([gx0 * step, i * step, 0]); b = proj.project([gx1 * step, i * step, 0]);
+      out.push('<line class="v3-grid" x1="' + a[0] + '" y1="' + a[1] + '" x2="' + b[0] + '" y2="' + b[1] + '"/>');
+    }
+
+    /* world axes at the robot base (one grid-step long - true to scale) */
+    var o2 = proj.project([0, 0, 0]);
+    var tips = {};
+    ["x", "y", "z"].forEach(function (ax, k) {
+      var e = [0, 0, 0];
+      e[k] = step;
+      tips[ax] = proj.project(e);
+      out.push('<line class="v3-ax v3-ax-' + ax + '" x1="' + o2[0] + '" y1="' + o2[1] +
+        '" x2="' + tips[ax][0] + '" y2="' + tips[ax][1] + '"/>');
+    });
+
+    /* zone faces, painter-sorted across ALL zones so overlaps stack right */
+    var faces = [];
+    scr.forEach(function (sz) {
+      var color = colors[sz.z.n];
+      var op = sz.z.side === "out" ? 0.26 : sz.z.side === "in" ? 0.10 : 0.16;
+      sz.faces.forEach(function (f) {
+        var d = 0, pts = [];
+        f.forEach(function (idx) { d += sz.spts[idx][2]; pts.push(sz.spts[idx][0] + "," + sz.spts[idx][1]); });
+        faces.push({ d: d / f.length, html: '<polygon class="v3-face" points="' + pts.join(" ") +
+          '" fill="' + color + '" fill-opacity="' + op + '"/>' });
+      });
+    });
+    faces.sort(function (p, q) { return p.d - q.d; });
+    faces.forEach(function (f) { out.push(f.html); });
+
+    /* wireframe per zone (keep-in = dashed envelope) */
+    scr.forEach(function (sz) {
+      var dash = sz.z.side === "in" ? ' stroke-dasharray="6 4"' : "";
+      var d = "";
+      sz.edges.forEach(function (e) {
+        d += "M" + sz.spts[e[0]][0] + " " + sz.spts[e[0]][1] +
+          "L" + sz.spts[e[1]][0] + " " + sz.spts[e[1]][1];
+      });
+      out.push('<path class="v3-edge" d="' + d + '" stroke="' + colors[sz.z.n] + '"' + dash + "/>");
+    });
+
+    svg.innerHTML = out.join("");
+
+    /* ---- overlay layer (PIXEL space): every label and furniture piece
+       at constant screen size. Zoom/orbit move the geometry, never the
+       text. World-anchored bits (zone names, axis letters, tcp, base
+       dot) re-project to px each draw; ruler/notes/hint pin to the
+       viewport corners. Same uniform meet-scale as the gesture math. */
+    var ovl = svg._ovl;
+    if (!ovl) return;
+    var rect = svg.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) { ovl.innerHTML = ""; return; }
+    var sc = Math.min(rect.width / box.w, rect.height / box.h) || 1;
+    var ox = (rect.width - box.w * sc) / 2, oy = (rect.height - box.h * sc) / 2;
+    function toPx(p2) { return [(p2[0] - box.x) * sc + ox, (p2[1] - box.y) * sc + oy]; }
+    ovl.setAttribute("viewBox", "0 0 " + rect.width + " " + rect.height);
+    var ov = [];
+
+    var op2 = toPx(o2);
+    ov.push('<circle class="v3-base" cx="' + op2[0] + '" cy="' + op2[1] + '" r="3.5"/>');
+    ["x", "y", "z"].forEach(function (ax) {
+      var t = toPx(tips[ax]);
+      ov.push('<text class="v3-ax-lab v3-ax-' + ax + '" x="' + (op2[0] + (t[0] - op2[0]) * 1.14) +
+        '" y="' + (op2[1] + (t[1] - op2[1]) * 1.14 + 4) + '" font-size="11" text-anchor="middle">' +
+        ax.toUpperCase() + "</text>");
+    });
+
+    scr.forEach(function (sz) {
+      var cx = 0, cy = 0;
+      sz.spts.forEach(function (p) { cx += p[0]; cy += p[1]; });
+      var p = toPx([cx / sz.spts.length, cy / sz.spts.length]);
+      ov.push('<text class="v3-zlab" x="' + p[0] + '" y="' + p[1] + '" fill="' + colors[sz.z.n] +
+        '" font-size="12">' + BV.esc(sz.z.label) + "</text>");
+    });
+
+    /* TCP position captured when the verify report was written */
+    if (tcpW) {
+      var tp = toPx(proj.project(tcpW));
+      ov.push('<g class="v3-tcp"><circle cx="' + tp[0] + '" cy="' + tp[1] + '" r="6"/>' +
+        '<line x1="' + (tp[0] - 11) + '" y1="' + tp[1] + '" x2="' + (tp[0] + 11) + '" y2="' + tp[1] + '"/>' +
+        '<line x1="' + tp[0] + '" y1="' + (tp[1] - 11) + '" x2="' + tp[0] + '" y2="' + (tp[1] + 11) + '"/>' +
+        '<text x="' + (tp[0] + 13) + '" y="' + (tp[1] - 7) + '" font-size="11">tcp</text></g>');
+    }
+
+    /* scale ruler: largest nice mm length that stays ~1/4 viewport wide */
+    var RULER = [10, 25, 50].concat(NICE);
+    var mm = RULER[0];
+    for (i = 0; i < RULER.length; i++) if (RULER[i] * sc <= rect.width * 0.28) mm = RULER[i];
+    var bpx = mm * sc, bx = 16, by = rect.height - 16;
+    ov.push('<g class="v3-scale"><line x1="' + bx + '" y1="' + by + '" x2="' + (bx + bpx) + '" y2="' + by + '"/>' +
+      '<line x1="' + bx + '" y1="' + (by - 5) + '" x2="' + bx + '" y2="' + (by + 5) + '"/>' +
+      '<line x1="' + (bx + bpx) + '" y1="' + (by - 5) + '" x2="' + (bx + bpx) + '" y2="' + (by + 5) + '"/>' +
+      '<text x="' + (bx + bpx / 2) + '" y="' + (by - 6) + '" font-size="11">' + mm + " mm</text></g>");
+
+    var notes = [];
+    if (zones.some(function (z) { return z.approx || z.frame_missing; })) {
+      notes.push("⚠ frame rotation unknown — geometry approximate");
+    }
+    if (!zones.length) {
+      notes.push(data.cpc.length ? "no zones shown — check some on the right" +
+        (s.showDisabled ? "" : " or “show disabled”") : "no cartesian zones in this backup");
+    }
+    notes.forEach(function (t, k) {
+      ov.push('<text class="v3-note" x="16" y="' + (22 + k * 17) + '" font-size="11.5">' + BV.esc(t) + "</text>");
+    });
+    ov.push('<text class="v3-hint" x="' + (rect.width - 10) + '" y="' + (rect.height - 8) +
+      '" text-anchor="end" font-size="10.5">drag rotate · mid-drag pan · wheel zoom · dblclick fit</text>');
+
+    ovl.innerHTML = ov.join("");
+  }
+
+  /* ---- orbit / pan / zoom (per view, stored in tab state) ---- */
+
+  function wireViewport(svg, s, redraw, viewSeg) {
+    function boxKey() { return s.view; }
+    function curBox() { return s.box[boxKey()] || svg._fitBox; }
+    /* preserveAspectRatio="meet" scales the viewBox UNIFORMLY and letterboxes
+       the slack axis, so px -> viewBox conversion must use that ONE scale for
+       both axes. (Using width/height independently made pan lag to a fraction
+       of the mouse on whichever axis was letterboxed.) */
+    function metrics() {
+      var rect = svg.getBoundingClientRect();
+      var box = curBox();
+      var sc = Math.min(rect.width / box.w, rect.height / box.h) || 1;
+      return {
+        box: box, sc: sc,
+        ox: rect.left + (rect.width - box.w * sc) / 2,
+        oy: rect.top + (rect.height - box.h * sc) / 2,
+      };
+    }
+
+    svg.addEventListener("wheel", function (e) {
+      e.preventDefault();
+      var m = metrics();
+      var fit = svg._fitBox;
+      var k = Math.exp(e.deltaY * 0.0015);
+      var nw = Math.min(Math.max(m.box.w * k, fit.w / 50), fit.w * 20);
+      k = nw / m.box.w;
+      var cx = m.box.x + (e.clientX - m.ox) / m.sc;
+      var cy = m.box.y + (e.clientY - m.oy) / m.sc;
+      s.box[boxKey()] = {
+        x: cx - (cx - m.box.x) * k, y: cy - (cy - m.box.y) * k,
+        w: m.box.w * k, h: m.box.h * k,
+      };
+      redraw();
+    }, { passive: false });
+
+    var drag = null;
+    svg.addEventListener("pointerdown", function (e) {
+      var pan = e.button === 1 || (e.button === 0 && e.shiftKey);
+      if (!pan && e.button !== 0) return;
+      e.preventDefault(); /* keep middle-click from starting autoscroll */
+      /* a drag out of a named view starts orbiting FROM that view's angles */
+      var a = BV.proj3d.PRESET_ANGLES[s.view];
+      /* rotate about whatever sits at the viewport CENTER, not the world
+         origin: when the view was panned, unproject the center point (at
+         the scene center's depth, where ortho and perspective agree) and
+         keep it pinned there while the angles change */
+      var pv = null;
+      if (!pan && s.box[s.view] && svg._proj) {
+        var bb = curBox();
+        pv = svg._proj.unproject(bb.x + bb.w / 2, bb.y + bb.h / 2,
+                                 svg._proj.depthOf(svg._center));
+      }
+      drag = {
+        mode: pan ? "pan" : "rotate", live: false,
+        x: e.clientX, y: e.clientY,
+        box: curBox(), sc: metrics().sc, pivot: pv,
+        az: a ? a[0] : s.az, el: a ? a[1] : s.el,
+      };
+      /* synthetic pointer events (the probe) have no capturable pointerId */
+      try { svg.setPointerCapture(e.pointerId); } catch (err) { /* noop */ }
+      svg.classList.add("dragging");
+    });
+    svg.addEventListener("pointermove", function (e) {
+      if (!drag) return;
+      var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      if (drag.mode === "pan") {
+        s.box[boxKey()] = {
+          x: drag.box.x - dx / drag.sc, y: drag.box.y - dy / drag.sc,
+          w: drag.box.w, h: drag.box.h,
+        };
+        redraw();
+        return;
+      }
+      /* rotate (spin-the-scene): a real drag - not click noise - leaves the
+         preset and becomes the live orbit view */
+      if (!drag.live && Math.abs(dx) + Math.abs(dy) < 3) return;
+      if (!drag.live) {
+        drag.live = true;
+        s.view = "orbit";
+        if (viewSeg && viewSeg.setActive) viewSeg.setActive("orbit");
+      }
+      s.az = drag.az - dx * 0.35;
+      s.el = Math.max(-89.5, Math.min(89.5, drag.el - dy * 0.35));
+      if (drag.pivot) {
+        var np = BV.proj3d.orbitProjector(s.az, s.el, svg._persp);
+        var p2 = np.project(drag.pivot);
+        s.box.orbit = { x: p2[0] - drag.box.w / 2, y: p2[1] - drag.box.h / 2,
+                        w: drag.box.w, h: drag.box.h };
+      }
+      redraw();
+    });
+    ["pointerup", "pointercancel"].forEach(function (ev) {
+      svg.addEventListener(ev, function () { drag = null; svg.classList.remove("dragging"); });
+    });
+    svg.addEventListener("dblclick", function () { delete s.box[boxKey()]; redraw(); });
+  }
+
+  /* ---- side panel ---- */
+
+  function panelRow(opts) {
+    var node = BV.el("div", { class: "v3-row" + (opts.dim ? " dim" : "") });
+    var head = BV.el("div", { class: "v3-row-head" });
+    if (opts.check) head.appendChild(opts.check);
+    if (opts.swatch) head.insertAdjacentHTML("beforeend",
+      '<span class="v3-swatch" style="background:' + opts.swatch + '"></span>');
+    head.insertAdjacentHTML("beforeend",
+      '<span class="v3-row-label">' + BV.esc(opts.label) + "</span>" +
+      '<span class="v3-row-tags">' + (opts.tags || "") + "</span>");
+    var body = BV.el("div", { class: "v3-row-body" });
+    if (opts.fillBody) opts.fillBody(body);
+    node.appendChild(head);
+    node.appendChild(body);
+    BV.collapsible(node, head, body);
+    return node;
+  }
+
+  function zoneCheck(z, s, redraw) {
+    var c = BV.el("input", { type: "checkbox", class: "v3-check", title: "show in viewport" });
+    c.checked = !s.hidden[z.n];
+    c.addEventListener("click", function (e) { e.stopPropagation(); });
+    c.addEventListener("change", function () {
+      if (c.checked) delete s.hidden[z.n]; else s.hidden[z.n] = true;
+      redraw();
+    });
+    return c;
+  }
+
+  function catHead(label, enabledCount, total, actions) {
+    var el = BV.el("div", { class: "v3-cat" });
+    el.innerHTML = '<span class="v3-cat-label">' + BV.esc(label) + "</span>" +
+      '<span class="v3-cat-count">' + enabledCount + "/" + total + "</span>";
+    (actions || []).forEach(function (a) { el.appendChild(a); });
+    return el;
+  }
+
+  function miniBtn(text, title, onClick) {
+    var b = BV.el("button", { class: "btn v3-mini", title: title }, text);
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  function buildSide(side, data, s, colors, redraw) {
+    side.innerHTML = "";
+    var listed = function (arr) {
+      return arr.filter(function (e) {
+        if (s.group && e.group && e.group !== s.group) return false;
+        return s.showDisabled || e.enabled || e.active;
+      });
+    };
+
+    /* cartesian zones - the drawable category, checkbox + swatch */
+    var zs = listed(data.cpc);
+    if (data.cpc.length) {
+      var en = data.cpc.filter(function (z) { return z.enabled; }).length;
+      side.appendChild(catHead("cartesian position", en, data.cpc.length, [
+        miniBtn("all", "show every listed zone", function () {
+          zs.forEach(function (z) { delete s.hidden[z.n]; });
+          buildSide(side, data, s, colors, redraw); redraw();
+        }),
+        miniBtn("none", "hide every listed zone", function () {
+          zs.forEach(function (z) { s.hidden[z.n] = true; });
+          buildSide(side, data, s, colors, redraw); redraw();
+        }),
+      ]));
+      zs.forEach(function (z) {
+        var tags = "";
+        if (z.side === "out") tags += BV.pill("keep-out", "acc");
+        else if (z.side === "in") tags += BV.pill("keep-in", "ghost");
+        else tags += BV.pill(z.method_text || "?", "ghost");
+        if (z.approx || z.frame_missing) tags += BV.pill("approx", "warn");
+        if (!z.enabled) tags += BV.pill("disabled", "ghost");
+        tags += statusPill(z.status);
+        side.appendChild(panelRow({
+          check: zoneCheck(z, s, redraw),
+          swatch: colors[z.n],
+          label: z.label,
+          tags: tags,
+          dim: !z.enabled,
+          fillBody: function (body) { body.appendChild(BV.dcsDetail(z.detail || [])); },
+        }));
+      });
+    }
+
+    /* data-only categories: nothing honest to draw without a robot model */
+    [["joint position", data.jpc, function (e) {
+      return BV.pill("J" + e.axis, "ghost") + BV.pill(e.side === "out" ? "keep-out" : "keep-in", "ghost");
+    }],
+    ["cartesian speed", data.csc, function (e) {
+      return BV.pill(e.limit + " mm/s", "ghost");
+    }],
+    ["joint speed", data.jsc, function (e) {
+      return BV.pill("J" + e.axis, "ghost");
+    }]].forEach(function (cat) {
+      var entries = listed(cat[1]);
+      if (!entries.length) return;
+      var en = cat[1].filter(function (e) { return e.enabled; }).length;
+      side.appendChild(catHead(cat[0], en, cat[1].length));
+      entries.forEach(function (e) {
+        side.appendChild(panelRow({
+          label: e.label,
+          tags: cat[2](e) + (!e.enabled ? BV.pill("disabled", "ghost") : ""),
+          dim: !e.enabled,
+          fillBody: function (body) { body.appendChild(BV.dcsDetail(e.detail || [])); },
+        }));
+      });
+    });
+
+    /* DCS user models (robot/EOAT collision shapes - link-attached, so
+       placing them needs kinematics we don't have; data only) */
+    var ms = data.models.filter(function (m) { return s.showDisabled || m.active; });
+    if (ms.length) {
+      var mn = data.models.filter(function (m) { return m.active; }).length;
+      side.appendChild(catHead("user models", mn, data.models.length));
+      ms.forEach(function (m) {
+        side.appendChild(panelRow({
+          label: m.label,
+          tags: (m.elem_count ? BV.pill(m.elem_count + " elem", "ghost") : "") + statusPill(m.status),
+          dim: !m.active,
+          fillBody: function (body) {
+            if (m.detail && m.detail.length) body.appendChild(BV.dcsDetail(m.detail));
+            (m.elements || []).forEach(function (el) {
+              body.insertAdjacentHTML("beforeend",
+                '<div class="dcs-sub">element ' + el.num + "</div>");
+              body.appendChild(BV.dcsDetail(el.detail || []));
+            });
+            if (!(m.detail && m.detail.length) && !(m.elements || []).length) {
+              body.innerHTML = '<div class="dim" style="padding:.3rem .2rem">no elements</div>';
+            }
+          },
+        }));
+      });
+    }
+
+    if (!side.children.length) {
+      side.innerHTML = '<div class="dim" style="padding:.6rem .4rem">no DCS checks configured' +
+        (s.showDisabled ? "" : " — “show disabled” lists the empty slots") + "</div>";
+    }
+    BV.persistScroll("view3d-side", side);
+  }
+
+  /* ---- tab ---- */
+
+  function render(view, toolbar, params) {
+    view.innerHTML = "";
+    toolbar.innerHTML = "";
+    BV.api.call("get_dcs_zones").then(function (data) {
+      var s = st();
+      view.classList.add("v3-host");
+
+      var base = accentHsl();
+      var colors = {};
+      data.cpc.forEach(function (z) { colors[z.n] = zoneColor(base, z.n); });
+
+      var vp = BV.el("div", { class: "v3-vp" });
+      var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("class", "v3-svg");
+      svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+      vp.appendChild(svg);
+      /* pixel-space overlay for labels/ruler - sits on top, ignores mouse */
+      var ovl = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      ovl.setAttribute("class", "v3-ovl");
+      svg._ovl = ovl;
+      vp.appendChild(ovl);
+      var side = BV.el("aside", { class: "v3-side" });
+      view.appendChild(vp);
+      view.appendChild(side);
+
+      function redraw() { draw(svg, data, s, colors); }
+
+      /* toolbar: orbit + snap views · fit · show-disabled · group filter */
+      var viewSeg = BV.segmented(
+        [{ id: "orbit", label: "orbit", title: "free rotate — drag in the viewport" }].concat(
+          BV.proj3d.VIEW_IDS.map(function (v) { return { id: v, label: v }; })),
+        { value: s.view, onChange: function (id) {
+          s.view = id;
+          var a = BV.proj3d.PRESET_ANGLES[id];
+          if (a) { s.az = a[0]; s.el = a[1]; } /* next drag starts here */
+          redraw();
+        } }
+      );
+      toolbar.appendChild(viewSeg.el);
+      var fitBtn = BV.el("button", { class: "btn", title: "reset pan/zoom (double-click does too)" }, "fit");
+      fitBtn.addEventListener("click", function () { delete s.box[s.view]; redraw(); });
+      toolbar.appendChild(fitBtn);
+      var perspBtn = BV.el("button", {
+        class: "btn" + (s.persp ? " primary" : ""),
+        title: "perspective projection — off = orthographic (parallel, true to scale)",
+      }, "persp");
+      perspBtn.addEventListener("click", function () {
+        s.persp = !s.persp;
+        perspBtn.classList.toggle("primary", s.persp);
+        redraw();
+      });
+      toolbar.appendChild(perspBtn);
+      var disBtn = BV.el("button", {
+        class: "btn" + (s.showDisabled ? " primary" : ""),
+        title: "list/draw the unconfigured + disabled checks too",
+      }, "show disabled");
+      disBtn.addEventListener("click", function () {
+        s.showDisabled = !s.showDisabled;
+        disBtn.classList.toggle("primary", s.showDisabled);
+        buildSide(side, data, s, colors, redraw);
+        redraw();
+      });
+      toolbar.appendChild(disBtn);
+      if (data.groups.length > 1) {
+        toolbar.appendChild(BV.segmented(
+          [{ id: "0", label: "all groups" }].concat(data.groups.map(function (g) {
+            return { id: String(g), label: "grp " + g };
+          })),
+          { value: String(s.group), onChange: function (id) {
+            s.group = parseInt(id, 10) || 0;
+            buildSide(side, data, s, colors, redraw);
+            redraw();
+          } }
+        ).el);
+      }
+
+      buildSide(side, data, s, colors, redraw);
+      redraw();
+      wireViewport(svg, s, redraw, viewSeg);
+    }).catch(function (e) {
+      view.innerHTML = '<div class="empty-state"><div class="big">no DCS zone data</div>' +
+        '<div class="hint">' + BV.esc(e.message) + "</div></div>";
+    });
+  }
+
+  BV.tabs = BV.tabs || [];
+  BV.tabs.push({ id: "view3d", label: "3d view", render: render });
+})();

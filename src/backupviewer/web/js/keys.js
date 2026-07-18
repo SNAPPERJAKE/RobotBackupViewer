@@ -21,7 +21,7 @@
   function helpOverlay() {
     var body = BV.el("div");
     var rows = [
-      ["1 – 8", "switch tab"],
+      ["1 – 9 · 0", "switch tab (0 = 3d view)"],
       ["ctrl+k", "search whole backup"],
       ["backspace", "back (previous program / view)"],
       ["/", "focus tab filter"],
@@ -55,6 +55,12 @@
       var idx = parseInt(e.key, 10) - 1;
       var enabled = BV.tabs.filter(function (t) { return BV.tabEnabled(t); });
       if (enabled[idx]) location.hash = "#" + enabled[idx].id;
+      return;
+    }
+    /* 0 is pinned to the 3d view (its tab badge shows 0), not positional */
+    if (e.key === "0" && !e.ctrlKey && !e.altKey) {
+      var t3 = BV.tabs.filter(function (t) { return t.id === "view3d"; })[0];
+      if (t3 && BV.tabEnabled(t3)) location.hash = "#view3d";
       return;
     }
 

@@ -32,9 +32,12 @@
     BV.tabs.forEach(function (tab) {
       if (tab.hidden) return;
       var enabled = BV.tabEnabled(tab);
-      if (enabled) n++;
+      /* the 3d view is pinned to the 0 key, so its badge shows 0 and it
+         never consumes a positional 1-9 number */
+      var badge = "";
+      if (enabled) badge = tab.id === "view3d" ? "0" : String(++n);
       var b = BV.el("button", { class: "tab-btn", id: "tab-" + tab.id },
-        (enabled ? '<span class="tab-num">' + n + "</span>" : "") + BV.esc(tab.label));
+        (badge ? '<span class="tab-num">' + badge + "</span>" : "") + BV.esc(tab.label));
       b.disabled = !enabled;
       if (!enabled) b.title = "not available in this backup";
       b.addEventListener("click", function () { location.hash = "#" + tab.id; });

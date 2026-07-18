@@ -156,6 +156,8 @@
     });
     return dl;
   }
+  /* the 3D view's side panel shows the same pendant-style detail blocks */
+  BV.dcsDetail = detailList;
 
   /* user model: each model drops down to its elements as nested collapsible
      headers, and each element drops down to its own fields (headers on headers) */

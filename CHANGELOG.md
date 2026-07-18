@@ -1,5 +1,38 @@
 # Changelog
 
+## v1.1 — the 3D view (DCS zones drawn to scale)
+- **New tab on the `0` key: "3d view".** DCS Cartesian Position Check zones
+  drawn to scale from `DCSPOS.VA` — the authoritative vertex arrays, Z extents
+  and (rotated) DCS user frames — cross-checked against the pendant's
+  `DCSVRFY.DG` verify text (status, method, stop type) and stamped with the
+  TCP position captured when the report was written.
+- **Free orbit + seven snap views.** Drag to rotate, middle-drag (or
+  shift+drag) to pan, wheel to zoom, `fit` or double-click to reset;
+  iso / top / bottom / front / back / left / right snap the orbit to
+  known angles, and a drag out of any of them starts rotating from right
+  there. Rotation pivots about whatever sits at the viewport center, so
+  pan-then-rotate stays on target. Top and bottom are plan-oriented for
+  the FANUC world frame (right-handed, X forward / Y left / Z up): X
+  points up-screen. A `persp` button adds mild perspective; the default
+  stays orthographic (parallel, true to scale).
+  Auto-fit frames the scene's bounding sphere — one radius — so the view
+  holds a steady scale while rotating, and the same mm-per-px carries
+  across every view. Zone names, axis letters, the tcp marker and the
+  scale ruler live on a fixed-size overlay: they anchor to the geometry
+  but never grow, shrink, or drift with zoom and orbit.
+  Hand-rolled SVG — no WebGL, no libraries — so it renders even on the
+  software-rendering boot rescue path and adds nothing to the exe.
+- **Side panel = every DCS check as a row.** Cartesian zones get a show/hide
+  checkbox + a color swatch matching the viewport (keep-out drawn solid,
+  keep-in dashed); joint position, speed checks and user models carry their
+  data as honest list rows — nothing is drawn that would need a robot model
+  we don't have. Every row expands to the same pendant-style detail block
+  the dcs tab shows.
+- Floor grid, world axes, base marker and a scale bar; "show disabled" lists
+  every pendant slot; the tab remembers view, zoom and checkboxes per backup.
+- Backups without `DCSPOS.VA` fall back to the verify report's Point 1 /
+  Point 2 boxes — drawn without the frame rotation and flagged **approx**.
+
 ## LibraryImporter 0.1 — the hand-out library seeder (companion exe)
 - **New standalone tool** (`dist/LibraryImporter.exe`, built from
   `packaging/libraryimporter.spec`): give a coworker the exe + a robots.json

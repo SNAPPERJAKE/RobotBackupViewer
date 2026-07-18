@@ -25,9 +25,9 @@ from . import healthscan
 from . import library
 from . import search as search_mod
 from . import settings
-from .parsers import (alarms, callgraph, dcs, frames, gmwizlog, io_dg,
-                      ls_program, macros, magnet, mastering, mhvalves, payloads,
-                      registers, styles, summary_dg, sysvars)
+from .parsers import (alarms, callgraph, dcs, dcszones, frames, gmwizlog,
+                      io_dg, ls_program, macros, magnet, mastering, mhvalves,
+                      payloads, registers, styles, summary_dg, sysvars)
 from .parsers.common import is_binary, read_text
 from .session import BackupSession
 
@@ -696,6 +696,21 @@ class Api:
     @_endpoint
     def get_dcs(self, file_name: str = "DCSVRFY.DG", side: str = "a"):
         return self._dcs_report(self._side_session(side), file_name)
+
+    @_endpoint
+    def get_dcs_zones(self, side: str = "a"):
+        """Zone geometry for the 3D view: DCSPOS.VA (authoritative) merged
+        with the verify report's status/method/TCP; either may be absent."""
+        s = self._side_session(side)
+
+        def build():
+            pos_text = s.text("DCSPOS.VA")
+            vrfy = self._dcs_report(s, "DCSVRFY.DG") if s.find("DCSVRFY.DG") else None
+            if pos_text is None and vrfy is None:
+                raise ApiError("MISSING_FILE", "No DCSPOS.VA / DCSVRFY.DG in this backup")
+            return dcszones.build_zones(pos_text, vrfy)
+
+        return s.cached("dcszones", build)
 
     # -- system vars ----------------------------------------------------------
 
