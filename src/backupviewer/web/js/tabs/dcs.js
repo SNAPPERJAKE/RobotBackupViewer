@@ -147,8 +147,12 @@
         dl.insertAdjacentHTML("beforeend",
           '<dt class="dcs-detail-sub" style="grid-column:1/-1">' + BV.esc(d.sub) + "</dt>");
       } else if (d.key !== undefined) {
+        /* note = a cross-reference the parser attached (e.g. the user-model
+           comment behind a numeric "Target model" value) - shown dim, the
+           pendant's verbatim value stays untouched */
         dl.insertAdjacentHTML("beforeend",
-          "<dt>" + BV.esc(d.key) + "</dt><dd>" + BV.esc(d.value || "—") + "</dd>");
+          "<dt>" + BV.esc(d.key) + "</dt><dd>" + BV.esc(d.value || "—") +
+          (d.note ? ' <span class="dim">· ' + BV.esc(d.note) + "</span>" : "") + "</dd>");
       } else {
         dl.insertAdjacentHTML("beforeend",
           '<dt class="dcs-raw" style="grid-column:1/-1;color:var(--sub)">' + BV.esc(d.raw) + "</dt>");

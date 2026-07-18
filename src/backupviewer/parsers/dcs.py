@@ -21,6 +21,12 @@ the way the pendant does:
 Signatures are pulled out of the 'Signature number' section into a single
 structured block (current vs latch) - the section itself is dropped so the
 report never shows them twice.
+
+One cross-reference is added after parsing: a position check's "Target
+model N" rows name user models by bare number (older pendants) or as
+"User model N" (newer ones); when that model has a comment in the same
+report's user-model section, it is attached as a `note` - the verbatim
+pendant value is never rewritten.
 """
 from __future__ import annotations
 
@@ -461,6 +467,33 @@ _PARSERS = {
 }
 
 
+_TM_KEY = re.compile(r"^target model\s*\d", re.I)
+_TM_REF = re.compile(r"^(?:user model\s+)?(\d+)$", re.I)
+
+
+def _annotate_target_models(sections: list) -> None:
+    """Attach the referenced user model's comment to "Target model N" rows
+    as a note (see module docstring)."""
+    names: dict[int, str] = {}
+    for sec in sections:
+        if sec.get("kind") == "user_model":
+            for e in sec.get("entries", []):
+                if e.get("comment"):
+                    names[e["index"]] = e["comment"]
+    if not names:
+        return
+    for sec in sections:
+        if sec.get("kind") != "list_detail":
+            continue
+        for e in sec.get("entries", []):
+            for d in e.get("detail", []):
+                if "key" not in d or not _TM_KEY.match(d["key"]):
+                    continue
+                m = _TM_REF.match(str(d.get("value", "")).strip())
+                if m and int(m.group(1)) in names:
+                    d["note"] = names[int(m.group(1))]
+
+
 # -- top level -------------------------------------------------------------
 
 
@@ -531,6 +564,8 @@ def parse_dcs_report(text: str) -> dict:
             "summary": summ,
         })
         sections.append(payload)
+
+    _annotate_target_models(sections)
 
     return {
         "header": header,

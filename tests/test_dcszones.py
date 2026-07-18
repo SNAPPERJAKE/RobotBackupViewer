@@ -7,16 +7,17 @@ and the pendant-text verify report parsed by parsers.dcs.
 from backupviewer.parsers import dcs, dcszones
 
 
-def _cpc_zone(n, comment, enable, mode, grp, ufrm, num_vtx, xs, ys, z1, z2, stop=0):
+def _cpc_zone(n, comment, enable, mode, grp, ufrm, num_vtx, xs, ys, z1, z2,
+              stop=0, models=(-1, 0, 0)):
     lines = [
         f"     Field: $DCSS_CPC[{n}].$COMMENT Access: RW: STRING[25] = '{comment}'",
         f"     Field: $DCSS_CPC[{n}].$ENABLE Access: RW: INTEGER = {enable}",
         f"     Field: $DCSS_CPC[{n}].$MODE Access: RW: INTEGER = {mode}",
         f"     Field: $DCSS_CPC[{n}].$GRP_NUM Access: RW: INTEGER = {grp}",
         f"     Field: $DCSS_CPC[{n}].$MODEL_NUM  ARRAY[3] OF INTEGER",
-        "      [1] = -1",
-        "      [2] = 0",
-        "      [3] = 0",
+    ]
+    lines += [f"      [{i + 1}] = {v}" for i, v in enumerate(models)]
+    lines += [
         f"     Field: $DCSS_CPC[{n}].$UFRM_NUM Access: RW: INTEGER = {ufrm}",
         f"     Field: $DCSS_CPC[{n}].$NUM_VTX Access: RW: INTEGER = {num_vtx}",
         f"     Field: $DCSS_CPC[{n}].$X  ARRAY[8] OF REAL",
@@ -33,17 +34,51 @@ def _cpc_zone(n, comment, enable, mode, grp, ufrm, num_vtx, xs, ys, z1, z2, stop
     return "\n".join(lines)
 
 
+def _elem(m, j, use, shape, size, size2, p1, p2, link=99):
+    d = list(p1) + list(p2)
+    lines = [
+        f"         Field: $DCSS_MODEL[{m}].$ELEM[{j}].$USE Access: RW: INTEGER = {use}",
+        f"         Field: $DCSS_MODEL[{m}].$ELEM[{j}].$LINK_NO Access: RW: INTEGER = {link}",
+        f"         Field: $DCSS_MODEL[{m}].$ELEM[{j}].$LINK_TYPE Access: RW: INTEGER = 1",
+        f"         Field: $DCSS_MODEL[{m}].$ELEM[{j}].$UTOOL_NUM Access: RW: INTEGER = 0",
+        f"         Field: $DCSS_MODEL[{m}].$ELEM[{j}].$SHAPE Access: RW: INTEGER = {shape}",
+        f"         Field: $DCSS_MODEL[{m}].$ELEM[{j}].$SIZE  ARRAY[2] OF REAL",
+        f"          [1] = {size:e}",
+        f"          [2] = {size2:e}",
+        f"         Field: $DCSS_MODEL[{m}].$ELEM[{j}].$DATA  ARRAY[6] OF REAL",
+    ]
+    lines += [f"          [{i + 1}] = {v:e}" for i, v in enumerate(d)]
+    return "\n".join(lines)
+
+
 _POS = "\n".join([
     "[*SYSTEM*]$DCSS_CPC  Storage: SHADOW  Access: RW  : ARRAY[32] OF DCSS_CPC_T",
     # diagonal keep-out fence in a rotated frame (mirrors the live zone shape)
     _cpc_zone(1, "FenceKO", 1, 1, 1, 21, 8,
-              [-3839.63, -139.63], [2522.03, 2222.03], 3247.08, -1752.92),
+              [-3839.63, -139.63], [2522.03, 2222.03], 3247.08, -1752.92,
+              models=(-1, 1, 0)),
     # untouched slot - factory defaults
     _cpc_zone(2, "", 0, 0, 1, 0, 8, [], [], 0.0, 0.0),
-    # unknown $MODE with a real 4-vertex polygon -> heuristic shape
-    _cpc_zone(3, "Conveyor", 1, 3, 2, 0, 4,
+    # $MODE=2 has never been pendant-paired -> heuristic shape stays honest
+    _cpc_zone(3, "Conveyor", 1, 2, 2, 0, 4,
               [0.0, 1000.0, 1000.0, 0.0], [0.0, 0.0, 500.0, 500.0],
               100.0, 900.0, stop=1),
+    # polygon keep-out, the confirmed $MODE=3 <-> Restricted zone(Lines)
+    _cpc_zone(4, "LoadZone", 1, 3, 1, 0, 5,
+              [-1700.0, -2900.0, -2900.0, -2500.0, -1600.0],
+              [2600.0, 2600.0, 500.0, 500.0, 1500.0],
+              -2600.0, -800.0, stop=2, models=(0, 1, 0)),
+    "[*SYSTEM*]$DCSS_MODEL  Storage: SHADOW  Access: RW  : ARRAY[16] OF DCSS_MODEL_T",
+    "     Field: $DCSS_MODEL[1].$COMMENT Access: RW: STRING[25] = 'EOAT'",
+    "     Field: $DCSS_MODEL[1].$ELEM  ARRAY[10] OF DCSS_ELEM_T",
+    _elem(1, 1, 1, 2, 350.0, 0.0, (-4.0, -606.0, 140.0), (-4.0, 602.0, 140.0)),
+    _elem(1, 2, 0, 1, 0.0, 0.0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+    # nonzero second size: passed through raw (no pendant report prints it)
+    _elem(1, 3, 1, 2, 125.0, 80.0, (-353.0, -264.0, -92.0), (-70.0, 19.0, -92.0),
+          link=3),
+    "     Field: $DCSS_MODEL[2].$COMMENT Access: RW: STRING[25] = ''",
+    "     Field: $DCSS_MODEL[2].$ELEM  ARRAY[10] OF DCSS_ELEM_T",
+    _elem(2, 1, 0, 1, 0.0, 0.0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
     "[*SYSTEM*]$DCSS_CSC  Storage: SHADOW  Access: RW  : ARRAY[16] OF DCSS_CSC_T",
     "     Field: $DCSS_CSC[1].$COMMENT Access: RW: STRING[25] = ''",
     "     Field: $DCSS_CSC[1].$ENABLE Access: RW: INTEGER = 1",
@@ -103,6 +138,10 @@ DCS Version: V3.5.21
   2 Enable/Disable:            ENABLE
   3 Method(Safe side): Diagonal(OUT)
   4 Group:                            1
+  5 Target model 1:                  -1
+  6 Target model 2:                   1
+  7 Target model 3:                   0
+      (0:Disable,-1:Robot,-2:Tool)
   8 User frame:                      21
     Position(mm):
         Current      Point 1    Point 2
@@ -134,7 +173,7 @@ def test_va_geometry_frames_and_heuristics():
     assert z["source"] == "va"
     assert z["groups"] == [1, 2]
 
-    fence, empty, conv = z["cpc"]
+    fence, empty, conv, load = z["cpc"]
     assert fence["label"] == "FenceKO" and fence["enabled"]
     # $MODE=1 is the one observed ground-truth mapping
     assert (fence["method"], fence["side"], fence["method_source"]) == ("diagonal", "out", "va")
@@ -156,13 +195,75 @@ def test_va_geometry_frames_and_heuristics():
     assert conv["poly"] == [[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]]
     assert conv["group"] == 2 and conv["stop"] == "Controlled stop"
 
+    # $MODE=3 <-> Restricted zone(Lines): NUM_VTX-many vertices, keep-out
+    assert (load["method"], load["side"], load["method_source"]) == ("lines", "out", "va")
+    assert load["method_text"] == "Restricted zone(Lines)"
+    assert load["vtx_used"] == 5 and len(load["poly"]) == 5
+    assert load["poly"][4] == [-1600.0, 1500.0]
+    assert (load["z1"], load["z2"]) == (-2600.0, -800.0)
+    assert load["stop"] == "Not stop"
+
+    # zone -> target-model slots, resolved per the pendant's printed legend
+    assert [(t["kind"], t["raw"]) for t in fence["target_models"]] == [
+        ("robot", -1), ("user", 1), ("none", 0)]
+    assert fence["target_models"][1]["label"] == "User model 1 'EOAT'"
+    tm_rows = {d["key"]: d["value"] for d in fence["detail"] if "key" in d}
+    assert tm_rows["Target model 1"] == "Robot model"
+    assert tm_rows["Target model 2"] == "User model 1 'EOAT'"
+
     jpc = z["jpc"][0]
     assert (jpc["axis"], jpc["low"], jpc["high"], jpc["side"]) == (2, -30.0, 95.0, "in")
     assert jpc["label"] == "J2 window" and jpc["stop"] == "Controlled stop"
     csc = z["csc"][0]
     assert csc["enabled"] and csc["limit"] == 250.0
     assert not z["jsc"][0]["enabled"]
-    assert z["tcp"] is None and z["models"] == []
+    assert z["tcp"] is None
+
+
+def test_user_models_from_va():
+    z = dcszones.build_zones(_POS, None)
+    m1, m2 = z["models"]
+    assert m1["label"] == "EOAT" and m1["active"] and m1["elem_count"] == 2
+    e1, e2, e3 = m1["elements"]
+
+    assert e1["enabled"] and e1["shape"] == "Line_seg" and e1["size"] == 350.0
+    assert e1["link_no"] == 99 and e1["link_type_text"] == "NORMAL"
+    assert e1["p1"] == [-4.0, -606.0, 140.0] and e1["p2"] == [-4.0, 602.0, 140.0]
+    # synthetic detail mirrors the pendant's element block
+    kv = {d["key"]: d["value"] for d in e1["detail"] if "key" in d}
+    assert kv["Shape"] == "Line_seg" and kv["Size (mm)"] == "350.0"
+    assert kv["Link No.(99:FacePlate)"] == "99" and kv["Enable/Disable"] == "ENABLE"
+    assert {"axes": [["X", "-4.000"], ["Y", "-606.000"], ["Z", "140.000"]]} in e1["detail"]
+
+    # a Point is a single position - no Pos2 block; disabled slot still listed
+    assert not e2["enabled"] and e2["shape"] == "Point"
+    assert not any(d.get("raw") == "Pos2" for d in e2["detail"])
+
+    # the unexplained second size rides along raw, never interpreted
+    assert e3["size2"] == 80.0 and e3["link_no"] == 3
+    assert {"key": "Size[2] (raw)", "value": "80.0"} in e3["detail"]
+
+    assert not m2["active"] and m2["label"] == "model 2" and m2["elem_count"] == 0
+
+
+def test_method_text_both_vocabularies():
+    assert dcszones._parse_method_text("Diagonal(OUT)") == ("diagonal", "out")
+    assert dcszones._parse_method_text("Lines(IN)") == ("lines", "in")
+    assert dcszones._parse_method_text("Working zone(Diagnal)") == ("diagonal", "in")
+    assert dcszones._parse_method_text("Restricted zone(Diagnal)") == ("diagonal", "out")
+    assert dcszones._parse_method_text("Restricted zone(Lines)") == ("lines", "out")
+    assert dcszones._parse_method_text("gibberish") is None
+
+
+def test_target_name_normalization():
+    entry = {"detail": [
+        {"key": "Target model 1", "value": "Robot model"},
+        {"key": "Target model 2", "value": "User model 2"},
+        {"key": "Target model 3", "value": "DISABLE"},
+    ]}
+    t = dcszones._targets_from_detail(entry, {2: "gripper"})
+    assert [(x["kind"], x["raw"]) for x in t] == [("robot", -1), ("user", 2), ("none", 0)]
+    assert t[1]["label"] == "User model 2 'gripper'"
 
 
 def test_vrfy_merge_wins_and_tcp():
@@ -173,10 +274,46 @@ def test_vrfy_merge_wins_and_tcp():
     assert fence["status"] == "SAFE" and fence["stop"] == "Power-Off stop"
     # the verify detail block (with the pendant's position table) rides along
     assert any("pos_table" in d for d in fence["detail"])
+    # target slots come from the VA regardless of which detail is shown
+    assert [t["raw"] for t in fence["target_models"]] == [-1, 1, 0]
     # TCP at report time, frame-local + that zone's frame for the transform
     assert z["tcp"]["xyz"] == [881.1, 731.5, 1303.3]
     assert z["tcp"]["frame"]["num"] == 21 and not z["tcp"]["approx"]
-    assert [m["label"] for m in z["models"]] == ["robot model"]
+    # VA models win; the report's status + per-element pendant detail merge in
+    m1 = z["models"][0]
+    assert m1["label"] == "EOAT" and m1["status"] == "OK"
+    assert m1["elements"][0]["status"] == "OK"
+    assert m1["elements"][0]["detail"] == [{"key": "Link No", "value": "1"}]
+
+
+_VRFY_NEW = """F Number: F999999
+DATE:     12-JUN-26 13:29
+DCS Version: V3.5.21
+
+--- Cartesian Position Check -----------
+ No.        G M Status     Comment
+  1 ENABLE  1 DO SAFE [FenceKO         ]
+
+    No.  1              Status:SAFE
+  1 Comment:   [FenceKO                ]
+  2 Enable/Disable:            ENABLE
+  3 Method:    Working zone(Diagnal)
+  4 Group:                            1
+  5 Target model 1:         Robot model
+  6 Target model 2:        User model 1
+  7 Target model 3:             DISABLE
+  8 Base frame:   User frame:     0
+ 12 Stop type:         Stop Category 0
+"""
+
+
+def test_newer_pendant_vocabulary():
+    z = dcszones.build_zones(_POS, dcs.parse_dcs_report(_VRFY_NEW))
+    fence = z["cpc"][0]
+    assert (fence["method"], fence["side"], fence["method_source"]) == \
+        ("diagonal", "in", "vrfy")
+    assert fence["method_text"] == "Working zone(Diagnal)"
+    assert fence["stop"] == "Stop Category 0"
 
 
 def test_dg_fallback_is_flagged_approx():
@@ -191,6 +328,24 @@ def test_dg_fallback_is_flagged_approx():
     # frame rotation isn't in the report: flagged missing, drawn frame-less
     assert fence["ufrm_num"] == 21 and fence["frame"] is None and fence["frame_missing"]
     assert z["tcp"]["approx"]
+    # target slots recovered from the report's own detail rows, names from
+    # the report's user-model section
+    assert [(t["kind"], t["raw"]) for t in fence["target_models"]] == [
+        ("robot", -1), ("user", 1), ("none", 0)]
+    assert fence["target_models"][1]["label"] == "User model 1 'robot model'"
+
+
+def test_report_target_note_annotation():
+    """dcs.parse_dcs_report attaches the referenced user model's comment to
+    old-vocabulary numeric "Target model N" rows as a note - the pendant's
+    verbatim value never changes."""
+    rep = _rep()
+    sec = next(s for s in rep["sections"] if s["kind"] == "list_detail")
+    rows = {d["key"]: d for d in sec["entries"][0]["detail"] if "key" in d}
+    assert rows["Target model 2"]["value"] == "1"
+    assert rows["Target model 2"]["note"] == "robot model"
+    assert "note" not in rows["Target model 1"]  # -1 = Robot, legend covers it
+    assert "note" not in rows["Target model 3"]  # 0 = Disable
 
 
 def test_empty_sources_stay_total():
