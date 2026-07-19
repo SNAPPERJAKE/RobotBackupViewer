@@ -113,8 +113,14 @@
           vsBtn.classList.toggle("primary", vs);
           hlWrap.style.display = vs ? "flex" : "none";
           if (vs && !frB) {
-            BV.api.call("get_frames", "b").then(function (fb) {
-              frB = fb;
+            Promise.all([
+              BV.api.call("get_frames", "b"),
+              /* payloads are a section of this tab too - a B side without
+                 SYMOTN.VA shows empty payloads, not a broken vs */
+              BV.api.call("get_payloads", "b").catch(function () { return { groups: {} }; }),
+            ]).then(function (res) {
+              frB = res[0];
+              frB.payloads = (res[1] && res[1].groups) || {};
               draw();
             }).catch(function (e) {
               vs = false;
@@ -142,6 +148,21 @@
         return cmt || val;
       }
 
+      /* payload cards carry mass/cg/inertia, not xyzwpr - their own comparator
+         so "highlight differences" flags real payload edits */
+      function payloadDiffers(a, b, mode) {
+        var cmt = (a.comment || "") !== (b.comment || "");
+        function d(x, y) { return Math.abs((x || 0) - (y || 0)) > 0.0005; }
+        var val = d(a.mass, b.mass) || !!a.uninit !== !!b.uninit ||
+          [0, 1, 2].some(function (i) {
+            return d((a.cg || [])[i], (b.cg || [])[i]) ||
+                   d((a.inertia || [])[i], (b.inertia || [])[i]);
+          });
+        if (mode === "no_comments") return val;
+        if (mode === "no_values") return cmt;
+        return cmt || val;
+      }
+
       function section(kind, label, activeNum, target, data, otherData) {
         target = target || wrap;
         data = data || fr;
@@ -161,11 +182,12 @@
         var grid = BV.el("div", { class: "cards", style: "grid-template-columns:repeat(auto-fill,minmax(230px,1fr))" });
         body.appendChild(grid);
         var otherEntries = otherData ? ((otherData[kind] || {})[curGroup] || []) : null;
+        var differs = kind === "payloads" ? payloadDiffers : frameDiffers;
         shown.forEach(function (e) {
           var c = frameCard(kind, e, e.index === activeNum);
           if (otherEntries && hlState && hlState.on) {
             var twin = otherEntries.find(function (o) { return o.index === e.index; });
-            if (!twin || frameDiffers(e, twin, hlState.mode)) c.classList.add("vsdiff");
+            if (!twin || differs(e, twin, hlState.mode)) c.classList.add("vsdiff");
           }
           grid.appendChild(c);
         });
@@ -185,8 +207,9 @@
         section("tools", "tool frames (utool)", active.tool, col, data, otherData);
         section("frames", "user frames (uframe)", active.frame, col, data, otherData);
         section("jogs", "jog frames", undefined, col, data, otherData);
+        section("payloads", "payloads", undefined, col, data, otherData);
         if (col.childElementCount <= 1) {
-          col.insertAdjacentHTML("beforeend", '<div class="dim" style="font-size:.8rem">no frame data for group ' +
+          col.insertAdjacentHTML("beforeend", '<div class="dim" style="font-size:.8rem">no frame or payload data for group ' +
             BV.esc(curGroup) + "</div>");
         }
         return col;

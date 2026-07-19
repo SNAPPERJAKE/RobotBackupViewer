@@ -1,0 +1,121 @@
+"""Durable backup-run log: which robots succeeded / failed / got cancelled in
+the last backup runs. The per-row check marks in the library are transient UI
+state that the post-backup refresh wipes; this file is the memory that
+survives - it powers the "last run" summary and the retry-failed button in
+Manage backups.
+
+One RUN = one user action (a bulk line backup or a single robot), grouped by
+the run_id the frontend stamps on every start_backup spec of that click. Jobs
+are recorded when they start and finished with their final snapshot, so a
+crash mid-run leaves honest "running" rows rather than nothing.
+
+Passwords are NEVER written here - retry re-prompts, exactly like the bulk
+flow does.
+"""
+from __future__ import annotations
+
+import datetime as _dt
+import json
+import logging
+import threading
+
+from . import settings
+
+log = logging.getLogger(__name__)
+
+_FILE = "backup_log.json"
+_MAX_RUNS = 20
+_LOCK = threading.Lock()
+
+# what a job record remembers of its start spec - enough to re-fire it, never
+# a password
+_SPEC_KEYS = ("host", "robot", "line", "plant", "robot_id", "user", "passive",
+              "port", "devices", "recurse_fr", "note")
+
+
+def _file():
+    return settings.app_dir() / _FILE
+
+
+def _now() -> str:
+    return _dt.datetime.now().isoformat(timespec="seconds")
+
+
+def load() -> dict:
+    try:
+        with open(_file(), encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict) and isinstance(data.get("runs"), list):
+                return data
+    except (OSError, ValueError):
+        pass
+    return {"runs": []}
+
+
+def _write(data: dict) -> None:
+    try:
+        tmp = _file().with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+        tmp.replace(_file())
+    except OSError:
+        log.exception("could not write %s", _FILE)
+
+
+def sanitize_spec(spec: dict) -> dict:
+    return {k: spec[k] for k in _SPEC_KEYS if k in spec}
+
+
+def start_job(run_id: str, job_id: str, spec: dict) -> None:
+    """Record a job the moment it is fired (status 'running'). Creates the run
+    on first sight; runs list stays newest-first and capped."""
+    with _LOCK:
+        data = load()
+        run = next((r for r in data["runs"] if r.get("id") == run_id), None)
+        if run is None:
+            run = {"id": run_id, "started": _now(), "finished": "", "jobs": []}
+            data["runs"].insert(0, run)
+            del data["runs"][_MAX_RUNS:]
+        rec = dict(sanitize_spec(spec))
+        rec.update({"job_id": job_id, "status": "running", "error": "",
+                    "dated_path": "", "started": _now(), "finished": ""})
+        run["jobs"].append(rec)
+        _write(data)
+
+
+def finish_job(run_id: str, job_id: str, snap: dict) -> None:
+    """Stamp a job's final snapshot onto its record; the run is finished when
+    no job is left running."""
+    with _LOCK:
+        data = load()
+        run = next((r for r in data["runs"] if r.get("id") == run_id), None)
+        if run is None:
+            return
+        rec = next((j for j in run["jobs"] if j.get("job_id") == job_id), None)
+        if rec is None:
+            return
+        rec["status"] = snap.get("status", "error")
+        rec["error"] = snap.get("error", "")
+        rec["dated_path"] = snap.get("dated_path", "")
+        rec["finished"] = _now()
+        if all(j.get("status") != "running" for j in run["jobs"]):
+            run["finished"] = _now()
+        _write(data)
+
+
+def last_run() -> dict | None:
+    runs = load()["runs"]
+    return runs[0] if runs else None
+
+
+def failed_specs(run_id: str | None = None) -> list[dict]:
+    """Sanitized start specs of every FAILED job in the given run (default: the
+    newest run). Cancelled jobs were a user's choice, not a failure - excluded."""
+    data = load()
+    run = None
+    if run_id:
+        run = next((r for r in data["runs"] if r.get("id") == run_id), None)
+    elif data["runs"]:
+        run = data["runs"][0]
+    if run is None:
+        return []
+    return [sanitize_spec(j) for j in run["jobs"] if j.get("status") == "error"]

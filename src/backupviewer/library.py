@@ -334,6 +334,30 @@ def auto_link_cameras() -> dict:
         return {"linked": linked, "ambiguous": ambiguous, "unmatched": unmatched}
 
 
+def resolve_open_path(e: dict, which: str = "latest") -> str:
+    """The folder to open for a robot. 'latest' prefers the Latest mirror but
+    falls back to the newest dated snapshot still on disk - a stale or missing
+    mirror must not make a robot unopenable (the dated tree is the truth, the
+    mirror is a convenience copy). Any other value is an explicit backup-folder
+    path picked from the robot's history. Returns "" when nothing exists."""
+    if which != "latest":
+        return which
+    lp = e.get("latest_path", "")
+    if lp and Path(lp).is_dir():
+        return lp
+    # fall back to the newest COMPLETE snapshot; a partial (died mid-download)
+    # only opens when it is literally all the robot has - better than nothing,
+    # and the UI pills it as partial either way
+    for want_partial in (False, True):
+        for b in e.get("backups", []):      # newest-first
+            if bool(b.get("partial")) != want_partial:
+                continue
+            p = b.get("path", "")
+            if p and Path(p).is_dir():
+                return p
+    return ""
+
+
 def _within(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -491,13 +515,32 @@ def _backup_record(snap: Path, meta: dict) -> dict:
                 note = nt.read_text(encoding="utf-8", errors="replace").strip()
         except OSError:
             pass
-    return {
+    rec = {
         "path": str(snap), "taken": _snap_taken(snap, meta),
         "type": meta.get("type", "") or "", "files": meta.get("files", 0) or 0,
         "bytes": meta.get("bytes", 0) or 0,
         "source": meta.get("source", "") or ("ftp" if meta else "import"),
         "note": note,
     }
+    # complete:false = OUR OWN pull that died mid-download (the backup engine
+    # writes the marker first and only flips it true as its last step). Only an
+    # explicit false marks a partial - a legacy sidecar without the field was
+    # written by code that only wrote on success, and a sidecar-less folder is
+    # a hand-import (labeled by `source` above), not a partial.
+    if meta.get("complete") is False:
+        rec["partial"] = True
+    return rec
+
+
+def _pick_latest(backups: list) -> dict | None:
+    """The newest record eligible to be 'the latest'. Partial snapshots never
+    become latest_path/last_backup - a pull that died mid-download would read
+    as a fresh complete backup while silently missing files (the exact lie
+    this app exists to prevent). backups is newest-first."""
+    for b in backups:
+        if not b.get("partial"):
+            return b
+    return None
 
 
 def robot_folder_of(snap) -> Path:
@@ -559,22 +602,44 @@ def scan_signature(root: str | Path) -> str:
     return h.hexdigest()
 
 
-def _scan_disk(root: Path, stats: dict | None = None) -> tuple:
+def _scan_disk(root: Path, stats: dict | None = None, progress=None, expect: int = 0) -> tuple:
     """Walk the tree for backup snapshots and group them by robot. Identity is
     the folder's LOCATION (<root>/[plant/]<line>/<robot> — files are law);
     sidecars supply id + config only. Also surfaces the folder skeleton: robot
     folders with no snapshots yet, empty plant folders at root, empty line
     folders inside plants. Read-only. Returns ({key: disk_entry} with backups[]
-    newest-first, {"plants": [...], "lines": [{plant, line}]})."""
+    newest-first, {"plants": [...], "lines": [{plant, line}]}).
+    `progress(done, total, current)` ticks once per snapshot read; `expect` is
+    the previous scan's snapshot count (0 = first ever, total unknown)."""
     from . import session  # local import: avoids any import-time coupling
 
     groups: dict = {}
-    for snap in session.find_backup_roots(root, stats=stats):
+    sidecars: dict = {}   # robot_dir -> parsed sidecar: one read per robot, not per snapshot
+    done = 0
+
+    def _tick(current: str) -> None:
+        if progress:
+            # never report done > total: a tree that GREW since the estimate
+            # pins near 100% instead of overshooting it
+            progress(done, (max(expect, done) if expect else 0), current)
+
+    def _on_root(n: int) -> None:
+        if n % 25 == 0:
+            _tick("finding backup folders… %d found" % n)
+
+    _tick("finding backup folders…")
+    for snap in session.find_backup_roots(root, stats=stats,
+                                          on_root=_on_root if progress else None):
         if _is_latest_mirror(snap, root):
             continue                                   # mirror = copy of a dated snap
         meta = _read_json(snap / "backup.json")
         robot_dir = snap.parent.parent if _is_dated(snap) else snap
-        rjson = _read_json(robot_dir / SIDECAR)
+        done += 1
+        _tick(robot_dir.name)
+        rjson = sidecars.get(robot_dir)
+        if rjson is None:
+            rjson = _read_json(robot_dir / SIDECAR)
+            sidecars[robot_dir] = rjson
         # WHERE the folder sits is the identity — files are law. The sidecar
         # supplies id + config (ips/ftp/notes) and nothing else: any plant/
         # line/robot a legacy schema-1 sidecar (or a copied-along backup.json)
@@ -628,7 +693,9 @@ def _scan_disk(root: Path, stats: dict | None = None) -> tuple:
 
     def _dir_children(d: Path) -> list:
         try:
-            return [p for p in d.iterdir() if p.is_dir() and not _skip_name(p.name)]
+            with os.scandir(d) as it:   # scandir: is_dir comes with the listing, no per-entry stat
+                return [Path(e.path) for e in it
+                        if not _skip_name(e.name) and session._entry_is_dir(e)]
         except OSError:
             return []
 
@@ -689,8 +756,9 @@ def _scan_disk(root: Path, stats: dict | None = None) -> tuple:
     for key, g in groups.items():
         snaps = sorted(g.pop("_snaps"), key=lambda b: b.get("taken", ""), reverse=True)
         g["backups"] = snaps
-        g["latest_path"] = snaps[0]["path"] if snaps else ""
-        g["last_backup"] = snaps[0]["taken"] if snaps else ""
+        newest = _pick_latest(snaps)
+        g["latest_path"] = newest["path"] if newest else ""
+        g["last_backup"] = newest["taken"] if newest else ""
         out[key] = g
     return out, {"plants": sorted(empty_plants),
                  "lines": sorted(empty_lines, key=lambda x: (x["plant"], x["line"]))}
@@ -725,8 +793,15 @@ def _apply_disk(e: dict, disk: dict) -> None:
         if ip and ip not in ips:
             ips.append(ip)
     e["ips"] = ips
-    if not (e.get("ftp") or {}).get("user") and (disk.get("ftp") or {}).get("user"):
-        e.setdefault("ftp", {})["user"] = disk["ftp"]["user"]
+    eftp = e.get("ftp") or {}
+    dftp = disk.get("ftp") or {}
+    if dftp.get("user") and not eftp.get("user"):
+        # same rule as _merge_pair: adopting the sidecar's user carries its
+        # passive flag too (unless the overlay already recorded one) — a
+        # passive=False robot must survive a rescan, not just a merge
+        eftp["user"] = dftp["user"]
+        eftp.setdefault("passive", dftp.get("passive", True))
+        e["ftp"] = eftp
     for a in disk.get("aliases", []) or []:                     # union: aliases are additive memory
         _add_alias(e, a.get("plant", ""), a.get("line", ""), a.get("robot", ""))
 
@@ -744,9 +819,10 @@ def _union_disk(e: dict, disk: dict) -> int:
             have.add(b.get("path"))
             added += 1
     e["backups"].sort(key=lambda b: b.get("taken", ""), reverse=True)
-    if e["backups"]:
-        e["latest_path"] = e["backups"][0]["path"]
-        e["last_backup"] = e["backups"][0].get("taken", e.get("last_backup", ""))
+    newest = _pick_latest(e["backups"])
+    if newest:
+        e["latest_path"] = newest["path"]
+        e["last_backup"] = newest.get("taken", e.get("last_backup", ""))
     for a in disk.get("aliases", []) or []:
         _add_alias(e, a.get("plant", ""), a.get("line", ""), a.get("robot", ""))
     return added
@@ -794,7 +870,7 @@ def _merge_scan(data: dict, scanned: dict, absorbed: list | None = None) -> set:
     return applied
 
 
-def scan_library_root(root: str | Path) -> dict:
+def scan_library_root(root: str | Path, progress=None) -> dict:
     """Rebuild the library from the backup folder tree — THE source of truth.
     A robot exists because its folder exists: folders found on disk are
     added/refreshed (overlay data like the hidden flag and user edits survive
@@ -803,14 +879,19 @@ def scan_library_root(root: str | Path) -> dict:
 
     The one deliberate exception: an UNREACHABLE root (offline network drive /
     unplugged USB) is not the same as deleted folders — the last known library
-    is served with everything marked stale instead of being wiped."""
+    is served with everything marked stale instead of being wiped.
+
+    `progress(done, total, current)`, when given, ticks as snapshots are read —
+    total is the previous scan's snapshot count (an estimate; 0 = first ever),
+    so a boot-time progress bar has something honest to draw."""
     root = Path(root)
     with _LOCK:
         data = load()
         absorbed_raw: list = []
         if root.is_dir():
             stats: dict = {}
-            scanned, empty_folders = _scan_disk(root, stats)
+            expect = sum(len(e.get("backups", []) or []) for e in data.get("robots", []))
+            scanned, empty_folders = _scan_disk(root, stats, progress=progress, expect=expect)
             data["empty_folders"] = empty_folders
             # snapshots folded into a robot by IDENTITY while living in another
             # folder (a copied tree carrying its robot.json) — pull the counts
@@ -1031,8 +1112,10 @@ def _rebuild_backups(e: dict, robot_dir, root) -> None:
     out = dated + extra
     out.sort(key=lambda b: b.get("taken", ""), reverse=True)
     e["backups"] = out
-    e["latest_path"] = out[0]["path"] if out else ""
-    e["last_backup"] = out[0].get("taken", "") if out else e.get("last_backup", "")
+    newest = _pick_latest(out)
+    e["latest_path"] = newest["path"] if newest else ""
+    e["last_backup"] = newest.get("taken", "") if newest else \
+        ("" if out else e.get("last_backup", ""))
 
 
 def _regen_latest(e: dict, root: Path):
@@ -1041,6 +1124,8 @@ def _regen_latest(e: dict, root: Path):
     mirror untouched (don't destroy a good-but-currently-offline mirror)."""
     newest = None
     for b in e.get("backups", []):                     # newest-first
+        if b.get("partial"):
+            continue                                   # a partial never becomes the mirror
         p = Path(b.get("path", ""))
         if p.is_dir():
             newest = p
@@ -1154,6 +1239,15 @@ def _merge_pair(data: dict, prim: dict, sec: dict, root: Path) -> dict:
     sec_latest = _latest_dir_for(root, sec.get("plant", ""), sec.get("line", ""), sec.get("robot", "")) \
         if sec_dir is not None else None
     result = _merge_into(sec_dir, prim_dir, root, sec_latest)
+    if sec_dir is not None and not result["moved"] and not result["skipped"] \
+            and not result["conflicts"] and not result["source_removed"]:
+        # The fold was a total no-op: sec's folder holds only non-dated content
+        # (a flat import / stray files) that a merge never moves. Report it and
+        # change NOTHING - an alias/config fold here would leave half-merged
+        # state behind a result that claims "merged" while both robots visibly
+        # survive untouched.
+        result["blocked"] = "no dated snapshots to fold in (non-dated files are never moved by a merge)"
+        return result
     # Record sec's identity as an alias on prim either way, so a future scan of any
     # leftover sec folder re-merges into prim instead of duplicating.
     _add_alias(prim, sec.get("plant", ""), sec.get("line", ""), sec.get("robot", ""))
@@ -1214,8 +1308,10 @@ def relocate_robot(robot_id: str, plant: str, line: str, robot: str) -> dict:
     (snapshot-by-snapshot, duplicate <date>/<time> skipped/flagged). The id is
     preserved; the old identity is recorded as an alias; the sidecar is rewritten.
 
-    Returns {"action": "noop"|"renamed"|"merged", ...}. Raises ValueError (bad
-    args / unknown id), PathGuard (escapes root), OSError (move failure)."""
+    Returns {"action": "noop"|"renamed"|"merged"|"blocked", ...} - "blocked"
+    when a collision-merge had nothing to fold (see merge_robots). Raises
+    ValueError (bad args / unknown id), PathGuard (escapes root), OSError
+    (move failure)."""
     plant = (plant or "").strip()
     line = (line or "").strip()
     robot = (robot or "").strip()
@@ -1255,6 +1351,11 @@ def relocate_robot(robot_id: str, plant: str, line: str, robot: str) -> dict:
                     raise ValueError(
                         f"destination folder name collides with a different robot ({owner.get('robot', '')})")
                 res = _merge_pair(data, owner, e, root)
+                if res.get("blocked"):
+                    # nothing was folded and e keeps its identity: surface the
+                    # block instead of claiming a merge (nothing to persist)
+                    return {"action": "blocked", "reason": res["blocked"], "id": e["id"],
+                            "from": _ident(old), "to": _ident_e(owner)}
                 _reconcile(data)
                 _write(data)
                 _persist_sidecar(owner)
@@ -1302,8 +1403,10 @@ def relocate_robot(robot_id: str, plant: str, line: str, robot: str) -> dict:
 
 def merge_robots(primary_id: str, secondary_id: str) -> dict:
     """Explicitly merge secondary INTO primary (folders + history). Refuses a
-    cross-line merge (a robot name can legitimately repeat across lines). Returns
-    {"action": "merged"|"refused", ...}."""
+    cross-line merge (a robot name can legitimately repeat across lines). A
+    secondary whose folder gives the merge nothing to fold (only non-dated
+    content) comes back "blocked" with a reason - never a claimed merge that
+    was a silent no-op. Returns {"action": "merged"|"refused"|"blocked", ...}."""
     if primary_id == secondary_id:
         raise ValueError("cannot merge a robot into itself")
     with _LOCK:
@@ -1317,6 +1420,10 @@ def merge_robots(primary_id: str, secondary_id: str) -> dict:
                     "primary": _ident_e(prim), "secondary": _ident_e(sec)}
         root = _root()
         res = _merge_pair(data, prim, sec, root)
+        if res.get("blocked"):
+            # a total no-op is NOT a merge: report it honestly, persist nothing
+            return {"action": "blocked", "reason": res["blocked"],
+                    "primary": _ident_e(prim), "secondary": _ident_e(sec)}
         _reconcile(data)
         _write(data)
         _persist_sidecar(prim)

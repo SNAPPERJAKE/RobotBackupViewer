@@ -187,3 +187,44 @@ def test_backup_cancel(monkeypatch, tmp_path):
     res = job.run()
     assert res["status"] == "cancelled"
     assert library.list_robots()["robots"] == []  # nothing registered on cancel
+
+
+def test_backup_completion_marker(monkeypatch, tmp_path):
+    """backup.json is a started-marker (complete:false) from the moment the
+    dated dir exists, flipped true only as the LAST step of a successful pull -
+    a pull that dies mid-download is then self-identifying on disk."""
+    import json
+
+    _iso_lib(monkeypatch, tmp_path)
+    src = _make_controller(tmp_path)
+
+    ok = ftpbackup.BackupJob("10.0.0.5", tmp_path / "out", "P", "L", "R1",
+                             ftp_factory=_factory(src), throttle=0).run()
+    assert ok["status"] == "done"
+    meta = json.loads((Path(ok["dated_path"]) / "backup.json").read_text(encoding="utf-8"))
+    assert meta["complete"] is True
+    assert meta["files"] == ok["done"] and meta["bytes"] == ok["bytes"]
+
+    class DyingFTP(FakeFTP):
+        """The connection drops mid-pull: file 1 lands whole, file 2 dies."""
+
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self._calls = 0
+
+        def retrbinary(self, cmd, callback, blocksize=8192):
+            self._calls += 1
+            if self._calls > 1:                    # retries die too
+                raise ftplib.error_temp("426 connection closed; transfer aborted")
+            return super().retrbinary(cmd, callback, blocksize)
+
+    bad = ftpbackup.BackupJob("10.0.0.5", tmp_path / "out", "P", "L", "R2",
+                              ftp_factory=lambda timeout=None: DyingFTP(src, timeout=timeout),
+                              throttle=0).run()
+    assert bad["status"] == "error"
+    dated = Path(bad["dated_path"])
+    assert dated.is_dir()                          # the partial folder exists...
+    meta = json.loads((dated / "backup.json").read_text(encoding="utf-8"))
+    assert meta["complete"] is False               # ...and says it never finished
+    assert not (dated / "notes.txt").exists()      # the success sidecars never ran
+    assert bad["latest_path"] == ""                # and no Latest mirror was made

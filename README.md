@@ -1,61 +1,115 @@
 # backupviewer
 
-A fast, minimal **ecosystem for FANUC robot backups**. Browse a backup like a mini
-pendant — frames, IO, registers, programs, alarms, DCS — in a clean, keyboard-driven,
-themeable UI. Keep a library of your robots, and pull fresh backups straight off a
-controller over FTP.
+A fast, light weight tool for taking, organizing, and viewing FANUC robot backups.
 
-**Smart cameras too** — the library holds cameras alongside robots, each over whatever
-the camera actually speaks:
+![status](https://img.shields.io/badge/status-v1.2-e2b714)
+![license](https://img.shields.io/badge/license-GPLv3-7ec384)
+
+## The library
+
+On launch you land on your **library** — every robot you keep, grouped into collapsible
+**PLANT / LINE / ROBOT** folders. Filter by name / model / IP / note, sort by name · IP ·
+last-backup date. Click a robot to open its latest backup; each row shows its IP, last
+backup, saved-backup count, and honest status pills (`missing`, `no backup`, `partial`).
+
+The folder tree **is** the library — files are law. A robot exists because its folder
+exists, so you grow the library three ways:
+
+- **discover on network** — sweep a subnet for FANUC controllers (FTP), name them, add them.
+- **manually** — add a robot that has no backup yet.
+- **drop it in** — copy an existing backup tree into the library folder with Explorer; a
+  background watcher notices and lists it. No import wizard, no duplicate-hunting.
+
+A selection toolbar acts on whatever robots you check:
+**backup · hide · scan · manage backups**.
+
+## Smart cameras too
+
+The library holds **vision cameras alongside robots**, each over whatever the camera
+actually speaks, and linked cameras nest under the robot they inspect:
 
 - **Matrox (MTX)**: back up its Design Assistant `da/` folder + the newest day of saved
-  images over **SMB** (the `\\<ip>\mtxuser` share, `MTXuser`/`MATROX`), and browse it with
-  a **photos** view showing the most recent inspection image, its pass/fail result and the
-  metadata parsed from the camera's own sidecar. **Remote** embeds the camera's own web UI
-  in-app with tabs — the portal home **and its Design Assistant operator page(s)**, auto-
-  discovered — fullscreen-capable, with a separate-window fallback if a page refuses framing.
+  images over **SMB**, and browse it with a **photos** view — the most recent inspection
+  image (green-boxes/raw toggle), pass/fail, and the metadata parsed from the camera's own
+  sidecar. **🖥 remote** embeds the camera's web UI in-app with tabs for the portal home
+  and its auto-discovered Design Assistant operator page(s).
 - **Keyence (CV-X)**: back up its `cv-x/setting/` config tree over **anonymous FTP**, and
   **remote into its live screen** — a fullscreen-capable mirror of the controller's 1024×768
   display with mouse control, speaking the CV-X's own remote-desktop protocol (no Keyence
   software or Terminal PC needed).
 
-Network discovery sweeps both FTP (robots + CV-X) and SMB (Matrox) and files everything
-under the right device type automatically; a robot/camera filter keeps a busy cell legible.
+Network discovery sweeps FTP (robots + CV-X) and EtherNet/IP + SMB (Matrox) and files
+everything under the right device type; cameras auto-link to their robot by the station
+encoded in the camera's name, and a robot/camera filter keeps a busy cell legible.
 
-![status](https://img.shields.io/badge/status-v0.99q-e2b714)
-![license](https://img.shields.io/badge/license-GPLv3-7ec384)
+## Take a backup
 
-## The shell
+**take a backup** connects to a controller over FTP and pulls an **"all of above"** backup
+(the `MD:` device) into a per-line `Latest` mirror **and** a dated history snapshot.
+Image/TFTP backups are intentionally out of scope.
 
-On launch you land on a **home menu**:
+Backups are written to survive interruption. Each snapshot gets a completion marker written
+**last**, so a pull that dies mid-download is recognized as **partial** on the next scan and
+is never mistaken for a fresh backup. A durable **run log** records every robot's
+outcome, and **retry failed** re-fires exactly the robots that didn't make it.
 
-- **open backup** — browse any backup folder on disk.
-- **add to library** — save a backup to a local library, organized **PLANT / LINE / ROBOT**
-  (add manually or import an existing folder; IP/model/F-number auto-fill from the backup).
-- **take a new backup** — connect to a controller over FTP and pull an **"all of above"**
-  backup (the `MD:` device — the same ASCII set the viewer reads) into a `Latest` mirror +
-  dated history, with a pre-flight reachability **probe** and live progress.
-  Image/TFTP backups are intentionally out of scope.
+## Fleet health scan
+
+Select any set of robots, hit **scan**, and the app reads each one's saved backup with the
+same parsers the tabs use, then reports across the whole selection. Every check is
+conservative and **explainable** — it says *why* — and flags, never fixes:
+
+| group | checks |
+|---|---|
+| **safety** | advanced DCS present · DCS signature mismatch (current ≠ latch) · CIP safety disabled |
+| **mastering** | mastering incomplete · cloned mastering (identical master counts across robots) · low battery alarm (BLAL / SRVO-065) |
+| **programs** | style table broken (enabled style → missing program) · unused S## programs · broken CALLs (target not in the backup) |
+| **config** | software edition inventory + within-line drift · payloads never set (all schedules at the unset sentinel) |
+
+Add any number of free-text **finds** (`DI[279]`, `R[151]`, a program name…) as chips —
+each becomes its own report section. The report opens tight (flags first), copies to the
+clipboard as text, and a click on any finding opens that robot on the tab that shows it.
+Nothing touches the network — the scan reads backups already on disk.
+
+## Compare across time
+
+Every robot remembers its dated history. On the overview, the 🕓 date picker switches to any
+past backup, and a **vs** pill compares the open backup against that date — answering the
+question every troubleshoot starts with: *it ran Friday, broke Monday, what changed?* The
+compare view lays two backups side by side per category (identity, frames, payloads, IO,
+registers, DCS, mastering, programs) with real program diffs, and either side can come from
+the library or a folder.
+
+## Manage backups
+
+One panel for backup hygiene and library tidy-up:
+
+- **last run** — the durable outcome summary, with **retry failed** and copy-to-text.
+- **partial backups** — snapshots whose pull died mid-download (kept, never latest, never
+  auto-deleted).
+- **stale backups** — robots with no completed backup in the last *N* days (adjustable).
+- **selected robots** — **fix names** (from backup contents, moves the folder too),
+  **merge** duplicates, **move to** another plant/line — folders always move with the entry.
 
 ## What the viewer shows
 
 | tab | data | source files |
 |---|---|---|
-| **overview** | robot identity, software & options, master counts, memory pools, ethernet, GM wizard Q&A, motors, tasks — plus a collapsed "at backup time" section (safety, position, alarm history) | `SUMMARY.DG`, `SYSMAST.VA`, `GMWIZLOG.DT`, `ERR*.LS` |
+| **overview** | robot identity, software edition & options, master counts, memory pools, ethernet, GM wizard Q&A, motors, tasks — plus a collapsed "at backup time" section (safety, position, alarm history) and the dated-history picker | `SUMMARY.DG`, `SYSMAST.VA`, `GMWIZLOG.DT`, `ERR*.LS` |
 | **frames** | tool / user / jog frames as vertical pendant-style cards, with payload schedules | `SYSFRAME.VA`, `FRAMEVAR.VA`, `SYMOTN.VA` |
 | **io** | pendant categories (digital/group/uop/sop/robot/flags), IN and OUT side by side, state at backup time, rack·slot·port | `IOCONFIG.DG`, `IOSTATE.DG`, `SUMMARY.DG` |
 | **registers** | R / PR / SR with comments, split into side-by-side columns on wide screens | `NUMREG.VA`, `POSREG.VA`, `STRREG.VA` |
 | **programs** | every program (incl. binary-only), ★ = callable from the PLC style table, syntax-highlighted source, calls / called-by panel + expandable call tree; macros sub-view | `*.LS`, `CELLIO.VA` |
 | **dcs** | safety: verify report, change history, signatures, code-styled safe-I/O logic | `DCSVRFY.DG`, `DCSCHGD*.DG` |
-| **mh valves** | GM gripper / valve configuration | `MHGRIPDT.VA` |
+| **3d view** (`0` key) | DCS cartesian zones drawn to scale — free orbit + viewport cube (26 snap directions), ortho/persp, pan/zoom, per-zone show/hide, pendant detail inline | `DCSPOS.VA`, `DCSVRFY.DG` |
+| **mh valves** | GM gripper / valve configuration (and magnet EOATs) | `MHGRIPDT.VA`, `MAG*.PC` |
 | **system vars** | the full `SYSTEM.VA` tree; KAREL `.PC` program variables | `SYSTEM.VA`, `*.VA`/`*.VR` |
 | **photos** *(camera)* | the most recent Matrox inspection image + pass/fail, recipe, exposure, camera identity and per-tool results, over a pass/fail-filterable thumbnail grid | `SavedImages/*.jpg` `.png` `.txt` |
 | **files** | raw browser for every file; text viewer + hex preview for binaries | everything |
 | **compare** | two backups side by side, per-category, with program diffs | — |
 
-Signal names are pendant-style everywhere (`DI[279]`, never `DIN[279]`). **Backup-wide
-search** (`ctrl+k`) covers signals/registers structurally or free text across program lines,
-IO comments, registers, frames, macros and file names. Tabs light up based on what's
+**Backup-wide search** (`ctrl+k`) covers signals / registers structurally or free text across program
+lines, IO comments, registers, frames, macros and file names. Tabs light up based on what's
 actually in the backup.
 
 ## Run
@@ -64,7 +118,7 @@ Requires Python 3.10+ on Windows (uses the built-in Edge WebView2 runtime).
 
 ```powershell
 pip install pywebview
-python run.py                          # opens the home menu
+python run.py                          # opens the library
 python run.py --backup PATH\TO\BACKUP  # open a backup directly
 python run.py --debug                  # F12 devtools
 ```
@@ -73,24 +127,26 @@ python run.py --debug                  # F12 devtools
 
 | key | action |
 |---|---|
-| `1`–`9` | switch tab |
+| `1`–`9` | switch tab (numbered as shown) |
 | `ctrl+k` | search the whole backup |
 | `/` | focus tab filter |
-| `esc` | clear filter · back · close |
+| `esc` | clear filter · back to list · close |
+| `backspace` | back (previous program / view) |
 | `j` `k` / `↓` `↑` | move selection |
 | `h` `l` / `←` `→` | switch pane in split views |
 | `enter` | open selection · search signal |
-| `ctrl+o` | open backup folder |
 | `t` / `shift+t` | theme picker / cycle theme |
 | `?` | shortcut help |
 
-Font size and UI scale live behind the `aa` button (persisted). The logo is the home button.
 
 ## Themes
 
-MonkeyType-style: a theme is ~9 colors. A dozen built-ins ship (serika dark, dracula, nord,
-gruvbox, matrix, …). Drop your own JSON into `%APPDATA%\BackupViewer\themes\` and it appears
-in the picker:
+MonkeyType-style: a theme is ~9 colors. **28 built-ins ship** across four packs —
+**MonkeyType** (serika dark, dracula, nord, gruvbox, matrix, rosé pine …), **Sports**,
+**Cyberpunk 2077**, and **Vibes** — in a category picker. Build your own in the app with the
+**custom theme editor** (live preview, saved under a Custom pack), or drop a JSON theme into
+your user themes folder and it appears in the picker; either way the file is trivially
+shareable:
 
 ```json
 {
@@ -106,19 +162,29 @@ in the picker:
 
 ## Development
 
+Contributing or building alongside? Read [CLAUDE.md](CLAUDE.md) (project
+principles — also auto-loaded by Claude Code sessions in this repo) and
+[ROADMAP.md](ROADMAP.md) (what's planned, decided, and up for grabs).
+[CHANGELOG.md](CHANGELOG.md) tracks what already shipped.
+
 ```
 src/backupviewer/
   app.py          window boot (resource_path works in dev + PyInstaller)
   api.py          the entire JS<->Python bridge ({ok,data}/{ok,error} envelopes)
   session.py      backup folder scan, case-insensitive index, lazy parse cache
-  library.py      the saved-robot registry (library.json)
+  library.py      the saved-robot registry (library.json) + folder-tree scan
   ftpbackup.py    the FTP backup engine (MD: "all of above", gentle/throttled)
+  healthscan.py   the fleet health-scan engine (check registry + worker job)
+  backuplog.py    the durable backup-run log (survives the post-backup refresh)
   mtxbackup.py    the Matrox camera SMB backup (da/ + newest SavedImages, per-camera)
   keyencebackup.py the Keyence CV-X camera FTP backup (cv-x/setting, per-camera)
   cvx_remote.py   the Keyence CV-X live remote desktop (screen mirror + mouse, MJPEG bridge)
   cvx_handshake/  captured CV-X remote-desktop handshake blobs, replayed at connect time
   parsers/        pure text -> dict parsers (one per file family)
   web/            vanilla JS frontend, no build step (classic scripts, BV namespace)
+src/libraryimporter/
+  core.py         stdlib-only seeding core (parse -> plan -> seed), pluggable parsers
+  api.py, app.py  the LibraryImporter companion exe (see below)
 ```
 
 ```powershell
@@ -126,10 +192,11 @@ pip install pytest
 python -m pytest tests -q
 ```
 
-The included tests (`test_ftpbackup.py`, `test_library.py`) are self-contained — the FTP engine
-runs end-to-end against an in-memory fake controller. The broader parser/UI regression
-suite runs against a local FANUC backup fixture (real plant data, not distributed); those
-tests skip gracefully when it's absent.
+The included tests (`test_ftpbackup.py`, `test_library.py`, `test_healthscan.py`,
+`test_backuplog.py`, `test_discover.py`) are self-contained — the FTP engine and health
+scan run end-to-end against in-memory fakes and synthetic fixtures. The broader parser/UI
+regression suite runs against a local FANUC backup fixture (real plant data, not
+distributed); those tests skip gracefully when it's absent.
 
 ## Packaging (share a single .exe)
 
@@ -140,6 +207,20 @@ python -m PyInstaller packaging/backupviewer.spec --noconfirm
 
 Produces `dist/BackupViewer.exe` (onefile, no console). Target machines need the WebView2
 runtime (preinstalled on Windows 10/11; the app shows a download link if missing).
+
+## LibraryImporter (companion exe)
+
+A stripped hand-out tool that sets up a coworker's library fast: drag a robots.json
+(`{"LINE": {"ROBOT": "ip"}}`) onto it, pick the plant folder, tick the lines or robots
+to import (shift+click ranges work), hit **import** — it writes the same skeleton
+folders + `robot.json` sidecars the app scans in, IPs attached, ready to back up.
+Robots already in the destination are grayed out and never duplicated, so it's safe
+to re-run as the list grows.
+
+```powershell
+python -m PyInstaller packaging/libraryimporter.spec --noconfirm   # dist/LibraryImporter.exe
+python run_libraryimporter.py                                      # dev run
+```
 
 ## License
 

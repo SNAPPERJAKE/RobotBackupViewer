@@ -135,22 +135,6 @@
      ethernet / wizard / motors call sites below */
   var kvHtml = BV.kv.html;
 
-  /* independently-collapsible section INSIDE a card */
-  function subsection(parent, title, bodyEl, opts) {
-    opts = opts || {};
-    var wrap = BV.el("div", { class: "subsec" + (opts.startCollapsed ? " collapsed" : "") });
-    var h = BV.el("h4", { class: "subsec-h" }, BV.esc(title) +
-      (opts.count !== undefined ? ' <span class="count">' + opts.count + "</span>" : ""));
-    var body = BV.el("div", { class: "subsec-body" });
-    if (typeof bodyEl === "string") body.innerHTML = bodyEl;
-    else if (bodyEl) body.appendChild(bodyEl);
-    h.addEventListener("click", function () { wrap.classList.toggle("collapsed"); });
-    wrap.appendChild(h);
-    wrap.appendChild(body);
-    parent.appendChild(wrap);
-    return body;
-  }
-
   /* ---- mh valves + magnet: collapsible entries for the combined overview card ----
      headers are colored, values plain, and DI/DO/R designations are lit pills
      (the same .pill.on used by running/mastered). */
@@ -257,6 +241,19 @@
     }).catch(function (e) { BV.toast(e.message); });
   }
 
+  /* diff the open backup against another dated snapshot of the same robot -
+     the "ran friday, broke monday - what changed?" one-click. The picked date
+     loads as the compare session (side b) and we land on #compare. */
+  function compareWith(b) {
+    var man = BV.state.manifest || {};
+    if (!man.robot_id) return;
+    BV.api.call("lib_open", man.robot_id, b.path, "b").then(function (cm) {
+      BV.state.compare = cm;
+      BV.toast("comparing with " + fmtBackupDate(b.taken));
+      location.hash = "#compare";
+    }).catch(function (e) { BV.toast(e.message); });
+  }
+
   function buildDatePicker() {
     var man = BV.state.manifest || {};
     var backups = man.backups || [];
@@ -268,10 +265,20 @@
     var btn = BV.el("button", { class: "btn ov-datepick", title: "switch to another dated backup" },
       "🕓 " + BV.esc(label));
     btn.addEventListener("click", function () {
+      /* "latest" tags the newest COMPLETE snapshot - a partial (a pull that
+         died mid-download) can sit newest in the list but is never "latest" */
+      var latestIdx = -1;
+      backups.some(function (b, i) { return !b.partial && (latestIdx = i, true); });
       BV.menu(btn, backups.map(function (b, i) {
         return {
-          label: fmtBackupDate(b.taken) + (i === 0 ? "  · latest" : "") + (b.path === current ? "  ✓" : ""),
+          label: fmtBackupDate(b.taken) + (b.partial ? "  · partial ⚠" : "") +
+            (i === latestIdx ? "  · latest" : "") + (b.path === current ? "  ✓" : ""),
           onClick: function () { if (b.path !== current) switchBackup(b.path); },
+          /* every row except the open one gets a "vs" pill */
+          action: b.path === current ? undefined : {
+            label: "vs", title: "compare the open backup with this date",
+            onClick: function () { compareWith(b); },
+          },
         };
       }));
     });

@@ -3,7 +3,12 @@
 /* ---- cards ---- */
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+  /* the card track minimum is rem-based (22rem = the old 330px at the default
+     15px root) so it grows WITH the text-size setting: a fixed px minimum let
+     24px text outgrow the card and crush the .kv value column to ~one
+     character per line (worst on mh valves). min(…, 100%) keeps a lone card
+     from forcing sideways overflow in a narrow window. */
+  grid-template-columns: repeat(auto-fit, minmax(min(22rem, 100%), 1fr));
   gap: 0.9rem;
   align-items: start;
 }
@@ -363,7 +368,6 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
 }
 .card.expanded .calltree { max-height: none; }
-.card .card-close { float: right; padding: 0.2rem 0.5rem; margin-left: 0.3rem; }
 
 /* detail split view */
 .split { display: grid; grid-template-columns: minmax(0, 5fr) minmax(15em, 3fr); gap: 0.9rem; height: 100%; min-height: 0; }
@@ -779,10 +783,12 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .sysvar-title { color: color-mix(in srgb, var(--accent) 55%, var(--sub)); font-size: 0.82em;
   margin-left: 0.5em; font-style: italic; }
 
-/* stapled DCS dashboard (signatures + small sections inline) */
+/* stapled DCS dashboard (signatures + small sections inline). Scrolls with the
+   page: the cells show the FULL mastering table and every signature now, and a
+   pinned bar that tall would squeeze the section list under it */
 .dcs-dash {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.7rem;
-  position: sticky; top: -0.8rem; z-index: 5; background: var(--bg);
+  background: var(--bg);
   margin: -0.75rem -1.25rem 0.5rem; padding: 0.85rem 1.45rem 0.7rem;
   border-bottom: 1px solid var(--edge);
 }
@@ -791,12 +797,15 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .dcs-dash-cell.clickable:hover { background: color-mix(in srgb, var(--sub-alt) 20%, var(--bg2)); }
 .dcs-dash-h { font-size: 0.74rem; color: var(--sub); text-transform: lowercase; font-weight: 600; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.4rem; }
 .dcs-dash-body, .dcs-dash-line { font-size: 0.8rem; color: var(--text); }
+/* the mastering cell holds a real (small) table - tighten it to cell scale */
+.dcs-dash-cell .tbl-wrap { border: none; background: transparent; }
+.dcs-dash-cell .tbl { font-size: 0.78rem; }
+.dcs-dash-cell .tbl th, .dcs-dash-cell .tbl td { padding: 0.12rem 0.6rem 0.12rem 0; }
 .dcs-dash-line { display: flex; justify-content: space-between; gap: 0.6rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0.05rem 0; }
 /* signatures: one row per signature, the real current/latch value on show
-   (not just an OK pill), stacked in a column; long lists scroll within the cell
-   instead of ballooning the sticky dashboard */
-.dcs-sig-col { display: flex; flex-direction: column; gap: 0.15rem; max-height: 10rem;
-  overflow-y: auto; overflow-x: hidden; }
+   (not just an OK pill), stacked in a column - every signature visible, the
+   cell grows to fit (the dashboard scrolls with the page, so tall is fine) */
+.dcs-sig-col { display: flex; flex-direction: column; gap: 0.15rem; overflow-x: hidden; }
 .dcs-sig-row {
   display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.1rem 0.5rem;
   font-size: 0.78rem; padding: 0.12rem 0.1rem; border-radius: 5px;
@@ -925,6 +934,9 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 /* the ONE action row, pinned while the plant tree scrolls (same sticky recipe
    as .hero.stick: negative top cancels #view's padding, full-bleed margins +
    opaque background stop rows peeking past its edges) */
+/* boot/rescan scan progress (the membar drawn by renderScanBar lives inside) */
+.home-lib-loading { margin: 0.4rem 0 0.7rem; max-width: 30rem; }
+
 .home-lib-head {
   position: sticky; top: -0.8rem; z-index: 5; background: var(--bg);
   margin: -0.75rem -1.25rem 1.1rem; padding: 0.95rem 1.45rem 0.6rem;
@@ -947,14 +959,22 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .lf-combo .lf-input { flex: 1 1 auto; min-width: 0; }
 .lf-combo-btn { flex: none; padding: 0.22rem 0.5rem; font-size: 0.72rem; }
 
-/* compare picker: line sub-headers inside each plant section */
-.modal .cmp-line-head {
-  color: var(--accent); font-size: 0.78rem; font-weight: 600;
-  padding: 0.45rem 0.3rem 0.15rem; border-bottom: 1px solid var(--edge-soft, transparent);
-  margin-bottom: 0.15rem;
+/* compare picker = the library tree (BV.libTree), modal-sized: tighter heads,
+   plain click-to-pick rows instead of the home screen's card rows */
+.modal .cmp-pick-search {
+  position: sticky; top: -0.3rem; z-index: 2; background: var(--bg2);
+  display: flex; padding: 0.2rem 0.2rem 0.45rem; margin-top: -0.3rem;
 }
-.modal .cmp-line-head:first-child { padding-top: 0.1rem; }
-.modal .opt-row.cmp-line-row { padding-left: 0.9rem; }
+.modal .cmp-pick-search .search-box { max-width: none; }
+.modal .lib-plant { margin-bottom: 0.4rem; }
+.modal .lib-plant-h { font-size: 0.88rem; margin-bottom: 0.15rem; }
+.modal .lib-plant-body { margin-left: 0.35rem; }
+.modal .lib-line { margin: 0 0 0.3rem 0.5rem; }
+.modal .lib-line-h { font-size: 0.82rem; margin-bottom: 0.05rem; }
+.modal .opt-row.cmp-pick-row { padding: 0.26rem 0.7rem; margin-left: 0.9rem; }
+.modal .cmp-pick-row .lib-robot-meta { margin-top: 0; }
+/* folder count badge (libtree opts.counts): what's inside when it's folded */
+.lib-count { color: var(--sub); font-size: 0.74em; font-weight: 400; }
 
 .lib-plant { margin-bottom: 1rem; }
 .lib-plant-h {
@@ -1021,6 +1041,8 @@ button.btn.danger:disabled { opacity: 0.5; cursor: default; }
 .del-warn b { color: var(--error); }
 
 /* list of pending merges in the "merge duplicates" confirm */
+.list-selall { display: inline-flex; align-items: center; gap: 0.4rem; margin: 0 0 0.3rem; font-size: 0.84rem; user-select: none; }
+.rename-row { user-select: none; }   /* shift+click ranges shouldn't smear a text selection */
 .merge-list { margin: 0 0 0.4rem; padding: 0 0 0 1.1rem; font-size: 0.84rem; color: var(--sub); }
 .merge-list li { margin: 0.12rem 0; }
 .merge-list .merge-why { padding-left: 1.35rem; font-size: 0.78rem; }
@@ -1039,9 +1061,128 @@ button.btn.danger:disabled { opacity: 0.5; cursor: default; }
 .ctx-item {
   appearance: none; background: none; border: none; font: inherit; text-align: left;
   color: var(--text); font-size: 0.86rem; padding: 0.4rem 0.7rem; border-radius: 6px; cursor: pointer;
+  display: flex; align-items: center; gap: 0.6rem;
 }
+/* optional trailing action pill on a menu row (its own click target) */
+.ctx-item .ctx-act {
+  margin-left: auto; font-size: 0.72rem; line-height: 1.4; padding: 0 0.45rem;
+  border: 1px solid var(--edge); border-radius: 999px; color: var(--sub);
+}
+.ctx-item .ctx-act:hover { color: var(--accent); border-color: var(--accent); }
 .ctx-item:hover { background: color-mix(in srgb, var(--accent) 14%, var(--bg2)); color: var(--accent); }
 .ctx-item.danger:hover { background: color-mix(in srgb, var(--error) 14%, var(--bg2)); color: var(--error); }
+
+/* fleet health scan modal (scan_ui.js) */
+.hs-info { font-size: 0.82rem; color: var(--sub); }
+.hs-check { display: flex; align-items: flex-start; gap: 0.55rem; padding: 0.32rem 0.3rem; border-radius: 6px; cursor: pointer; }
+.hs-check:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.hs-check input { margin-top: 0.18rem; }
+.hs-lbl { font-weight: 600; font-size: 0.86rem; }
+.hs-check .hs-desc { font-size: 0.76rem; color: var(--sub); }
+.hs-find { display: flex; align-items: center; gap: 0.55rem; margin: 0.55rem 0 0.3rem; }
+.hs-find input {
+  appearance: none; font: inherit; font-size: 0.85rem; flex: 1; min-width: 0;
+  background: var(--bg2); color: var(--text);
+  border: 1px solid var(--edge); border-radius: 6px; padding: 0.3rem 0.55rem;
+}
+.hs-find input:focus { outline: none; border-color: var(--accent); }
+/* reports need room: wider + taller than the stock 640px/70vh modal */
+.modal.hs-modal { max-width: min(900px, 94vw); max-height: 86vh; }
+.hs-report-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.45rem; flex-wrap: wrap; }
+.hs-report-head .hs-info { margin-right: auto; }
+.hs-results { max-height: 68vh; overflow-y: auto; display: flex; flex-direction: column; gap: 0.4rem; }
+/* the two report toggles, both defaulting to hidden: ok/n·a rows only clutter
+   a fleet report, and the per-finding detail line gaps the listing */
+.hs-results.hide-quiet .hs-row.st-ok, .hs-results.hide-quiet .hs-row.st-na { display: none; }
+.hs-results.hide-details .hs-row .hs-detail { display: none; }
+.hs-quiet-note { display: none; color: var(--sub); font-size: 0.74rem; padding: 0.18rem 0.35rem 0.3rem; }
+.hs-results.hide-quiet .hs-quiet-note { display: block; }
+.hs-sec { border: 1px solid var(--edge-soft); border-radius: var(--radius); padding: 0.15rem 0.4rem; }
+.hs-sec-head { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; padding: 0.28rem 0.2rem; }
+.hs-sec-title { font-weight: 700; font-size: 0.84rem; }
+.hs-sec-counts { margin-left: auto; display: flex; align-items: center; gap: 0.45rem; font-size: 0.76rem; }
+.hs-sec.bv-collapsible:not(.open) > .hs-sec-body { display: none; }
+.hs-row {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.5rem;
+  padding: 0.24rem 0.35rem; border-radius: 6px; cursor: pointer; font-size: 0.84rem;
+}
+.hs-row:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.hs-row .hs-robot { font-weight: 600; }
+.hs-row .hs-line { color: var(--sub); font-size: 0.76rem; }
+.hs-row .hs-detail { flex-basis: 100%; color: var(--sub); font-size: 0.76rem; padding-left: 0.2rem; }
+
+/* picker categories: plain always-visible headers (no accordions), two
+   columns when the modal is wide enough, each with its own select-all */
+.hs-cats { display: grid; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); gap: 0 1.4rem; align-items: start; margin-top: 0.25rem; }
+.hs-cat-head { display: flex; align-items: center; gap: 0.6rem; padding: 0.6rem 0.3rem 0.15rem; border-bottom: 1px solid var(--edge-soft, transparent); margin-bottom: 0.2rem; }
+.hs-cat-title { color: var(--sub); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; }
+.hs-cat-head .scan-selall { margin-left: auto; }
+.hs-cat-head .hs-desc { font-size: 0.74rem; color: var(--sub); margin-left: auto; }
+
+/* find chips: one removable chip per query, above the input */
+.hs-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.4rem 0 0.1rem; }
+.hs-chips:empty { display: none; }
+.hs-chip {
+  display: inline-flex; align-items: center; gap: 0.15rem;
+  background: var(--bg2); border: 1px solid var(--edge); border-radius: 999px;
+  padding: 0.12rem 0.25rem 0.12rem 0.6rem; font-size: 0.8rem;
+}
+.hs-chip-x {
+  appearance: none; background: none; border: 0; color: var(--sub); cursor: pointer;
+  font: inherit; font-size: 0.72rem; padding: 0.08rem 0.34rem; border-radius: 999px;
+}
+.hs-chip-x:hover { color: var(--error); background: color-mix(in srgb, var(--error) 14%, transparent); }
+
+/* about box (the credit pill in the status bar) */
+.about-box { padding: 0.4rem 0.6rem 0.2rem; }
+.about-line { font-size: 0.95rem; }
+.about-line.dim { font-size: 0.84rem; margin-top: 0.1rem; }
+.about-lbl { color: var(--sub); font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.08em; margin: 0.8rem 0 0.25rem; }
+/* selectable on purpose: the address is the whole point of the box, and the
+   app-wide user-select allow-list doesn't reach here (there's a copy button too) */
+.about-mail {
+  user-select: text; font-family: var(--font-mono); font-size: 0.9rem;
+  color: var(--accent); background: var(--bg); border: 1px solid var(--edge);
+  border-radius: 6px; padding: 0.4rem 0.6rem; word-break: break-all;
+}
+
+/* manage-backups modal (manage_ui.js): the tidy-up actions bar on top (ready
+   to fire, greyed without a selection), the partial strip full-width under it,
+   then the two HEAVY lists (last run | stale) side by side. Same no-scroll
+   discipline as the discover modal: the body never scrolls — only the lists
+   do — so the bar, summaries and buttons can never sink below the fold. */
+.modal.mb-modal { width: min(92vw, 60rem); max-width: none; max-height: 86vh; }
+.modal.mb-modal .modal-body { display: flex; overflow: hidden; min-height: 0; }
+.mb-host { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.mb-actbar {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  padding: 0.4rem 0.3rem 0.6rem;
+  border-bottom: 1px solid var(--edge-soft, transparent);
+}
+.mb-actbar .hs-cat-title { margin-right: 0.5rem; }
+.mb-partial { flex: 0 0 auto; }
+.mb-partial .mb-list { max-height: 18vh; }   /* the strip never starves the columns */
+.mb-cols { display: flex; gap: 1.4rem; flex: 1 1 auto; min-height: 0; }
+.mb-col { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.mb-colfill { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.mb-col .mb-list { flex: 1 1 auto; max-height: none; }
+@media (max-width: 760px) {
+  .mb-cols { flex-direction: column; flex: none; }
+  .mb-col .mb-list { max-height: 24vh; }
+  .mb-host { overflow-y: auto; }   /* narrow-window safety valve — never hide content */
+}
+.mb-sum { font-size: 0.86rem; padding: 0.12rem 0.3rem 0.3rem; }
+.mb-none { color: var(--sub); font-size: 0.8rem; padding: 0.1rem 0.3rem 0.45rem; }
+.mb-list { display: flex; flex-direction: column; gap: 0.15rem; min-height: 0; overflow-y: auto; margin: 0.1rem 0 0.25rem; }
+.mb-acts { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; padding: 0.15rem 0.3rem 0.5rem; }
+.mb-static { cursor: default; }
+.mb-static:hover { background: transparent; }
+.mb-stale-days {
+  width: 3.4rem; appearance: none; font: inherit; font-size: 0.82rem; text-align: right;
+  background: var(--bg2); color: var(--text);
+  border: 1px solid var(--edge); border-radius: 6px; padding: 0.14rem 0.35rem;
+}
+.mb-stale-days:focus { outline: none; border-color: var(--accent); }
 
 /* bulk-add + discover scan modals */
 .scan-info { font-size: 0.82rem; margin-bottom: 0.2rem; }
@@ -1055,6 +1196,22 @@ button.btn.danger:disabled { opacity: 0.5; cursor: default; }
 }
 .scan-row .lib-robot-name { font-weight: 600; }
 .scan-row .lib-robot-meta { font-size: 0.78rem; }
+
+/* discover modal: wider, two columns when the screen allows (network dials
+   left, results right). The modal body's own scrolling is disabled here so the
+   network row and the scan/add actions can never sink below the fold — ONLY
+   the results list scrolls when it outgrows the modal's height cap. */
+.modal.modal-disc { width: min(92vw, 56rem); max-width: none; }
+.modal.modal-disc .modal-body { display: flex; overflow: hidden; min-height: 0; }
+.disc-body { flex: 1 1 auto; min-height: 0; min-width: 0; }
+.disc-cols { display: flex; gap: 1.1rem; flex: 1 1 auto; min-height: 0; }
+.disc-left { flex: 0 1 19rem; min-width: 13rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.disc-right { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; min-height: 0; gap: 0.3rem; }
+.disc-right .scan-results { flex: 1 1 auto; max-height: none; min-height: 0; }
+@media (max-width: 720px) {
+  .disc-cols { flex-direction: column; }
+  .disc-left { flex: none; }
+}
 
 /* discover: adapter picker + advanced toggle */
 .disc-adapter { width: 100%; text-align: left; justify-content: flex-start; }
@@ -1145,3 +1302,75 @@ button.cvx-tab {
 }
 button.cvx-tab:hover { color: var(--text); }
 button.cvx-tab.on { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
+/* ---- 3d view (tabs/view3d.js) ---- */
+/* fixed-height two-pane like overview: the viewport flexes, the panel owns
+   its own scrollbar, #view itself never scrolls here */
+.view-slot.v3-host { display: flex; flex-direction: row; gap: 0.7rem; height: 100%; min-height: 0; }
+.v3-vp { flex: 1 1 auto; min-width: 0; display: flex; position: relative; }
+.v3-ovl {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  pointer-events: none;
+}
+.v3-ovl text { font-family: var(--font-mono); fill: var(--sub); }
+.v3-svg {
+  flex: 1; width: 100%; height: 100%; min-height: 0;
+  background: var(--bg2); border: 1px solid var(--edge); border-radius: var(--radius);
+  cursor: grab; touch-action: none;
+}
+.v3-svg.dragging { cursor: grabbing; }
+.v3-svg text { font-family: var(--font-mono); fill: var(--sub); }
+.v3-grid { stroke: var(--edge-soft); vector-effect: non-scaling-stroke; }
+.v3-ax { stroke-width: 2; vector-effect: non-scaling-stroke; }
+.v3-ax-x { stroke: var(--error); }
+.v3-ax-y { stroke: var(--ok); }
+.v3-ax-z { stroke: var(--accent); }
+text.v3-ax-lab { stroke: none; }
+text.v3-ax-x { fill: var(--error); }
+text.v3-ax-y { fill: var(--ok); }
+text.v3-ax-z { fill: var(--accent); }
+.v3-base { fill: var(--sub); }
+.v3-face { stroke: none; }
+.v3-edge { fill: none; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.v3-zlab { text-anchor: middle; }
+.v3-tcp circle, .v3-tcp line { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.v3-tcp text { fill: var(--accent); }
+/* posed arm: capsule-limb body + centerline + DCS user-model elements
+   (world-mm strokes on purpose - they scale with the scene, unlike the
+   furniture) */
+.v3-body { stroke: color-mix(in srgb, var(--sub) 30%, transparent); stroke-linecap: round; }
+.v3-skel { fill: none; stroke: var(--sub); stroke-width: 2; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.v3-skel-j { fill: var(--bg2); stroke: var(--sub); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.v3-elem { fill: color-mix(in srgb, var(--accent) 16%, transparent); stroke: var(--accent); stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+.v3-elem-cap { stroke: color-mix(in srgb, var(--accent) 26%, transparent); stroke-linecap: round; }
+.v3-elem-axis { stroke: var(--accent); stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+.v3-scale line { stroke: var(--sub); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.v3-scale text { text-anchor: middle; }
+.v3-note { fill: var(--warn); }
+.v3-hint { fill: var(--sub-alt); }
+.v3-cube-face {
+  fill: var(--bg2); fill-opacity: 0.88; stroke: var(--edge);
+  cursor: pointer; pointer-events: auto;
+}
+.v3-cube-face:hover { fill: color-mix(in srgb, var(--accent) 22%, var(--bg2)); }
+.v3-cube-lab { font-size: 8.5px; fill: var(--sub); text-anchor: middle; pointer-events: none; }
+.v3-cube-hit { fill: transparent; stroke: none; cursor: pointer; pointer-events: auto; }
+.v3-cube-hit:hover { fill: color-mix(in srgb, var(--accent) 45%, transparent); }
+.v3-side { flex: 0 0 25%; min-width: 250px; max-width: 380px; overflow-y: auto; min-height: 0; }
+.v3-cat { display: flex; align-items: center; gap: 0.45rem; margin: 0.7rem 0 0.35rem; }
+.v3-cat:first-child { margin-top: 0; }
+.v3-cat-label { font-size: 0.78rem; color: var(--sub); }
+.v3-cat-count { font-size: 0.72rem; color: var(--sub-alt); flex: 1 1 auto; }
+.v3-mini { padding: 0.05rem 0.45rem; font-size: 0.7rem; }
+.v3-import-hint { font-size: 0.76rem; color: var(--sub); line-height: 1.45; padding: 0.15rem 0 0.35rem; }
+.v3-import-btn { display: block; width: 100%; margin: 0 0 0.35rem; }
+.v3-pose-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.3rem 0.5rem; padding: 0.2rem 0 0.4rem; }
+.v3-pose-cell { display: flex; align-items: center; gap: 0.3rem; font-size: 0.72rem; color: var(--sub); }
+.v3-pose-cell input { width: 100%; min-width: 0; padding: 0.15rem 0.3rem; font-size: 0.78rem; }
+.v3-row { background: var(--bg2); border: 1px solid var(--edge); border-radius: var(--radius); margin-bottom: 0.3rem; overflow: hidden; }
+.v3-row-head { display: flex; align-items: center; gap: 0.45rem; padding: 0.4rem 0.6rem; }
+.v3-row-head:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.v3-row-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.82rem; }
+.v3-row-tags { display: flex; gap: 0.25rem; flex: none; align-items: center; }
+.v3-row-body { padding: 0.15rem 0.6rem 0.5rem; border-top: 1px solid var(--edge-soft); }
+.v3-check { width: 15px; height: 15px; accent-color: var(--accent); flex: none; }
+.v3-swatch { width: 11px; height: 11px; border-radius: 3px; flex: none; }

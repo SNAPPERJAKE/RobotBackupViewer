@@ -16,20 +16,23 @@ import time
 import uuid
 from pathlib import Path
 
+from . import backuplog
 from . import compare
 from . import __version__
 from . import cvx_remote
 from . import discover
 from . import ftpbackup
+from . import healthscan
 from . import keyencebackup
 from . import library
+from . import modeldb
 from . import mtxbackup
 from . import search as search_mod
 from . import settings
-from .parsers import (alarms, callgraph, dcs, frames, gmwizlog, io_dg,
-                      ls_program, macros, magnet, mastering, mhvalves,
-                      mtx_saved_image, payloads, registers, styles, summary_dg,
-                      sysvars)
+from .parsers import (alarms, callgraph, curpos, dcs, dcszones, frames,
+                      gmwizlog, io_dg, kinematics, ls_program, macros, magnet,
+                      mastering, mhvalves, mtx_saved_image, payloads, registers,
+                      styles, summary_dg, sysvars)
 from .parsers.common import is_binary, read_text
 from .session import BackupSession
 
@@ -212,6 +215,9 @@ class Api:
         self._lib_sig: str | None = None  # tree signature at the last scan (None = never)
         self._cvx: dict[str, cvx_remote.CvxRemoteSession] = {}  # live CV-X remote sessions
         self._cvx_server = None  # lazy MJPEG frame server (one for all sessions)
+        self._lib_seeded = False  # _lib_sig lazily seeded from settings on the first listing
+        self._lib_progress = {"active": False, "done": 0, "total": 0, "current": ""}
+        self._lib_progress_lock = threading.Lock()
 
     def bind(self, window, initial_backup: str | None = None):
         self._window = window
@@ -480,9 +486,7 @@ class Api:
 
     def _build_mastering(self, s: BackupSession | None = None) -> list:
         s = s or self._need_session()
-        mast_text = s.text("SYSMAST.VA")
-        if mast_text is None:
-            raise ApiError("MISSING_FILE", f"SYSMAST.VA not found in {s.root.name}")
+        mast_text = self._need_text("SYSMAST.VA", s)
         return s.cached("mastering", lambda: mastering.parse_mastering(mast_text))
 
     # -- tab data ---------------------------------------------------------------
@@ -768,9 +772,7 @@ class Api:
     ]
 
     def _dcs_report(self, s: BackupSession, name: str) -> dict:
-        text = s.text(name)
-        if text is None:
-            raise ApiError("MISSING_FILE", f"{name} not found in this backup")
+        text = self._need_text(name, s)
         return s.cached(f"dcs:{name.upper()}", lambda: dcs.parse_dcs_report(text))
 
     @_endpoint
@@ -797,14 +799,118 @@ class Api:
     def get_dcs(self, file_name: str = "DCSVRFY.DG", side: str = "a"):
         return self._dcs_report(self._side_session(side), file_name)
 
+    @_endpoint
+    def get_dcs_zones(self, side: str = "a"):
+        """Zone geometry for the 3D view: DCSPOS.VA (authoritative) merged
+        with the verify report's status/method/TCP; either may be absent."""
+        s = self._side_session(side)
+
+        def build():
+            pos_text = s.text("DCSPOS.VA")
+            vrfy = self._dcs_report(s, "DCSVRFY.DG") if s.find("DCSVRFY.DG") else None
+            if pos_text is None and vrfy is None:
+                raise ApiError("MISSING_FILE", "No DCSPOS.VA / DCSVRFY.DG in this backup")
+            return dcszones.build_zones(pos_text, vrfy)
+
+        return s.cached("dcszones", build)
+
+    # -- robot pose (3D view) -------------------------------------------------
+
+    @_endpoint
+    def import_kinematics(self, path: str = ""):
+        """Import every robot def's kinematics from a Roboguide 'Robot
+        Library' folder into the local registry. With a path (the detected
+        install), no dialog; without one, the user picks the folder.
+        User-initiated, user's own licensed files - nothing ships with
+        the app."""
+        folder = path
+        if not folder:
+            import webview
+
+            result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+            if not result:
+                return None
+            folder = result[0] if isinstance(result, (list, tuple)) else result
+        out = modeldb.import_folder(folder)
+        out["counts"] = modeldb.counts()
+        return out
+
+    @_endpoint
+    def get_robot_pose(self, side: str = "a"):
+        """Everything the 3D view needs to pose the arm: the backup's robot
+        type (DCS verify report), the matching imported kinematics, the
+        CURPOS.DG pose snapshot, and the flange correction measured from
+        this backup's own numbers (see kinematics.measure_flange). All
+        fields degrade to None - the view falls back honestly."""
+        s = self._side_session(side)
+
+        robot_type = ""
+        if s.find("DCSVRFY.DG"):
+            rep = self._dcs_report(s, "DCSVRFY.DG")
+            for sec in rep.get("sections", []):
+                if sec.get("id") != "robot-setup":
+                    continue
+                for row in sec.get("rows", []):
+                    if row.get("kind") == "kv" and row.get("key") == "Robot":
+                        robot_type = row.get("value", "")
+                        break
+                break
+
+        entry = modeldb.match(robot_type) if robot_type else None
+
+        q = None
+        pose_date = ""
+        tool_n = None
+        world = None
+        cp_text = s.text("CURPOS.DG")
+        if cp_text:
+            cp = curpos.parse_curpos(cp_text)
+            if cp["groups"]:
+                g1 = cp["groups"][0]
+                q = g1["joints"] or None
+                tool_n = g1["tool"]
+                world = g1["world"]
+                pose_date = cp["date"]
+
+        tool = None
+        fr_text = s.text("FRAME.DG")
+        if fr_text and tool_n:
+            for t in curpos.parse_tool_frames(fr_text):
+                if t["n"] == tool_n:
+                    tool = t["xyzwpr"]
+                    break
+
+        calib = None
+        flange_dz = 0.0
+        if entry and q and tool and world and len(world) == 6:
+            calib = kinematics.measure_flange(entry["kin"], q, tool, world)
+            for k in ("dz", "dxy", "ori_err"):
+                calib[k] = round(calib[k], 3)
+            if calib["ok"]:
+                flange_dz = round(calib["dz"], 2)
+
+        return {
+            "backup_type": robot_type,
+            "matched": bool(entry),
+            "type_name": entry["name"] if entry else "",
+            "source_kind": entry.get("source_kind", "") if entry else "",
+            "imported_date": entry.get("imported", "") if entry else "",
+            "validated": entry.get("validated") if entry else None,
+            "kin": entry["kin"] if entry else None,
+            "counts": modeldb.counts(),
+            "q": q, "q_source": "curpos" if q else None,
+            "pose_date": pose_date,
+            "flange_dz": flange_dz,
+            "calib": calib,
+            "suggested_library": "" if entry else modeldb.default_library(),
+        }
+
     # -- system vars ----------------------------------------------------------
 
     def _sysvar_index(self, s: BackupSession):
         """Cached (records list, name->record) for SYSTEM.VA."""
         def build():
-            text = s.text("SYSTEM.VA")
-            if text is None:
-                raise ApiError("MISSING_FILE", "SYSTEM.VA not found in this backup")
+            text = self._need_text("SYSTEM.VA", s)
             recs = sysvars.records(text)
             return recs, {r.name.upper(): r for r in recs}
         return s.cached("sysvar_index", build)
@@ -830,9 +936,7 @@ class Api:
         # tables stored in MHGRIPDT (VALVE_TAB/PARTP_TAB/CLAMP_TAB/VMADE_TAB); the
         # parser resolves them to real DI/DO (name + number). See parsers/mhvalves.
         s = self._side_session(side)
-        text = s.text("MHGRIPDT.VA")
-        if text is None:
-            raise ApiError("MISSING_FILE", "MHGRIPDT.VA not found in this backup")
+        text = self._need_text("MHGRIPDT.VA", s)
         model = s.cached("mhvalves", lambda: mhvalves.build_mhvalves(text))
         # the full, untouched config as a nested tree (every field, headers on
         # headers) - MHGRIPDT (gripper data) + MHGRIPSU (valve setup) if present
@@ -863,9 +967,7 @@ class Api:
     @_endpoint
     def get_payloads(self, side: str = "a"):
         s = self._side_session(side)
-        text = s.text("SYMOTN.VA")
-        if text is None:
-            raise ApiError("MISSING_FILE", "SYMOTN.VA not found in this backup")
+        text = self._need_text("SYMOTN.VA", s)
         return s.cached("payloads", lambda: payloads.build_payloads_model(text))
 
     # -- compare two backups ---------------------------------------------------------
@@ -1073,8 +1175,11 @@ class Api:
     def search_backup(self, query: str, side: str = "a"):
         # side="b" searches the compare robot - clicking a signal in a vs-mode
         # pane must search THAT robot, not always the primary one.
-        s = self._side_session(side)
+        return self._search_session(self._side_session(side), query)
 
+    def _search_session(self, s: BackupSession, query: str):
+        # the composition behind backup-wide search, session-explicit so the
+        # fleet health scan can run the same search over its own sessions
         def opt(builder, default):
             try:
                 return builder()
@@ -1619,9 +1724,61 @@ class Api:
         """Rebuild the library from the folder tree (picks up copied-in folders)
         and return the reconciled set."""
         root = settings.library_root()
-        data = library.scan_library_root(root)
-        self._lib_sig = library.scan_signature(root)   # this scan IS the fresh baseline
+        data = self._scan_with_progress(root)
+        self._set_lib_sig(root, library.scan_signature(root))   # this scan IS the fresh baseline
         return data
+
+    def _saved_lib_sig(self) -> str | None:
+        """The tree signature persisted by the previous run's scan — trusted only
+        when it was stamped for THIS root and the cached library actually holds
+        robots. Lets an unchanged tree boot straight off library.json instead of
+        paying a full rescan every launch (the cheap signature walk still runs
+        on every listing, so any tree change is caught exactly as before)."""
+        v = settings.get("lib_sig")
+        if not isinstance(v, dict) or not v.get("sig"):
+            return None
+        if v.get("root") != settings.library_root():
+            return None
+        try:
+            if not library.load().get("robots"):
+                return None   # wiped/empty cache: rescan, never serve an empty tree
+        except Exception:  # noqa: BLE001 - unreadable cache = no shortcut
+            return None
+        return v["sig"]
+
+    def _set_lib_sig(self, root, sig: str) -> None:
+        """Remember which tree the library cache reflects — in memory for this
+        run and in settings for the next boot. A falsy sig (unreachable root)
+        is not persisted: it's not a baseline, and keeping the old stamp means
+        the drive coming back unchanged still boots off the cache."""
+        self._lib_sig = sig
+        if not sig:
+            return
+        try:
+            settings.set_value("lib_sig", {"root": str(root), "sig": sig})
+        except OSError:
+            log.exception("could not persist the library signature")
+
+    def _scan_with_progress(self, root):
+        """library.scan_library_root with the shared progress snapshot raised so
+        lib_scan_progress polls (the home tab's loading bar) can watch it move."""
+        def tick(done, total, current):
+            with self._lib_progress_lock:
+                self._lib_progress.update(done=done, total=total, current=current)
+        with self._lib_progress_lock:
+            self._lib_progress.update(active=True, done=0, total=0, current="")
+        try:
+            return library.scan_library_root(root, progress=tick)
+        finally:
+            with self._lib_progress_lock:
+                self._lib_progress["active"] = False
+
+    @_endpoint
+    def lib_scan_progress(self):
+        """The running library scan's snapshot (inactive zeros between scans) —
+        polled by the home tab while a lib_list/lib_rescan call is in flight."""
+        with self._lib_progress_lock:
+            return dict(self._lib_progress)
 
     @_endpoint
     def lib_list(self):
@@ -1631,13 +1788,16 @@ class Api:
         no scan and no library.json rewrite. An unreachable root always takes
         the scan path, which serves the last known library marked stale."""
         root = settings.library_root()
+        if self._lib_sig is None and not self._lib_seeded:
+            self._lib_seeded = True
+            self._lib_sig = self._saved_lib_sig()
         sig = library.scan_signature(root)
         if sig != self._lib_sig or not sig:
-            data = library.scan_library_root(root)
+            data = self._scan_with_progress(root)
             # store the POST-scan signature: NTFS flushes directory-mtime
             # updates lazily, and the scan's own walk forces the flush - the
             # settled value is the one future listings will see.
-            self._lib_sig = library.scan_signature(root)
+            self._set_lib_sig(root, library.scan_signature(root))
             return data
         return library.list_robots()
 
@@ -1704,10 +1864,11 @@ class Api:
         e = library.get_robot(robot_id)
         if e is None:
             raise ApiError("NOT_FOUND", "robot not in library")
-        path = e.get("latest_path", "") if which == "latest" else which
-        p = Path(path)
-        if not p.is_dir():
-            raise ApiError("NOT_FOUND", f"backup folder missing: {path}")
+        path = library.resolve_open_path(e, which)
+        p = Path(path) if path else None
+        if p is None or not p.is_dir():
+            raise ApiError("NOT_FOUND",
+                           f"backup folder missing: {path or '(no backup on disk)'}")
         if side == "b":
             self._need_session()  # comparing needs a primary first
             self._compare_session = BackupSession(p)
@@ -1896,14 +2057,17 @@ class Api:
     def lib_apply_renames(self, items: list):
         """Apply clean renames (relocating their folders). `items` = [{id, plant?,
         line?, robot}]. A collision discovered at apply time surfaces as a 'merged'
-        result rather than aborting the batch."""
+        result rather than aborting the batch. Failures carry the robot's label and
+        the reason ({id, robot, error}) - the UI shows them verbatim."""
         renamed, merged, failed = [], [], []
         for it in (items or []):
             rid = it.get("id")
             e = library.get_robot(rid)
             if e is None:
-                failed.append({"id": rid, "error": "robot not in library"})
+                failed.append({"id": rid, "robot": it.get("robot", "") or str(rid),
+                               "error": "robot not in library"})
                 continue
+            label = e.get("robot", "") or str(rid)
             plant = it.get("plant", e.get("plant", ""))
             line = it.get("line", e.get("line", ""))
             robot = it.get("robot", e.get("robot", ""))
@@ -1912,10 +2076,15 @@ class Api:
             try:
                 res = library.relocate_robot(rid, plant, line, robot)
             except library.PathGuard as ex:
-                failed.append({"id": rid, "error": f"BAD_PATH: {ex}"})
+                failed.append({"id": rid, "robot": label, "error": f"BAD_PATH: {ex}"})
                 continue
             except (ValueError, OSError) as ex:
-                failed.append({"id": rid, "error": str(ex)})
+                failed.append({"id": rid, "robot": label, "error": str(ex)})
+                continue
+            if res.get("action") == "blocked":
+                # the collision-merge had nothing to fold: the move did NOT happen
+                failed.append({"id": rid, "robot": label,
+                               "error": "not merged: " + res.get("reason", "")})
                 continue
             (merged if res.get("action") == "merged" else renamed).append(res)
         return {"renamed": renamed, "merged": merged, "failed": failed}
@@ -1923,10 +2092,11 @@ class Api:
     @_endpoint
     def lib_merge(self, primary_id: str, secondary_ids):
         """Merge one or more secondary robots INTO a primary (folders + history).
-        Cross-line pairs are refused (reported, not merged)."""
+        Cross-line pairs are refused (reported, not merged); a secondary the merge
+        could fold nothing from comes back in `blocked` with its reason."""
         if isinstance(secondary_ids, str):
             secondary_ids = [secondary_ids]
-        merged, refused, failed = [], [], []
+        merged, refused, failed, blocked = [], [], [], []
         for sid in (secondary_ids or []):
             prim, sec = library.get_robot(primary_id), library.get_robot(sid)
             if prim is None or sec is None:
@@ -1942,8 +2112,13 @@ class Api:
             except (ValueError, OSError) as ex:
                 failed.append({"id": sid, "error": str(ex)})
                 continue
-            (refused if res.get("action") == "refused" else merged).append(res)
-        return {"merged": merged, "refused": refused, "failed": failed}
+            if res.get("action") == "refused":
+                refused.append(res)
+            elif res.get("action") == "blocked":
+                blocked.append(res)
+            else:
+                merged.append(res)
+        return {"merged": merged, "refused": refused, "blocked": blocked, "failed": failed}
 
     @_endpoint
     def lib_relocate(self, robot_id: str, plant: str, line: str, robot: str):
@@ -1991,6 +2166,19 @@ class Api:
                 pass
         return str(rp)
 
+    @_endpoint
+    def open_url(self, url: str):
+        """Open a link in the user's default browser (the about box's source link).
+        Guarded to http/https so this can never become an arbitrary-scheme or
+        local-file launcher for anything that reaches the bridge."""
+        import webbrowser
+
+        u = (url or "").strip()
+        if not u.lower().startswith(("http://", "https://")):
+            raise ApiError("BAD_URL", "only http/https links can be opened")
+        webbrowser.open(u)
+        return u
+
     # -- take a new backup (FTP pull) ------------------------------------------
 
     @_endpoint
@@ -2037,10 +2225,14 @@ class Api:
     def start_backup(self, spec: dict):
         """Kick off an FTP backup on a worker thread; returns a job_id to poll.
         device_type='camera-mtx' runs a Matrox CameraBackupJob (da/ + newest
-        SavedImages, MTXuser/MATROX); anything else runs the FANUC BackupJob.
-        Both jobs share the snapshot()/cancel()/library_* shape the poll + strip
-        endpoints rely on."""
-        spec = spec or {}
+        SavedImages, MTXuser/MATROX), 'camera-keyence' a CV-X job; anything else
+        runs the FANUC BackupJob. All jobs share the snapshot()/cancel()/library_*
+        shape the poll + strip endpoints rely on.
+        spec.run_id (the frontend stamps one per bulk click) groups the jobs of
+        one user action in the durable backup log."""
+        return self._start_backup_job(spec or {})
+
+    def _start_backup_job(self, spec: dict) -> dict:
         host = (spec.get("host") or "").strip()
         if not host:
             raise ApiError("BAD_SPEC", "host/IP is required")
@@ -2088,8 +2280,45 @@ class Api:
                 recurse_fr=spec.get("recurse_fr", False), on_complete=_register,
             )
         self._jobs[job.id] = job
-        threading.Thread(target=job.run, name="backup-" + job.id, daemon=True).start()
-        return {"job_id": job.id}
+        run_id = (spec.get("run_id") or "").strip() or uuid.uuid4().hex
+        backuplog.start_job(run_id, job.id, spec)
+
+        def _run_and_log():
+            snap = job.run()          # returns the final snapshot on every path
+            try:
+                backuplog.finish_job(run_id, job.id, snap)
+            except Exception:  # noqa: BLE001 - the log must never kill a backup thread
+                log.exception("backup log write failed for %s", job.id)
+
+        threading.Thread(target=_run_and_log, name="backup-" + job.id, daemon=True).start()
+        return {"job_id": job.id, "run_id": run_id}
+
+    @_endpoint
+    def backup_log(self):
+        """The persisted backup-run history, newest run first (passwords are
+        never stored). Powers the Manage-backups "last run" panel."""
+        return backuplog.load()
+
+    @_endpoint
+    def retry_failed_backups(self, run_id: str = "", passwd: str = ""):
+        """Re-fire exactly the FAILED jobs of a run (default: the newest run)
+        as a fresh run. passwd, when given, applies to retried robots whose
+        saved spec carries an FTP user - the same shared-password model the
+        bulk flow uses; nothing is persisted."""
+        specs = backuplog.failed_specs(run_id or None)
+        if not specs:
+            raise ApiError("NOTHING_TO_RETRY", "that run has no failed backups")
+        new_run = uuid.uuid4().hex
+        fired = []
+        for sp in specs:
+            sp = dict(sp)
+            sp["run_id"] = new_run
+            if sp.get("user") and passwd:
+                sp["passwd"] = passwd
+            res = self._start_backup_job(sp)
+            fired.append({"robot_id": sp.get("robot_id", ""), "robot": sp.get("robot", ""),
+                          "job_id": res["job_id"]})
+        return {"run_id": new_run, "jobs": fired}
 
     @_endpoint
     def get_backup_progress(self, job_id: str):
@@ -2156,6 +2385,31 @@ class Api:
             raise ApiError("NO_JOB", "unknown scan job")
         job.cancel()
         return True
+
+    # -- fleet health scan ------------------------------------------------------
+
+    @_endpoint
+    def health_checks(self):
+        """The scan-check registry (id/label/desc, display order) for the picker."""
+        return healthscan.check_list()
+
+    @_endpoint
+    def health_scan_start(self, robot_ids: list, checks: list, queries=None):
+        """Run selected checks (and/or free-text finds - a list of queries, each
+        its own report section) across the given library robots on a worker
+        thread; poll via scan_progress, stop via cancel_scan."""
+        by_id = {e.get("id"): e for e in library.load()["robots"]}
+        entries = [by_id[r] for r in (robot_ids or []) if r in by_id]
+        if not entries:
+            raise ApiError("BAD_SPEC", "no library robots to scan")
+        ids = healthscan.valid_ids(checks)
+        qs = healthscan.norm_queries(queries)
+        if not ids and not qs:
+            raise ApiError("BAD_SPEC", "pick at least one check or a find query")
+        job = healthscan.HealthScanJob(entries, ids, qs, search_fn=self._search_session)
+        self._scans[job.id] = job
+        threading.Thread(target=job.run, name="healthscan-" + job.id, daemon=True).start()
+        return {"job_id": job.id, "total": len(entries)}
 
     @_endpoint
     def lib_bulk_add(self, entries: list, plant: str = "", line: str = ""):

@@ -18,6 +18,9 @@ TAB_REQUIREMENTS = {
     # inside the programs tab (manifest.tabs.macros)
     "macros": ["SUMMARY.DG", "SYSMACRO.VA"],
     "dcs": ["DCSVRFY.DG", "DCSCHGD1.DG", "DCSDIFF.DG"],
+    # the 3D zone view draws from DCSPOS.VA (authoritative geometry) but can
+    # fall back to the verify report's diagonal boxes
+    "view3d": ["DCSPOS.VA", "DCSVRFY.DG"],
     "sysvars": ["SYSTEM.VA"],
     "mhvalves": ["MHGRIPDT.VA"],
     # matrox camera: lights up when the backup carries saved inspection photos

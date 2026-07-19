@@ -25,10 +25,11 @@
     lib_open: "opening backup…", open_backup: "opening backup…",
     open_compare: "opening comparison…", lib_apply_renames: "renaming folders…",
     lib_merge: "merging robots…", lib_relocate: "moving folders…",
+    lib_list: "loading library…",  /* a changed tree makes this a full rescan */
     lib_rescan: "rescanning library…", lib_bulk_add: "adding robots…",
     lib_resolve_names: "reading names from backups…",  /* fix-names preview: opens every selected backup */
   };
-  var inflight = {};   /* method\u0000argsJSON -> the pending promise */
+  var inflight = {};   /* method + BV.KEYSEP + argsJSON -> the pending promise */
 
   BV.api = {
     bridged: null, /* unknown until ready resolves */
@@ -39,7 +40,7 @@
       var slow = SLOW[method];
       var key = null;
       if (slow) {
-        try { key = method + "\u0000" + JSON.stringify(args); } catch (e) { key = null; }
+        try { key = method + BV.KEYSEP + JSON.stringify(args); } catch (e) { key = null; }
         if (key && inflight[key]) return inflight[key];   /* double-click -> same promise */
       }
       var p = BV.api.ready.then(function (ok) {

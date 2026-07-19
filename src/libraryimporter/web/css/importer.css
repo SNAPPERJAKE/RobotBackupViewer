@@ -1,0 +1,162 @@
+/* importer.css - one hardcoded dark look (BackupViewer's serika-dark values,
+   cribbed from base.css/components.css). No themes, no scaling, no webfonts. */
+
+:root {
+  --bg: #323437;
+  --bg2: #2c2e31;
+  --sub: #646669;
+  --sub-alt: #51545a;
+  --text: #d1d0c5;
+  --accent: #e2b714;
+  --error: #ca4754;
+  --ok: #7ec384;
+  --radius: 8px;
+  --trans: 0.18s ease;
+  --font-mono: "Cascadia Code", "Consolas", "JetBrains Mono", ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; padding: 0; height: 100%;
+  background: var(--bg); color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 15px; line-height: 1.45;
+}
+body { overflow: hidden; }
+::selection { background: var(--accent); color: var(--bg); }
+
+* { scrollbar-width: thin; scrollbar-color: var(--sub-alt) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: var(--sub-alt); border-radius: 4px; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+.dim { color: var(--sub); }
+.small { font-size: 0.78rem; }
+.hidden { display: none !important; }
+
+#app { display: flex; flex-direction: column; height: 100%; }
+
+/* ---- header ---- */
+#top {
+  display: flex; align-items: baseline; gap: 0.6rem;
+  padding: 0.7rem 1rem 0.4rem;
+}
+.logo { font-size: 1.05rem; font-weight: 600; letter-spacing: 0.02em; }
+.logo-accent { color: var(--accent); }
+#top .tagline { margin-left: auto; }
+
+/* ---- steps ---- */
+#steps { flex: 1 1 auto; overflow-y: auto; padding: 0.4rem 1rem 0.8rem; }
+.step { margin-bottom: 0.9rem; }
+
+/* buttons / inputs (components.css idiom) */
+button.btn {
+  appearance: none; background: var(--bg2); color: var(--text);
+  border: none; font: inherit; font-size: 0.82rem;
+  border-radius: var(--radius); padding: 0.32rem 0.7rem; cursor: pointer;
+  transition: color var(--trans), background var(--trans);
+}
+button.btn:hover { color: var(--accent); }
+button.btn.primary { background: var(--accent); color: var(--bg); font-weight: 600; }
+button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
+button.btn:disabled { color: var(--sub); cursor: default; filter: none; }
+button.btn.primary:disabled { background: var(--bg2); }
+.lf-check { width: 16px; height: 16px; accent-color: var(--accent); flex: 0 0 auto; }
+
+/* ---- drop zone ---- */
+#drop-zone {
+  border: 2px dashed var(--sub-alt); border-radius: var(--radius);
+  padding: 1.1rem 1rem; text-align: center; cursor: pointer;
+  transition: border-color var(--trans), box-shadow var(--trans);
+}
+#drop-zone:hover { border-color: var(--sub); }
+#drop-zone.drag {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.dz-big { font-size: 1.05rem; }
+.dz-sub { font-size: 0.8rem; margin-top: 0.15rem; }
+#drop-zone .dz-loaded { display: none; }
+#drop-zone.loaded .dz-idle { display: none; }
+#drop-zone.loaded .dz-loaded {
+  display: flex; align-items: baseline; gap: 0.7rem; justify-content: center;
+}
+#drop-zone.loaded { padding: 0.7rem 1rem; }
+#src-name { font-weight: 600; }
+.dz-change { color: var(--accent); font-size: 0.78rem; }
+#src-warnings:not(:empty), #dest-warnings:not(:empty) { margin-top: 0.3rem; }
+
+/* ---- destination ---- */
+.dest-row { display: flex; align-items: center; gap: 0.7rem; min-width: 0; }
+#dest-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#dest-path.chosen { color: var(--text); }
+.warn-line { color: var(--accent); font-size: 0.78rem; margin-top: 0.2rem; }
+
+/* ---- robot list ---- */
+#robots-head {
+  display: flex; align-items: center; gap: 0.7rem;
+  padding: 0.4rem 0.3rem 0.35rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
+  position: sticky; top: 0; background: var(--bg); z-index: 1;
+}
+.selall { display: inline-flex; align-items: center; gap: 0.45rem; cursor: pointer; }
+.selall span { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--sub); }
+
+details.li-line { margin: 0.1rem 0; }
+details.li-line > summary {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.28rem 0.3rem; border-radius: 6px; cursor: pointer;
+  list-style-position: inside;
+  transition: background var(--trans);
+}
+details.li-line > summary:hover { background: var(--bg2); }
+details.li-line > summary::marker { color: var(--sub-alt); }
+.li-name { font-weight: 600; }
+.li-count { color: var(--sub); font-size: 0.78rem; margin-left: auto; }
+
+.li-row {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.18rem 0.3rem 0.18rem 2.1rem; border-radius: 6px; cursor: pointer;
+}
+/* modern Chromium folds closed <details> with content-visibility, which keeps
+   offsetParent non-null - display:none restores the "hidden rows are excluded
+   from shift-ranges" contract the checklist controller is built on */
+details.li-line:not([open]) > .li-row { display: none; }
+.li-row:hover { background: var(--bg2); }
+.li-robot { min-width: 10.5em; }
+.li-ip { color: var(--sub); font-size: 0.82rem; }
+.li-row .li-hint { color: var(--sub); font-size: 0.74rem; margin-left: auto; }
+.li-row.present { color: var(--sub); cursor: default; }
+.li-row.present:hover { background: none; }
+.li-row.present .lf-check { accent-color: var(--sub-alt); }
+
+/* ---- go bar ---- */
+#gobar {
+  display: flex; align-items: center; gap: 0.8rem;
+  padding: 0.55rem 1rem;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
+}
+#gobar #go-summary { margin-left: auto; }
+
+/* ---- result panel ---- */
+#result { flex: 1 1 auto; overflow-y: auto; padding: 1.4rem 1.2rem; text-align: center; }
+.res-big { font-size: 1.5rem; font-weight: 600; }
+.res-big.ok { color: var(--ok); }
+.res-big.err { color: var(--error); }
+.res-sub { color: var(--sub); margin-top: 0.2rem; }
+.res-lines { margin: 0.9rem auto 0; max-width: 26rem; text-align: left; }
+.res-line { font-size: 0.82rem; padding: 0.12rem 0; color: var(--text); }
+.res-line .dim { color: var(--sub); }
+.res-err { color: var(--error); font-size: 0.78rem; margin-top: 0.3rem; word-break: break-all; }
+.res-actions { display: flex; gap: 0.6rem; justify-content: center; margin-top: 1.2rem; }
+
+/* ---- toast ---- */
+#toast {
+  position: fixed; bottom: 3.4rem; left: 50%; transform: translateX(-50%);
+  background: var(--bg2); color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: var(--radius); padding: 0.4rem 0.9rem; font-size: 0.82rem;
+  opacity: 0; pointer-events: none; transition: opacity var(--trans); z-index: 10;
+}
+#toast.show { opacity: 1; }

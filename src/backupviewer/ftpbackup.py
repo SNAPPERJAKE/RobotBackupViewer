@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import ftplib
+import json
 import logging
 import os
 import shutil
@@ -263,6 +264,12 @@ class BackupJob:
             dated = dated_dir(self.dest_root, self.plant, self.line, self.robot, when)
             dated.mkdir(parents=True, exist_ok=True)
             self._set(dated_path=str(dated))
+            # started-marker: backup.json exists from the first moment with
+            # complete:false, and only _write_sidecars - the LAST step of a
+            # successful pull - flips it true. A pull that dies mid-download is
+            # then self-identifying on disk, and the library rescan demotes it
+            # instead of adopting it as the newest backup.
+            self._write_meta(dated, when, complete=False)
 
             done = 0
             nbytes = 0
@@ -413,17 +420,23 @@ class BackupJob:
 
     # -- on disk -------------------------------------------------------------
 
-    def _write_sidecars(self, dated: Path, when: _dt.datetime, files: int, nbytes: int):
-        note = self.note.strip() or f"backup of {self.robot} taken {when.strftime('%Y-%m-%d %H:%M:%S')}"
-        (dated / "notes.txt").write_text(note + "\n", encoding="utf-8")
-        import json
+    def _write_meta(self, dated: Path, when: _dt.datetime, *, complete: bool,
+                    files: int = 0, nbytes: int = 0):
         meta = {
             "robot": self.robot, "line": self.line, "plant": self.plant,
             "host": self.host, "taken": when.isoformat(timespec="seconds"),
             "type": "all of above", "devices": self.devices,
             "files": files, "bytes": nbytes, "source": "ftp",
+            "complete": complete,
         }
-        (dated / "backup.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        tmp = dated / "backup.json.tmp"
+        tmp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        tmp.replace(dated / "backup.json")
+
+    def _write_sidecars(self, dated: Path, when: _dt.datetime, files: int, nbytes: int):
+        note = self.note.strip() or f"backup of {self.robot} taken {when.strftime('%Y-%m-%d %H:%M:%S')}"
+        (dated / "notes.txt").write_text(note + "\n", encoding="utf-8")
+        self._write_meta(dated, when, complete=True, files=files, nbytes=nbytes)
 
     def _mirror_latest(self, dated: Path) -> Path | None:
         """Overwrite <...>/Latest/<robot> with this snapshot (see mirror_latest)."""

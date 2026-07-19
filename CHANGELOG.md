@@ -1,5 +1,139 @@
 # Changelog
 
+## v1.2 — the big merge
+- **The camera line and the viewer line are one app again.** Everything from
+  v0.99a–v0.99q below (Matrox + Keyence CV-X backup, the photos tab, both live
+  remotes, camera↔robot linking) merged onto v1.1's 3d view, fleet health scan,
+  durable backup log and LibraryImporter. Everything under *Unreleased* below
+  (the posed 3d robot) also first ships here.
+- **Camera backups join the durable run log.** A bulk selection that mixes
+  robots and cameras groups as one run — "last run" and **retry failed** cover
+  cameras too.
+- **Linked cameras nest in the shared library tree** (home and the compare
+  picker both), and shift+click ranges follow the nested order the screen
+  actually shows.
+- **The CV-X remote's replayed channel-open now advertises the address of the
+  camera actually being dialed** (was: the capture-time address, verbatim).
+- **The discover modal's select-all follows the robot/camera filter** — it
+  covers only the visible rows, with the same tri-state checklist as every
+  other list.
+
+## Unreleased
+- **The robot poses in the 3d view.** Import FANUC's own kinematics once
+  from a Roboguide install ("import…" in the 3d view's robot panel → the
+  `Robot Library` folder; ~260 types, stored locally — the app still ships
+  zero FANUC data) and the arm appears as a to-scale stick-figure skeleton,
+  posed exactly as the robot stood when the backup ran (`CURPOS.DG`), with
+  every DCS user-model sphere and capsule riding its true frame — your EOAT
+  bubbles at the flange, among the fences they're checked against. Joint
+  fields in the panel repose the arm live; "reset pose" returns to the
+  backup's snapshot.
+- **Every FANUC robot type is built in — robots pose with zero setup.**
+  The full 228-type kinematics table ships inside the app as its own
+  dimension-sheet data (~160 KB). Types verified against real controllers'
+  position reports carry their validation record (36 robots, all
+  ≤0.23 mm); the rest are labeled "not yet validated against a
+  controller" — and any backup with a position report still self-verifies
+  at runtime regardless. The Roboguide import remains for future types
+  and overrides a built-in.
+- **The arm has a body.** Capsule limbs sized from the robot's reach,
+  tapering to the wrist — a deliberate schematic (not the DCS robot model,
+  not a mesh), so the EOAT bubbles read against a robot instead of a wire.
+- **No more over-the-top flip.** Orbit elevation now stops exactly at the
+  poles: dragging past straight-down used to carry the camera over the top
+  and invert the world's screen-vertical — seamlessly, and right at the
+  pole the compass cube is face-on so nothing warned you. Top and bottom
+  views stay exact; the portal is gone.
+- **The pose is verified against the controller's own numbers, per robot.**
+  Every backup with a position report self-checks: forward kinematics
+  through the taught tool must land on the controller's printed world TCP.
+  Plain robots verify to ~0.1 mm; dress-package variants ("-IF") carry a
+  real flange adapter the base model lacks — the app *measures* it from the
+  backup itself (+23.0 mm on R-2000iC/210F-IF and R-1000iA/100F-IF,
+  +10.07 mm on M-900iB/280L-IF across the fleet) and labels it. A backup
+  that contradicts the imported kinematics refuses to pose the arm and
+  says why. Types with no def imported (or missing from the library, like
+  ARC Mate 120iD/35) stay honestly un-posed — never a borrowed arm.
+- **DCS user models parsed from the backup** (`$DCSS_MODEL` in `DCSPOS.VA`):
+  every EOAT/gripper element with its shape, radius, positions and link —
+  cross-checked digit-for-digit against the pendant's verify report. The 3d
+  view's "user models" rows now carry the full geometry (`element 1 ·
+  line_seg r350 · faceplate`) whether or not the backup has a `DCSVRFY.DG`,
+  and "show disabled" lists the empty slots. Elements stay data-only in the
+  viewport — they are link-attached, and placing them honestly needs
+  kinematics we don't parse yet.
+- **Zones name their target models.** Each Cartesian zone's three
+  `$MODEL_NUM` slots are resolved per the pendant's own legend (`Robot
+  model` / `User model n` / `DISABLE`) with the referenced model's comment
+  attached — in the 3d view's zone detail and, as a dim note beside the
+  pendant's verbatim number, in the dcs tab's report view.
+- **Lines-mode zones ground-truthed.** `$MODE=3` ↔ `Restricted zone(Lines)`
+  (polygon keep-out, vertex count honored), `$MODE=0` ↔ `Working
+  zone(Diagnal)` (keep-in) — confirmed against real controllers, both
+  pendant vocabularies. Stop type 2 ↔ `Not stop` joins the confirmed map.
+  `$MODE=2` remains unmapped and still says so.
+
+## v1.1 — the 3D view (DCS zones drawn to scale)
+- **New tab on the `0` key: "3d view".** DCS Cartesian Position Check zones
+  drawn to scale from `DCSPOS.VA` — the authoritative vertex arrays, Z extents
+  and (rotated) DCS user frames — cross-checked against the pendant's
+  `DCSVRFY.DG` verify text (status, method, stop type) and stamped with the
+  TCP position captured when the report was written.
+- **Free orbit + the viewport cube.** Drag rotates with no limits — over
+  the top and upside down are real (the world genuinely flips, axes and
+  all); middle-drag (or shift+drag) pans, wheel zooms, `fit` or
+  double-click resets, and rotation pivots about whatever sits at the
+  viewport center, so pan-then-rotate stays on target. The cube in the
+  top-right corner rotates with the view as a compass and snaps the
+  camera to any of 26 directions — click a face, an edge, or a corner.
+  Views are named per the FANUC world frame (right-handed, X forward /
+  Y left / Z up); top and bottom are plan-oriented with X up-screen.
+  A `perspective` button adds mild depth foreshortening; the default
+  stays orthographic (parallel, true to scale). Vertical/horizontal
+  rotate feel is invertible per-axis in settings (drag-down raises the
+  camera by default).
+  Auto-fit frames the scene's bounding sphere — one radius — so the view
+  holds a steady scale while rotating, and the same mm-per-px carries
+  across every view. Zone names, axis letters, the tcp marker and the
+  scale ruler live on a fixed-size overlay: they anchor to the geometry
+  but never grow, shrink, or drift with zoom and orbit.
+  Hand-rolled SVG — no WebGL, no libraries — so it renders even on the
+  software-rendering boot rescue path and adds nothing to the exe.
+- **Side panel = every DCS check as a row.** Cartesian zones get a show/hide
+  checkbox + a color swatch matching the viewport (keep-out drawn solid,
+  keep-in dashed); joint position, speed checks and user models carry their
+  data as honest list rows — nothing is drawn that would need a robot model
+  we don't have. Every row expands to the same pendant-style detail block
+  the dcs tab shows.
+- Floor grid, world axes, base marker and a scale bar; "show disabled" lists
+  every pendant slot; the tab remembers view, zoom and checkboxes per backup.
+- Backups without `DCSPOS.VA` fall back to the verify report's Point 1 /
+  Point 2 boxes — drawn without the frame rotation and flagged **approx**.
+
+## LibraryImporter 0.1 — the hand-out library seeder (companion exe)
+- **New standalone tool** (`dist/LibraryImporter.exe`, built from
+  `packaging/libraryimporter.spec`): give a coworker the exe + a robots.json
+  and their library exists in under a minute — no CLI, no BackupViewer needed
+  on the machine first.
+- Drag a robots.json onto the window (or click to browse), pick the plant
+  folder (`Documents\RobotBackups\<Plant>`), tick lines or robots — per-line
+  select-alls, one master "all", shift+click ranges, the same honest tri-state
+  checklist as the app — and **import** writes `<LINE>\<FULL NAME>\robot.json`
+  skeletons (schema 2, IP attached) that BackupViewer's scan adopts as-is.
+- **Never duplicates:** robots already in the destination (same folder, or the
+  IP already claimed anywhere in that line — even under a different name) show
+  grayed "already in library" and are skipped again at write time. Safe to
+  re-run as the list grows.
+- Soft warnings when the destination looks wrong (the library root itself,
+  nested too deep, a date-looking name the scanner would skip, or outside the
+  machine's configured library).
+- Carries the WebView2 boot rescue (one automatic software-rendering relaunch
+  on the 0x8007139F field failure) and logs to
+  `%LOCALAPPDATA%\LibraryImporter\app.log`.
+- The seeding core is a stdlib-only module (`libraryimporter/core.py`) with a
+  pluggable source-parser seam — a future DCDL parser (or absorbing the whole
+  flow into BackupViewer 2.0) slots in without touching the GUI.
+
 ## v0.99q — the Design Assistant tab now actually appears
 - **Fixed: no "design assistant" tab on DA 9.x portals.** Those portals never
   write the operator-page link into their HTML — the page builds it in script
@@ -197,6 +331,71 @@
 - **Under the hood:** the FTP engine's download + Latest-mirror steps are now shared
   primitives (`retrieve` / `mirror_latest`) reused by both the robot and camera jobs;
   `robot.json` gains a `device_type` (schema 3 — older sidecars read as `robot`).
+
+## v0.99 — polish pass: one of everything, everywhere
+- **Every checkbox list is the same checklist now.** Robot rows, the per-line
+  select-alls, the fix-names rename/merge previews, and discover results all
+  share one selection controller, so what works in one place works in all of
+  them — shift+click selects the visible range everywhere, not just in the
+  library. (The other lists were hand-rolled copies that never learned it.)
+- **Select-all boxes stopped lying.** A line's box shows "−" when only some
+  of its robots are selected — clicking it now clears the line (the minus is
+  a reset) instead of silently selecting the rest. From an empty line one
+  click still selects everything. The rename / merge previews gained the same
+  "all" box.
+- **Right-click expand/collapse leaves the clicked folder alone.** It folds or
+  unfolds only what's under the folder you right-clicked — no more slamming
+  the folder itself shut along with its children. (Expanding a closed folder
+  still opens it, so the result is never invisible.) Same fix in the programs
+  call-tree, which carried its own copy of the old behavior.
+- **Text and chrome can go bigger.** Text size now reaches 24px (was 18) and
+  chrome scale 160% (was 125%) — for high-DPI screens read at arm's length.
+- **The library has a filter.** A search box in the library header narrows the
+  tree as you type — by robot name, model, IP, or note text — and a matching
+  plant/line name keeps its whole group visible. Groups render expanded while
+  a filter is active (your fold state comes back when it clears), the match
+  count shows in the box, and `/` focuses it. The selection toolbar acts on
+  what you can see, never on filtered-out robots.
+- **The compare picker IS the library now.** "Compare → from library" shows
+  the same plant/line tree as the home screen (one shared tree component,
+  not a look-alike), just stripped to click-to-pick rows and sized for a
+  modal: LINE folders finally collapse (they were fixed labels), the open
+  robot's plant starts expanded, folded groups show how many robots they
+  hold, rows carry model + IP, and a filter box narrows the tree — finding
+  one robot across 71 lines no longer means scrolling for it. Esc clears an
+  active filter first; a second Esc closes the picker.
+- **Filtering can't wipe your fold state anymore.** Rendering the tree
+  expanded during a filter used to overwrite which folders you'd collapsed —
+  clear the filter and everything sprang open. Folders now only remember
+  toggles you actually click.
+- **Every tab now remembers where you were.** io and registers — the two
+  split-pane tables — get the same leave-and-return memory the other tabs
+  already had: scroll, sort, category, in/out sides, register kind,
+  "show empty", the active pane and the scroll lock all come back. system
+  vars and mh valves now also remember WHICH records and branches you had
+  open (and mh valves: the selected tool and collapsed valve cards), not
+  just how far down you'd scrolled. All of it per-backup, in-session, like
+  the rest.
+- **"Merged" now means merged.** Merging a robot whose folder holds no dated
+  snapshots (a flat copied-in backup, stray files) used to move nothing and
+  still report "merged" — with both robots sitting there untouched. It now
+  comes back "nothing merged — no dated snapshots to fold in", and a blocked
+  merge changes truly nothing (no alias, no config fold, no writes). The
+  same honesty applies when a rename/move collides into a merge.
+- **Failed renames and moves say who failed and why.** The "3 rename(s)
+  failed" count toast became per-robot reasons, shown verbatim for both
+  fix-names and bulk "move to…" (long batches clamp to the first few).
+- **Big text stopped crushing the valve cards.** At 20–24px text the
+  MH-valves setup values squeezed into a one-character-wide column (12px
+  wide, measured). Card grids' minimum width was a fixed 280/330px designed
+  for 14px text; it now scales with the text size — measured at 24px text,
+  the narrowest value column went 12px → 196px. The fix covers every card
+  grid, so overview cards can't pull the same trick.
+- **Discover got a real layout.** The modal is wide, network picker on the
+  left, results on the right — the network row and the scan/add buttons are
+  always visible and ONLY the results list scrolls (the whole modal body
+  used to scroll, sinking the buttons below the fold on small screens).
+  Falls back to one column on narrow windows.
 
 ## v0.99 — the folder tree is the whole truth
 - **Where a folder sits is who the robot is.** The scan now derives every

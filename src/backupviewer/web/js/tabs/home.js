@@ -9,16 +9,17 @@
   "use strict";
 
   var _libWrap = null;          /* the mounted library container, for in-place refresh */
-  var _collapsed = {};          /* folder keys explicitly collapsed (default = expanded) */
-  var _selected = {};           /* selected robot ids (object used as a Set) */
+  var _cl = BV.checklist({ onChange: syncToolbar });   /* selected robots (shared checklist) */
   var _robots = [];             /* last loaded library list, for client-side collision checks */
   var _lastAbsorbMsg = "";      /* absorption toast dedupe (same folders every rescan) */
-  var _lastClickedId = null;    /* shift+click range anchor (the last checkbox clicked) */
   var _showHidden = false;      /* reveal hidden robots in the list */
   var _showHiddenBtn = null;    /* the header toggle (shown only when some are hidden) */
   var _warnedTruncated = false; /* the scan-cap warning toast fires once per session */
   var _visibleRobots = [];      /* the currently-rendered robots — the sticky toolbar's scope */
   var _sortMode = "";           /* name | ip | date; lazily read from settings (lib_sort) */
+  var _filter = "";             /* library filter query, lowercased ("" = off) */
+  var _filterBox = null;        /* the head's search box (match counter lives on it) */
+  var _lastData = null;         /* last lib_list payload — filter re-renders without a refetch */
 
   var SORT_LABELS = { name: "name", ip: "IP", date: "last backup" };
 
@@ -66,27 +67,27 @@
     return nameCmp;
   }
 
-  /* group keys alphabetically with the '—' (no plant/line) bucket pinned last */
-  function groupKeys(obj) {
-    return Object.keys(obj).sort(function (a, b) {
-      if (a === "—") return 1;
-      if (b === "—") return -1;
-      return a.localeCompare(b);
-    });
-  }
-
-  /* ---- folder collapse state (survives in-place refreshes) ---- */
-  function isExpanded(key) { return !_collapsed[key]; }
-  function setExpanded(key, open) { if (open) delete _collapsed[key]; else _collapsed[key] = true; }
-  function makeCollapsible(node, head, body, key) {
-    node.appendChild(head);
-    node.appendChild(body);
-    BV.collapsible(node, head, body, {
-      open: isExpanded(key),
-      onToggle: function (open) { setExpanded(key, open); },
-    });
-    return node;
-  }
+  /* the shared library tree renders the PLANT -> LINE folders (grouping, sort,
+     collapse + filter semantics, skeleton notes live in components/libtree.js);
+     home plugs in its rich robot rows and the per-line select-all boxes. The
+     module-level instance keeps fold state across refreshes and remounts. */
+  var _tree = BV.libTree({
+    skeleton: true,
+    row: function (r, nested) { return robotRow(r, nested); },
+    /* line header extras = the select-all box only; action buttons live ONCE
+       in the sticky library header (with 50+ lines, per-line rows ate the screen) */
+    lineExtras: function (ln, lineRobots, groupKey) {
+      var controls = BV.el("div", { class: "lib-line-controls" });
+      controls.addEventListener("click", function (e) { e.stopPropagation(); });
+      var sa = BV.el("input", { type: "checkbox", class: "lf-check lib-line-selall",
+        title: "select all / clear line" });
+      _cl.group(sa, function () {
+        return lineRobots.map(function (r) { return r.id; });
+      }, groupKey);
+      controls.appendChild(sa);
+      return controls;
+    },
+  });
 
   /* ---- screen ---- */
 
@@ -94,20 +95,45 @@
     _libWrap = BV.el("div", { class: "home-library" });
     view.appendChild(_libWrap);
     loadLibrary();
+    BV.currentSearch = _filterBox;   /* '/' focuses the library filter */
+  }
+
+  /* poll the backend's library-scan snapshot into `el` while a lib_list /
+     lib_rescan call is in flight; returns stop(). The first look at a plant-
+     scale tree is a full rescan (10s+), and a dead "loading…" reads as a
+     crash - this shows the scan actually moving (done/total · current robot). */
+  function watchScanProgress(el) {
+    var iv = setInterval(function () {
+      BV.api.call("lib_scan_progress").then(function (p) {
+        if (!p || !p.active) return;   /* signature check / cache path: keep the quiet label */
+        renderScanBar(el, {
+          status: "scanning", scanned: p.done, total: p.total, current: p.current,
+          found: p.total ? 0 : p.done, /* first-ever scan has no estimate: show a count instead */
+        });
+      }).catch(function () {});        /* no bridge / transient: stay quiet */
+    }, 400);
+    return function stop() { clearInterval(iv); };
   }
 
   function loadLibrary() {
     if (!_libWrap) return;
     var body = _libWrap.querySelector(".home-lib-body");
+    var stopProgress = null;
     if (!body) {                                 /* first paint: build the shell once */
       _libWrap.innerHTML = "";
       _libWrap.appendChild(buildLibraryHead());
-      body = BV.el("div", { class: "home-lib-body" }, '<div class="dim">loading…</div>');
+      body = BV.el("div", { class: "home-lib-body" });
       _libWrap.appendChild(body);
+      var loading = BV.el("div", { class: "home-lib-loading" },
+        '<div class="dim">checking library…</div>');
+      body.appendChild(loading);
+      stopProgress = watchScanProgress(loading);
     }
 
     BV.api.call("lib_list").then(function (data) {
+      if (stopProgress) stopProgress();
       _robots = (data && data.robots) || [];
+      _lastData = data;
       /* repaint IN PLACE: the old tree stays on screen until the new one is
          built, and the scroll position survives — refreshes (post-action or
          watcher-triggered) stop flashing and jumping back to the top */
@@ -133,6 +159,7 @@
         }
       }
     }).catch(function (e) {
+      if (stopProgress) stopProgress();
       body.innerHTML = '<div class="dim">library unavailable: ' + BV.esc(e.message) + "</div>";
     });
   }
@@ -145,6 +172,20 @@
     var head = BV.el("div", { class: "home-lib-head" });
     head.appendChild(BV.el("h2", null, "library"));
 
+    /* find a robot fast: filters by robot name / model / IP / note text, and a
+       matching plant or line name keeps its whole group. The tree re-renders
+       from the cached listing — no rescan. */
+    _filterBox = BV.searchBox({
+      placeholder: "filter robots…",
+      onChange: function (q) {
+        _filter = (q || "").toLowerCase();
+        var body = _libWrap && _libWrap.querySelector(".home-lib-body");
+        if (body && _lastData) renderTree(body, _lastData);
+      },
+    });
+    _filterBox.input.value = _filter;    /* a remount keeps the active filter */
+    head.appendChild(_filterBox.el);
+
     var selActs = BV.el("div", { class: "home-lib-selacts" });
     selActs.appendChild(BV.el("span", { class: "lib-sel-count dim" }, ""));
     var bk = BV.el("button", { class: "btn lib-act-backup", title: "back up the selected robots" },
@@ -153,20 +194,26 @@
     var hd = BV.el("button", { class: "btn lib-act-hide", title: "hide the selected robots from view" },
       "hide");
     hd.addEventListener("click", function () { hideSelectedInLine(_visibleRobots); });
-    var fx = BV.el("button", { class: "btn lib-act-fix",
-      title: "fix the selected robots' names from their backup contents" }, "fix names");
-    fx.addEventListener("click", function () { fixNamesInLine(_visibleRobots); });
-    var mg = BV.el("button", { class: "btn lib-act-merge",
-      title: "merge 2 selected duplicate robots into one" }, "merge");
-    mg.addEventListener("click", function () { mergeSelectedInLine(_visibleRobots); });
-    var mv = BV.el("button", { class: "btn lib-act-move",
-      title: "move the selected robots (and their backups) to another plant/line" }, "move to…");
-    mv.addEventListener("click", function () { moveSelectedFlow(_visibleRobots); });
+    var sc = BV.el("button", { class: "btn lib-act-scan",
+      title: "scan the selected robots' backups — DCS options, signatures, mastering, unused programs, or a find" },
+      "scan");
+    sc.addEventListener("click", function () {
+      var sel = _visibleRobots.filter(function (r) { return _cl.has(r.id); });
+      if (!sel.length) { BV.toast("select robots first"); return; }
+      BV.scanUI.open(sel);
+    });
+    /* fix names / merge / move live INSIDE manage backups now (with the backup
+       health panels) - the selection row stays backup / hide / scan / manage */
+    var mb = BV.el("button", { class: "btn lib-act-manage",
+      title: "backup health (last run, retries, partial + stale backups) and robot tidy-up (fix names, merge, move)" },
+      "manage backups");
+    mb.addEventListener("click", function () {
+      if (BV.manageUI) BV.manageUI.open();
+    });
     selActs.appendChild(bk);
     selActs.appendChild(hd);
-    selActs.appendChild(fx);
-    selActs.appendChild(mg);
-    selActs.appendChild(mv);
+    selActs.appendChild(sc);
+    selActs.appendChild(mb);
     head.appendChild(selActs);
 
     var headActs = BV.el("div", { class: "home-lib-actions" });
@@ -183,13 +230,30 @@
     _showHiddenBtn = BV.el("button", { class: "btn lib-show-hidden hidden",
       title: "show robots you've hidden" }, "show hidden");
     _showHiddenBtn.addEventListener("click", function () { _showHidden = !_showHidden; refresh(); });
+    /* "refresh library", not "rescan" - "scan" is the health-scan button now,
+       and this one re-reads folders, it doesn't scan backup contents */
     var rescanBtn = BV.el("button", { class: "btn lib-rescan",
-      title: "re-read the library folder from disk (picks up copied-in backups)" }, "rescan");
+      title: "re-read the library folder from disk (picks up copied-in backups)" }, "refresh library");
     rescanBtn.addEventListener("click", function () {
       rescanBtn.disabled = true;
+      /* the tree stays up during the rescan; a slim bar above it shows the
+         scan actually moving (a plant-scale tree takes a while) */
+      var body = _libWrap && _libWrap.querySelector(".home-lib-body");
+      var strip = null;
+      var stopProgress = null;
+      if (body) {
+        strip = BV.el("div", { class: "home-lib-loading" });
+        body.insertBefore(strip, body.firstChild);
+        stopProgress = watchScanProgress(strip);
+      }
+      function settle() {
+        if (stopProgress) stopProgress();
+        if (strip) strip.remove();
+        rescanBtn.disabled = false;
+      }
       BV.api.call("lib_rescan")
-        .then(function () { BV.toast("library rescanned"); rescanBtn.disabled = false; refresh(); })
-        .catch(function (e) { BV.toast(e.message); rescanBtn.disabled = false; });
+        .then(function () { settle(); BV.toast("library rescanned"); refresh(); })
+        .catch(function (e) { settle(); BV.toast(e.message); });
     });
     var linkBtn = BV.el("button", { class: "btn lib-link-cams",
       title: "auto-link cameras to the robot they inspect (by name)" }, "link cameras");
@@ -243,7 +307,7 @@
     var anyActive = false;
     ids.forEach(function (jobId) {
       var p = ev.jobs[jobId];
-      var terminal = p.status === "done" || p.status === "error" || p.status === "cancelled";
+      var terminal = BV.jobs.isTerminal(p);
       if (!terminal) anyActive = true;
       /* paint running jobs every tick; terminal ones once, when they land */
       if (terminal && (ev.newlyDone || []).indexOf(jobId) < 0) return;
@@ -289,106 +353,30 @@
         "or discover robots on the network.</div>";
       updateHiddenToggle(0);
       _visibleRobots = [];
-      syncSelectionUI();
+      _cl.sync();
       return;
     }
-    var plants = {}, hiddenCount = 0, anyVisible = false;
-    emptyPlants.forEach(function (pl) {
-      plants[pl || "—"] = plants[pl || "—"] || {};
-      anyVisible = true;
-    });
-    emptyLines.forEach(function (g) {
-      var pl = g.plant || "—", ln = g.line || "—";
-      plants[pl] = plants[pl] || {};
-      plants[pl][ln] = plants[pl][ln] || [];
-      anyVisible = true;
-    });
-    robots.forEach(function (r) {
-      if (r.hidden) { hiddenCount++; if (!_showHidden) return; }
-      anyVisible = true;
-      var pl = r.plant || "—", ln = r.line || "—";
-      plants[pl] = plants[pl] || {};
-      plants[pl][ln] = plants[pl][ln] || [];
-      plants[pl][ln].push(r);
+    var hiddenCount = 0;
+    var shownList = robots.filter(function (r) {
+      if (r.hidden) { hiddenCount++; return _showHidden; }
+      return true;
     });
     updateHiddenToggle(hiddenCount);
-    body.innerHTML = "";
-    /* _visibleRobots is rebuilt below IN RENDER ORDER (sorted groups + sorted
-       robots), not in cache order — anything order-sensitive (shift+click
-       ranges) must see the list exactly as the user does */
-    _visibleRobots = [];
-    if (!anyVisible) {
+    if (!shownList.length && !emptyPlants.length && !emptyLines.length) {
       body.innerHTML = '<div class="empty-lib">all robots are hidden — use “show hidden” above.</div>';
-      syncSelectionUI();
+      _visibleRobots = [];
+      _cl.sync();
       return;
     }
-    var cmp = robotComparator();
-    groupKeys(plants).forEach(function (pl) {
-      var plantNode = BV.el("div", { class: "lib-plant" });
-      var plantHead = BV.el("div", { class: "lib-plant-h" }, BV.esc(pl));
-      var plantBody = BV.el("div", { class: "lib-plant-body" });
-      var lines = plants[pl];
-      var lineKeys = groupKeys(lines);
-      if (!lineKeys.length) {
-        plantBody.appendChild(BV.el("div", { class: "dim lib-empty-note" },
-          "empty plant folder — add line folders inside"));
-      }
-      lineKeys.forEach(function (ln) {
-        var lineRobots = lines[ln].sort(cmp);
-        lineRobots.forEach(function (r) { _visibleRobots.push(r); });
-        var lineNode = BV.el("div", { class: "lib-line" });
-        var lineHead = buildLineHead(ln, lineRobots);
-        var lineBody = BV.el("div", { class: "lib-line-body" });
-        if (!lineRobots.length) {
-          lineBody.appendChild(BV.el("div", { class: "dim lib-empty-note" },
-            "empty line folder — no robot folders yet"));
-        }
-        /* nest linked cameras under the robot they inspect (same line); unlinked
-           cameras and cross-line links stay at top level so nothing disappears */
-        var lineRobotIds = {};
-        lineRobots.forEach(function (r) {
-          if ((r.device_type || "robot") === "robot") lineRobotIds[r.id] = 1;
-        });
-        lineRobots.forEach(function (r) {
-          var isCam = (r.device_type || "").indexOf("camera") === 0;
-          if (isCam && r.linked_robot_id && lineRobotIds[r.linked_robot_id]) return;
-          lineBody.appendChild(robotRow(r));
-          lineRobots.forEach(function (c) {
-            if ((c.device_type || "").indexOf("camera") === 0 && c.linked_robot_id === r.id) {
-              lineBody.appendChild(robotRow(c, true));
-            }
-          });
-        });
-        makeCollapsible(lineNode, lineHead, lineBody, pl + "|||" + ln);
-        plantBody.appendChild(lineNode);
-      });
-      makeCollapsible(plantNode, plantHead, plantBody, pl);
-      body.appendChild(plantNode);
-    });
-    syncSelectionUI();
-  }
-
-  /* line header = name + select-all only; the action buttons live ONCE in the
-     sticky library header (with 50+ lines, per-line button rows ate the screen) */
-  function buildLineHead(ln, lineRobots) {
-    var head = BV.el("div", { class: "lib-line-h" });
-    head.appendChild(BV.el("span", { class: "lib-line-name" }, BV.esc(ln)));
-
-    var controls = BV.el("div", { class: "lib-line-controls" });
-    controls.addEventListener("click", function (e) { e.stopPropagation(); });
-
-    var sa = BV.el("input", { type: "checkbox", class: "lf-check lib-line-selall",
-      title: "select all in line" });
-    sa.addEventListener("change", function () {
-      var ids = lineRobots.map(function (r) { return r.id; });
-      var allOn = ids.length && ids.every(function (id) { return _selected[id]; });
-      ids.forEach(function (id) { if (allOn) delete _selected[id]; else _selected[id] = true; });
-      syncSelectionUI();
-    });
-
-    controls.appendChild(sa);
-    head.appendChild(controls);
-    return head;
+    var res = _tree.render(body,
+      { robots: shownList, emptyPlants: emptyPlants, emptyLines: emptyLines },
+      { q: _filter, cmp: robotComparator() });
+    /* the tree returns the robots IN RENDER ORDER (sorted groups + sorted
+       robots), not cache order — anything order-sensitive (shift+click
+       ranges) must see the list exactly as the user does */
+    _visibleRobots = res.visible;
+    if (_filterBox) _filterBox.setCount(_filter ? res.shown : undefined, res.total);
+    _cl.sync();
   }
 
   function robotRow(r, nested) {
@@ -400,37 +388,7 @@
 
     var cb = BV.el("input", { type: "checkbox", class: "lf-check lib-check",
       title: "select (shift+click selects a range)" });
-    cb.checked = !!_selected[r.id];
-    cb.addEventListener("click", function (e) {
-      e.stopPropagation();
-      var on = cb.checked;               /* the checkbox has already toggled */
-      var ids = null, a = -1, b = -1;
-      if (e.shiftKey && _lastClickedId && _lastClickedId !== r.id && _libWrap) {
-        /* the range is the rows as the user SEES them: DOM order at click
-           time, skipping anything folded inside a collapsed plant/line —
-           never silently select robots that aren't on screen */
-        ids = Array.prototype.filter.call(
-          _libWrap.querySelectorAll(".lib-robot[data-robot-id]"),
-          function (el) { return el.offsetParent !== null; }
-        ).map(function (el) { return el.getAttribute("data-robot-id"); });
-        a = ids.indexOf(_lastClickedId);
-        b = ids.indexOf(r.id);
-      }
-      if (ids && a >= 0 && b >= 0 && a !== b) {
-        /* file-manager convention: the whole visible range between the last
-           click and this one takes THIS click's new state */
-        var lo = Math.min(a, b), hi = Math.max(a, b);
-        for (var i = lo; i <= hi; i++) {
-          if (on) _selected[ids[i]] = true; else delete _selected[ids[i]];
-        }
-      } else if (on) {
-        _selected[r.id] = true;
-      } else {
-        delete _selected[r.id];
-      }
-      _lastClickedId = r.id;
-      syncSelectionUI();
-    });
+    _cl.bind(cb, r.id);
     row.appendChild(cb);
 
     var main = BV.el("div", { class: "lib-robot-main" });
@@ -450,7 +408,15 @@
     if (r.last_backup) meta.push("last " + BV.esc(r.last_backup));
     if (r.backups && r.backups.length) meta.push(r.backups.length + " saved");
     if (r.stale) meta.push('<span class="pill warn">missing</span>');
-    if (!r.latest_path && !r.stale) meta.push('<span class="pill ghost">no backup</span>');
+    /* newest snapshot is a partial (a pull that died mid-download): say so -
+       "last <date>" above is already the last COMPLETE one */
+    if (r.backups && r.backups.length && r.backups[0].partial) {
+      meta.push('<span class="pill warn" title="the newest snapshot is a partial backup ' +
+        '(the pull never finished) — opening latest uses the last complete one">partial</span>');
+    }
+    if (!r.latest_path && !(r.backups && r.backups.length) && !r.stale) {
+      meta.push('<span class="pill ghost">no backup</span>');
+    }
     main.appendChild(BV.el("div", { class: "lib-robot-meta" },
       meta.join(' <span class="sep">·</span> ')));
     appendNote(main, r);
@@ -516,7 +482,11 @@
   }
 
   function openRobot(r) {
-    if (!r.latest_path) { BV.toast("no backup yet — take one"); return; }
+    /* a dead Latest mirror is fine - lib_open falls back to the newest dated
+       snapshot; only a robot with NO backups at all is unopenable */
+    if (!r.latest_path && !(r.backups && r.backups.length)) {
+      BV.toast("no backup yet — take one"); return;
+    }
     if (r.stale) { BV.toast("backup folder missing on disk"); return; }
     BV.api.call("lib_open", r.id, "latest").then(function (manifest) {
       BV.state.setManifest(manifest);
@@ -529,37 +499,24 @@
   /* ---- selection ---- */
 
   function selectedInLine(lineRobots) {
-    return lineRobots.filter(function (r) { return _selected[r.id]; });
+    return lineRobots.filter(function (r) { return _cl.has(r.id); });
   }
 
-  /* reflect _selected onto every checkbox + each line's select-all tri-state,
-     and drive the sticky toolbar: selection counter + button enablement */
-  function syncSelectionUI() {
+  /* the sticky toolbar follows the selection: counter + button enablement.
+     (checkbox + line tri-state repaints are the shared checklist's job —
+     this runs as its onChange) */
+  function syncToolbar() {
     if (!_libWrap) return;
-    _libWrap.querySelectorAll(".lib-line").forEach(function (lineNode) {
-      var rows = lineNode.querySelectorAll(".lib-robot[data-robot-id]");
-      var total = rows.length, on = 0;
-      rows.forEach(function (rowEl) {
-        var id = rowEl.getAttribute("data-robot-id");
-        var cb = rowEl.querySelector(".lib-check");
-        var checked = !!_selected[id];
-        if (cb) cb.checked = checked;
-        if (checked) on++;
-      });
-      var sa = lineNode.querySelector(".lib-line-selall");
-      if (sa) {
-        sa.checked = total > 0 && on === total;
-        sa.indeterminate = on > 0 && on < total;
-      }
-    });
-    var selRobots = _visibleRobots.filter(function (r) { return _selected[r.id]; });
+    var selRobots = _visibleRobots.filter(function (r) { return _cl.has(r.id); });
     var selN = selRobots.length;
     var count = _libWrap.querySelector(".lib-sel-count");
     if (count) count.textContent = selN ? selN + " selected" : "";
-    ["backup", "hide", "fix", "move"].forEach(function (k) {
+    ["backup", "hide", "scan"].forEach(function (k) {
       var b = _libWrap.querySelector(".lib-act-" + k);
       if (b) b.disabled = selN === 0;
     });
+    /* manage backups stays enabled with NO selection - its backup-health side
+       (last run / partial / stale) needs no robots picked */
     var hd = _libWrap.querySelector(".lib-act-hide");
     if (hd) {
       /* the button says what it will DO: all-hidden selection -> unhide */
@@ -568,9 +525,18 @@
       hd.title = unhide ? "unhide the selected robots"
                         : "hide the selected robots from view";
     }
-    var mg = _libWrap.querySelector(".lib-act-merge");
-    if (mg) mg.disabled = selN !== 2;                /* merge is strictly a pair */
   }
+
+  /* the manage-backups modal (manage_ui.js) drives the selected-robot flows
+     without owning selection state or the flows themselves */
+  BV.libActions = {
+    selected: function () {
+      return _visibleRobots.filter(function (r) { return _cl.has(r.id); });
+    },
+    fixNames: function () { fixNamesInLine(_visibleRobots); },
+    merge: function () { mergeSelectedInLine(_visibleRobots); },
+    moveTo: function () { moveSelectedFlow(_visibleRobots); },
+  };
 
   /* ---- per-line actions ---- */
 
@@ -582,7 +548,7 @@
     if (!sel.length) { BV.toast("select robots first"); return; }
     var unhide = sel.every(function (r) { return r.hidden; });
     Promise.all(sel.map(function (r) {
-      return BV.api.call("lib_set_hidden", r.id, !unhide).then(function () { delete _selected[r.id]; });
+      return BV.api.call("lib_set_hidden", r.id, !unhide).then(function () { _cl.set(r.id, false); });
     })).then(function () {
       BV.toast(unhide ? "unhid " + sel.length
                       : "hid " + sel.length + " — files kept on disk");
@@ -606,6 +572,17 @@
   }
   BV.openLocation = openLocation;   /* reused by the overview "open location" button */
 
+  /* per-robot failure reasons for a batch toast: "NAME: why". The toast wraps
+     at 64ch (pre-wrap), so a handful of reasons reads fine; longer batches
+     clamp to the first few plus a count. */
+  function failureLines(fails) {
+    var lines = (fails || []).map(function (f) {
+      return (f.robot || f.id || "?") + ": " + (f.error || "failed");
+    });
+    if (lines.length > 4) lines = lines.slice(0, 4).concat("+ " + (lines.length - 4) + " more");
+    return lines;
+  }
+
   /* is there ANOTHER saved robot already at this name+line? (the merge target) */
   function collidesWithExisting(excludeId, name, line) {
     var nm = (name || "").toUpperCase(), ln = (line || "").toUpperCase();
@@ -624,12 +601,15 @@
     if (!sel.length) { BV.toast("select robots first"); return; }
     var ids = sel.map(function (r) { return r.id; });
 
-    function clearSel() { ids.forEach(function (id) { delete _selected[id]; }); }
+    function clearSel() { ids.forEach(function (id) { _cl.set(id, false); }); }
+    var failLines = [];   /* per-robot reasons collected across the steps */
     function done(nRenamed, nMerged) {
       var parts = [];
       if (nRenamed) parts.push("renamed " + nRenamed);
       if (nMerged) parts.push("merged " + nMerged);
-      BV.toast(parts.length ? parts.join(" · ") : "no changes");
+      var msg = parts.length ? parts.join(" · ") : "no changes";
+      if (failLines.length) msg += "\n" + failLines.join("\n");
+      BV.toast(msg, failLines.length ? 8000 : undefined);
       clearSel();
       refresh();
     }
@@ -650,7 +630,7 @@
 
         step.then(function (rr) {
           var nRenamed = (rr.renamed || []).length;
-          if ((rr.failed || []).length) BV.toast((rr.failed.length) + " rename(s) failed");
+          failLines = failLines.concat(failureLines(rr.failed));   /* named reasons, not a bare count */
           if (!merges.length) { done(nRenamed, (rr.merged || []).length); return; }
           confirmMergeBatch(merges, function (chosen) {
             if (!chosen.length) { done(nRenamed, 0); return; }
@@ -662,6 +642,11 @@
               return BV.api.call("lib_merge", primId, byTarget[primId]);
             })).then(function (results) {
               var nMerged = results.reduce(function (a, r) { return a + ((r.merged || []).length); }, 0);
+              results.forEach(function (r) {
+                (r.blocked || []).forEach(function (b) {
+                  failLines.push(((b.secondary || {}).robot || "?") + ": not merged — " + (b.reason || ""));
+                });
+              });
               done(nRenamed, nMerged);
             }).catch(function (e) { BV.toast(e.message); refresh(); });
           }, function () { done(nRenamed, 0); });   /* user skipped the merges */
@@ -676,26 +661,39 @@
     }).catch(function (e) { BV.toast(e.message); });
   }
 
+  /* an "all" master box for modal checklists (rename / merge previews) —
+     the same honest tri-state as the library's line select-alls */
+  function listSelAll(cl, rows) {
+    var lab = BV.el("label", { class: "list-selall" });
+    lab.appendChild(cl.group(BV.el("input", { type: "checkbox", class: "lf-check" }),
+      function () { return rows.map(function (r) { return r.key; }); }));
+    lab.appendChild(BV.el("span", { class: "dim" }, "all"));
+    cl.sync();                     /* reflect the pre-checked rows onto the box */
+    return lab;
+  }
+
   /* preview for the fix-names clean renames: current → proposed with per-row
      opt-outs. Folders only move after this confirm. */
   function confirmRenameBatch(renames, onConfirm, onSkip) {
     var body = BV.el("div", { class: "lib-form" });
     body.appendChild(BV.el("div", { class: "scan-info dim" },
       "These robots' backups report a different name. Rename their folders to match?"));
+    var cl = BV.checklist();
     var list = BV.el("ul", { class: "merge-list" });
     var rows = [];
-    renames.forEach(function (it) {
+    renames.forEach(function (it, i) {
+      var key = String(i);
       var li = BV.el("li");
       var lab = BV.el("label", { class: "rename-row" });
-      var cb = BV.el("input", { type: "checkbox", class: "lf-check" });
-      cb.checked = true;
-      lab.appendChild(cb);
+      cl.set(key, true);
+      lab.appendChild(cl.bind(BV.el("input", { type: "checkbox", class: "lf-check" }), key));
       lab.appendChild(BV.el("span", null,
         " " + BV.esc(it.current || "(unnamed)") + " → " + BV.esc(it.proposed)));
       li.appendChild(lab);
-      rows.push({ cb: cb, it: it });
+      rows.push({ key: key, it: it });
       list.appendChild(li);
     });
+    body.appendChild(listSelAll(cl, rows));
     body.appendChild(list);
     var acts = BV.el("div", { class: "lf-actions" });
     var skip = BV.el("button", { class: "btn" }, "skip renames");
@@ -705,7 +703,7 @@
     skip.addEventListener("click", function () { m.close(); if (onSkip) onSkip(); });
     go.addEventListener("click", function () {
       m.close();
-      onConfirm(rows.filter(function (r) { return r.cb.checked; }).map(function (r) { return r.it; }));
+      onConfirm(rows.filter(function (r) { return cl.has(r.key); }).map(function (r) { return r.it; }));
     });
   }
 
@@ -724,7 +722,13 @@
     confirmSingleMerge(secondary, primary, function (prim, sec) {
       BV.api.call("lib_merge", prim.id, [sec.id]).then(function (res) {
         if ((res.refused || []).length) { BV.toast("refused — can't merge across lines"); refresh(); return; }
-        delete _selected[a.id]; delete _selected[b.id];
+        if ((res.blocked || []).length) {
+          /* the fold was a no-op (e.g. only non-dated content) — nothing changed,
+             and saying "merged" here was exactly the field bug */
+          BV.toast("nothing merged — " + (res.blocked[0].reason || "the other robot had nothing to fold in"), 6000);
+          refresh(); return;
+        }
+        _cl.set(a.id, false); _cl.set(b.id, false);
         var m = (res.merged || [])[0] || {};
         var skipped = (m.skipped || []).length, conflicts = (m.conflicts || []).length;
         var msg = "merged " + (sec.robot || "") + " into " + (prim.robot || "");
@@ -774,13 +778,14 @@
       BV.api.call("lib_apply_renames", items).then(function (res) {
         m.close(true);
         var moved = (res.renamed || []).length, merged = (res.merged || []).length;
-        var failed = (res.failed || []).length;
+        var fl = failureLines(res.failed);
         var parts = [];
         if (moved) parts.push("moved " + moved);
         if (merged) parts.push("merged " + merged + " into existing");
-        if (failed) parts.push(failed + " failed");
-        BV.toast(parts.length ? parts.join(" · ") : "nothing to move", failed ? 5000 : undefined);
-        sel.forEach(function (r) { delete _selected[r.id]; });
+        var msg = parts.length ? parts.join(" · ") : "nothing to move";
+        if (fl.length) msg += "\n" + fl.join("\n");   /* who failed and why, verbatim */
+        BV.toast(msg, fl.length ? 8000 : undefined);
+        sel.forEach(function (r) { _cl.set(r.id, false); });
         refresh();
       }).catch(function (e) { BV.toast(e.message); go.disabled = false; });
     });
@@ -804,15 +809,16 @@
       var n = e && e.backups ? e.backups.length : 0;
       return " (" + n + " saved)";
     }
+    var cl = BV.checklist();
     var rows = [];
-    merges.forEach(function (it) {
+    merges.forEach(function (it, i) {
       var into = it.target || (byId[it.merge_into] || {}).robot || it.proposed;
       var sure = it.confidence !== "maybe";
+      var key = String(i);
       var li = BV.el("li", { class: "merge-row" + (sure ? "" : " weak") });
       var lab = BV.el("label", { class: "rename-row" });
-      var cb = BV.el("input", { type: "checkbox", class: "lf-check" });
-      cb.checked = sure;                   /* weak evidence never merges by default */
-      lab.appendChild(cb);
+      if (sure) cl.set(key, true);         /* weak evidence never merges by default */
+      lab.appendChild(cl.bind(BV.el("input", { type: "checkbox", class: "lf-check" }), key));
       lab.appendChild(BV.el("span", null,
         " " + BV.esc(it.current || "(unnamed)") + savedCount(it.id) +
         " → " + BV.esc(into) + savedCount(it.merge_into)));
@@ -820,9 +826,10 @@
       var why = it.reason || (it.evidence || []).join(" + ");
       li.appendChild(BV.el("div", { class: "merge-why dim" },
         (sure ? "" : "⚠ weak — ") + BV.esc(why)));
-      rows.push({ cb: cb, it: it });
+      rows.push({ key: key, it: it });
       list.appendChild(li);
     });
+    body.appendChild(listSelAll(cl, rows));
     body.appendChild(list);
     var acts = BV.el("div", { class: "lf-actions" });
     var skip = BV.el("button", { class: "btn" }, "skip merges");
@@ -832,7 +839,7 @@
     skip.addEventListener("click", function () { m.close(); if (onSkip) onSkip(); });
     go.addEventListener("click", function () {
       m.close();
-      onConfirm(rows.filter(function (r) { return r.cb.checked; }).map(function (r) { return r.it; }));
+      onConfirm(rows.filter(function (r) { return cl.has(r.key); }).map(function (r) { return r.it; }));
     });
   }
 
@@ -886,10 +893,14 @@
 
     var needsPw = runnable.some(function (r) { return r.ftp && r.ftp.user; });
     promptSharedPassword(needsPw, function (pw) {
+      /* one run_id per click: the durable backup log groups these jobs as ONE
+         run, so "last run" + retry-failed survive the post-backup refresh */
+      var runId = "run-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
       runnable.forEach(function (r) {
         var spec = {
           host: r.ips[0], robot: r.robot, line: r.line, plant: r.plant,
           device_type: r.device_type || "robot",
+          robot_id: r.id, run_id: runId,
           user: (r.ftp && r.ftp.user) || "",
           passive: !r.ftp || r.ftp.passive !== false,
           passwd: (r.ftp && r.ftp.user) ? pw : "",
@@ -907,9 +918,9 @@
         }).catch(function (e) {
           renderRowProgress(r.id, { status: "error", error: e.message });
         });
-        delete _selected[r.id];
+        _cl.set(r.id, false);
       });
-      syncSelectionUI();
+      _cl.sync();
       if (noip) BV.toast(noip + " skipped · no IP");
     });
   }
@@ -936,6 +947,7 @@
     ok.addEventListener("click", go);
     body.addEventListener("keydown", function (e) { if (e.key === "Enter") go(); });
   }
+  BV.promptSharedPassword = promptSharedPassword;   /* manage-backups retry reuses it */
 
   function rowProgressSlot(robotId) {
     if (!_libWrap) return null;
@@ -946,7 +958,7 @@
   function renderRowProgress(robotId, p) {
     var slot = rowProgressSlot(robotId);
     if (!slot) return;
-    if (p.status === "done" || p.status === "error" || p.status === "cancelled") {
+    if (BV.jobs.isTerminal(p)) {
       var cls, txt;
       if (p.status === "done") { cls = "ok"; txt = "✓ " + p.done + " files"; }
       else if (p.status === "cancelled") { cls = ""; txt = "cancelled"; }
@@ -988,7 +1000,7 @@
     var any = false;
     Object.keys(jobs).forEach(function (jobId) {
       var p = jobs[jobId];
-      if (p.status === "done" || p.status === "error" || p.status === "cancelled") return;
+      if (BV.jobs.isTerminal(p)) return;
       any = true;
       var rid = robotIdForJob(p);
       if (rid) renderRowProgress(rid, p);
@@ -1167,6 +1179,7 @@
     save.addEventListener("click", function () {
       var robot = fRobot.value.trim();
       if (!robot) { BV.toast("robot name required"); return; }
+      save.disabled = true;   /* double-click can't double-submit; re-enabled on failure */
       var fields = {
         plant: fPlant.value.trim(), line: fLine.value.trim(),
         robot: robot, model: fModel.value.trim(),
@@ -1185,7 +1198,7 @@
         Object.keys(fields).forEach(function (k) { draft[k] = fields[k]; });
         BV.api.call("lib_add", draft)
           .then(function () { m.close(true); BV.toast("added"); refresh(); })
-          .catch(function (e) { BV.toast(e.message); });
+          .catch(function (e) { BV.toast(e.message); save.disabled = false; });
         return;
       }
 
@@ -1197,7 +1210,7 @@
       if (!moveFolders) {
         BV.api.call("lib_update", entry.id, fields)
           .then(function () { m.close(true); BV.toast("saved"); refresh(); })
-          .catch(function (e) { BV.toast(e.message); });
+          .catch(function (e) { BV.toast(e.message); save.disabled = false; });
         return;
       }
 
@@ -1229,7 +1242,7 @@
               })
               .catch(function (e) { m.close(true); BV.toast(e.message); refresh(); });
           })
-          .catch(function (e) { BV.toast(e.message); });
+          .catch(function (e) { BV.toast(e.message); save.disabled = false; });
       }
 
       var collide = collidesWithExisting(entry.id, fields.robot, fields.line);
@@ -1274,7 +1287,7 @@
     var iv = setInterval(function () {
       BV.api.call("scan_progress", jobId).then(function (p) {
         onTick(p);
-        if (p.status === "done" || p.status === "error" || p.status === "cancelled") {
+        if (BV.jobs.isTerminal(p)) {
           clearInterval(iv);
           onDone(p);
         }
@@ -1289,7 +1302,7 @@
   /* ---- discover robots on the network ---- */
 
   function discoverFlow() {
-    var body = BV.el("div", { class: "lib-form" });
+    var body = BV.el("div", { class: "lib-form disc-body" });
 
     /* network picker: an adapter dropdown (default = connected ethernet) with an
        "advanced" toggle that reveals the raw subnet/port dials for power users. */
@@ -1320,12 +1333,22 @@
     addBtn.disabled = true;
     actions.appendChild(scanBtn);
     actions.appendChild(addBtn);
-    body.appendChild(field("network", adapterBtn));
-    body.appendChild(advToggle);
-    body.appendChild(advBox);
-    body.appendChild(bar);
-    body.appendChild(selRow);
-    body.appendChild(list);
+    /* two columns when the screen allows — network dials left, results right.
+       The network row and the scan/add actions never scroll out of reach; ONLY
+       the results list scrolls (the old single column scrolled the whole modal
+       body, sinking the buttons below the fold on small screens). */
+    var cols = BV.el("div", { class: "disc-cols" });
+    var left = BV.el("div", { class: "disc-left" });
+    left.appendChild(field("network", adapterBtn));
+    left.appendChild(advToggle);
+    left.appendChild(advBox);
+    left.appendChild(bar);
+    var right = BV.el("div", { class: "disc-right" });
+    right.appendChild(selRow);
+    right.appendChild(list);
+    cols.appendChild(left);
+    cols.appendChild(right);
+    body.appendChild(cols);
     body.appendChild(actions);
 
     var advOpen = false;
@@ -1356,19 +1379,23 @@
       BV.menu(adapterBtn, items);
     });
 
-    var found = [], sel = {}, jobId = null, stop = null, scanning = false;
+    var found = [], jobId = null, stop = null, scanning = false;
+    var picks = BV.checklist({ onChange: updateAddBtn });  /* keyed by host IP */
     var m;
     var modalOpts = {
       /* selected scan results are work too — don't lose them to a stray click;
          closing (second press) still cancels a running scan via onClose */
       beforeClose: BV.dirtyGuard(function () {
-        return found.some(function (h) { return sel[h.host]; });
+        return found.some(function (h) { return picks.has(h.host); });
       }, "discovery picks"),
       onClose: function () { if (stop) stop(); if (jobId) BV.api.call("cancel_scan", jobId).catch(function () {}); },
     };
     /* the scan modal can be re-shown after "back" from the add step: BV.modal
        only detaches `body`, so the results list and its listeners survive */
-    function openMain() { m = BV.modal("discover on network", body, modalOpts); }
+    function openMain() {
+      m = BV.modal("discover on network", body, modalOpts);
+      m.el.classList.add("modal-disc");   /* wide two-column layout (re-added per open) */
+    }
     openMain();
 
     /* populate adapters; default to the connected ethernet, else the local /24 */
@@ -1409,17 +1436,12 @@
     }
 
     function updateAddBtn() {
-      var n = found.filter(function (h) { return sel[h.host]; }).length;
+      var n = found.filter(function (h) { return picks.has(h.host); }).length;
       /* hidden (not just disabled) until something is selected — people kept
          clicking a dead "add" before scanning */
       addBtn.classList.toggle("hidden", n === 0);
       addBtn.disabled = n === 0;
       addBtn.textContent = n ? "add " + n : "add";
-      /* select-all reflects only the VISIBLE (filtered) rows */
-      var vis = visible();
-      var on = vis.length && vis.every(function (h) { return sel[h.host]; });
-      selAll.checked = !!on;
-      selAll.indeterminate = !on && vis.some(function (h) { return sel[h.host]; });
     }
 
     function renderList() {
@@ -1428,9 +1450,7 @@
       list.innerHTML = "";
       visible().forEach(function (h) {
         var row = BV.el("div", { class: "scan-row" });
-        var cb = BV.el("input", { type: "checkbox", class: "lf-check" });
-        cb.checked = !!sel[h.host];
-        cb.addEventListener("change", function () { if (cb.checked) sel[h.host] = true; else delete sel[h.host]; updateAddBtn(); });
+        var cb = picks.bind(BV.el("input", { type: "checkbox", class: "lf-check" }), h.host);
         row.appendChild(cb);
         var label = '<span class="lib-robot-name">' + BV.esc(h.name || h.host) + "</span>";
         var meta = [BV.esc(h.host)];
@@ -1449,20 +1469,19 @@
         row.appendChild(BV.el("div", { class: "lib-robot-main" }, label));
         list.appendChild(row);
       });
-      updateAddBtn();
+      picks.sync();
     }
 
-    selAll.addEventListener("change", function () {
-      var on = selAll.checked;
-      visible().forEach(function (h) { if (on) sel[h.host] = true; else delete sel[h.host]; });
-      renderList();
+    /* select-all covers only the VISIBLE (device-filtered) rows */
+    picks.group(selAll, function () {
+      return visible().map(function (h) { return h.host; });
     });
 
     scanBtn.addEventListener("click", function () {
       if (scanning) { if (jobId) BV.api.call("cancel_scan", jobId).catch(function () {}); return; }
       var cidr = advOpen ? fSubnet.value.trim() : (chosenCidr || fSubnet.value.trim());
       var port = parseInt(fPort.value, 10) || 21;
-      found = []; sel = {}; renderList();
+      found = []; picks.clear(); renderList();
       scanning = true; scanBtn.textContent = "stop"; addBtn.disabled = true;
       BV.api.call("net_scan_start", { cidr: cidr, port: port }).then(function (res) {
         jobId = res.job_id;
@@ -1502,8 +1521,11 @@
       });
       back.addEventListener("click", function () { m2.close(true); openMain(); });
       go.addEventListener("click", function () {
+        var line = fLine.value.trim();
+        /* same rule as the move flow: a robot never lands without a line */
+        if (!line) { BV.toast("a line name is required"); fLine.focus(); return; }
         go.disabled = true;
-        BV.api.call("lib_bulk_add", drafts, fPlant.value.trim(), fLine.value.trim()).then(function (r) {
+        BV.api.call("lib_bulk_add", drafts, fPlant.value.trim(), line).then(function (r) {
           m2.close(true);
           var added = (r.added || []).length, skipped = (r.skipped || []).length;
           BV.toast("added " + added + (skipped ? " · skipped " + skipped + " already in library" : ""));
@@ -1514,7 +1536,7 @@
     }
 
     addBtn.addEventListener("click", function () {
-      var drafts = found.filter(function (h) { return sel[h.host]; }).map(function (h) {
+      var drafts = found.filter(function (h) { return picks.has(h.host); }).map(function (h) {
         return { robot: h.name || h.host, model: h.model || "", f_number: h.f_number || "",
           device_type: h.device_type || "robot",
           ips: [h.host], ftp: { user: "", passive: true } };

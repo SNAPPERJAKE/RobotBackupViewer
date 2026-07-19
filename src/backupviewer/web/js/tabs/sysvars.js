@@ -35,9 +35,12 @@
   /* render one node of a fetched record tree (recursive). topCls lets a
      top-level record (e.g. a KAREL .VA record) wear the same "sysvar-node"
      styling system vars use, so both tabs look alike; nested calls default to
-     the indented "sysvar-tnode". */
-  function treeNode(node, topCls) {
+     the indented "sysvar-tnode". mem/path (optional) remember which nodes are
+     open across leaving the tab: mem is a BV.tabState-backed {open:{}} store,
+     keyed by the /-joined name path, written only on user toggles. */
+  function treeNode(node, topCls, mem, path) {
     if (node.leaf) return leafRow(node, (topCls || "sysvar-tnode") + " sysvar-leaf");
+    var key = mem ? (path ? path + "/" + node.name : node.name) : null;
     var el = BV.el("div", { class: topCls || "sysvar-tnode" });
     var head = BV.el("div", { class: "sysvar-head" });
     var title = elementTitle(node);
@@ -45,16 +48,23 @@
       (title ? '<span class="sysvar-title">' + BV.esc(title) + "</span>" : "") +
       (node.type ? '<span class="sysvar-type">' + BV.esc(node.type) + "</span>" : "");
     var body = BV.el("div");
-    (node.children || []).forEach(function (c) { body.appendChild(treeNode(c)); });
+    (node.children || []).forEach(function (c) { body.appendChild(treeNode(c, null, mem, key)); });
     el.appendChild(head);
     el.appendChild(body);
-    BV.collapsible(el, head, body);
+    BV.collapsible(el, head, body, mem ? {
+      open: !!mem.open[key],
+      onToggle: function (open) {
+        if (open) mem.open[key] = true; else delete mem.open[key];
+      },
+    } : undefined);
     return el;
   }
 
-  /* a top-level record row (lazy body) */
-  function recordNode(r) {
-    if (!r.has_children) return leafRow(r, "sysvar-node sysvar-leaf");
+  /* a top-level record row (lazy body). Returns {el, pending}: pending is the
+     body fetch when the record was remembered open (so the caller can restore
+     the scroll position only after the heights are real). */
+  function recordNode(r, mem) {
+    if (!r.has_children) return { el: leafRow(r, "sysvar-node sysvar-leaf"), pending: null };
     var el = BV.el("div", { class: "sysvar-node" });
     var head = BV.el("div", { class: "sysvar-head" });
     head.innerHTML = '<span class="sysvar-name">' + BV.esc(r.name) + "</span>" +
@@ -63,23 +73,31 @@
     var loaded = false;
     el.appendChild(head);
     el.appendChild(body);
+    function load() {
+      if (loaded) return null;
+      loaded = true;
+      body.innerHTML = '<div class="dim" style="padding:.3rem 1rem">loading…</div>';
+      return BV.api.call("get_sysvar", r.name).then(function (tree) {
+        body.innerHTML = "";
+        (tree.children || []).forEach(function (c) { body.appendChild(treeNode(c, null, mem, r.name)); });
+        if (!tree.children || !tree.children.length) {
+          body.innerHTML = '<div class="dim" style="padding:.3rem 1rem">(no contents)</div>';
+        }
+      }).catch(function (e) {
+        body.innerHTML = '<div class="dim" style="padding:.3rem 1rem">' + BV.esc(e.message) + "</div>";
+      });
+    }
+    var wasOpen = !!mem.open[r.name];
     BV.collapsible(el, head, body, {
+      open: wasOpen,
       onToggle: function (open) {
-        if (!open || loaded) return;
-        loaded = true;
-        body.innerHTML = '<div class="dim" style="padding:.3rem 1rem">loading…</div>';
-        BV.api.call("get_sysvar", r.name).then(function (tree) {
-          body.innerHTML = "";
-          (tree.children || []).forEach(function (c) { body.appendChild(treeNode(c)); });
-          if (!tree.children || !tree.children.length) {
-            body.innerHTML = '<div class="dim" style="padding:.3rem 1rem">(no contents)</div>';
-          }
-        }).catch(function (e) {
-          body.innerHTML = '<div class="dim" style="padding:.3rem 1rem">' + BV.esc(e.message) + "</div>";
-        });
+        if (open) mem.open[r.name] = true; else delete mem.open[r.name];
+        if (open) load();
       },
     });
-    return el;
+    /* construction no longer echoes onToggle, so a remembered-open record must
+       kick off its own body fetch */
+    return { el: el, pending: wasOpen ? load() : null };
   }
 
   function render(view, toolbar) {
@@ -96,9 +114,15 @@
       var list = BV.el("div", { class: "sysvar-list", style: "margin:0 1.25rem 1rem" });
       view.appendChild(list);
 
+      /* which records/branches are open, remembered per backup (like scroll) */
+      var st = BV.tabState("sysvars");
+      if (!st.open) st.open = {};
+
+      var pendings = [];
       var nodes = recs.map(function (r) {
-        var el = recordNode(r);
-        return { el: el, name: r.name.toLowerCase() };
+        var rn = recordNode(r, st);
+        if (rn.pending) pendings.push(rn.pending);
+        return { el: rn.el, name: r.name.toLowerCase() };
       });
       nodes.forEach(function (n) { list.appendChild(n.el); });
 
@@ -113,7 +137,20 @@
         sb.setCount(shown, recs.length);
       }
       sb.setCount(recs.length, recs.length);
+      /* remembered-open records fill in async, so the immediate restore below
+         clamps against collapsed heights; once the bodies land, re-apply the
+         position we actually wanted (unless the user left the tab meanwhile) */
+      var want = st._scroll || 0;
       BV.persistScroll("sysvars", document.getElementById("view"));
+      if (pendings.length && want) {
+        Promise.all(pendings).then(function () {
+          var v = document.getElementById("view");
+          if (v && document.body.contains(list)) {
+            v.scrollTop = want;
+            st._scroll = want;
+          }
+        });
+      }
     }).catch(function (e) {
       view.innerHTML = '<div class="empty-state"><div class="big">system vars unavailable</div>' +
         '<div class="hint">' + BV.esc(e.message) + "</div></div>";

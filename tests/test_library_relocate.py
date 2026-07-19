@@ -890,3 +890,98 @@ def test_update_robot_applies_latest_path_when_current_blank_or_gone(monkeypatch
     somewhere = root / "P" / "L" / "GHOST" / "2026_01_01" / "12_00_00"
     library.update_robot(e["id"], {"latest_path": str(somewhere)})
     assert library.get_robot(e["id"])["latest_path"] == str(somewhere)     # blank current -> applied
+
+
+# -- merge honesty: a no-op fold must never report "merged" -------------------------
+# The field bug: merging a secondary whose folder holds only non-dated content (a
+# flat import) moved nothing and removed nothing - and still reported "merged",
+# with both robots visibly untouched afterwards. A blocked result says so, and the
+# blocked path changes NOTHING (no alias, no config fold, no writes).
+
+
+def test_merge_blocked_on_flat_only_secondary_changes_nothing(monkeypatch, tmp_path):
+    _iso(monkeypatch, tmp_path)
+    root = _lib(tmp_path)
+    r1 = root / "P" / "L" / "R1"
+    _snap(r1, "2026_01_01", "12_00_00", robot="R1", line="L", plant="P")
+    _sidecar(r1, "rid-1", "P", "L", "R1")
+    r2 = root / "P" / "L" / "R2"
+    _sidecar(r2, "rid-2", "P", "L", "R2")
+    (r2 / "readme.txt").write_text("flat import - no dated layer", encoding="utf-8")
+    library.scan_library_root(root)
+
+    res = library.merge_robots("rid-1", "rid-2")
+    assert res["action"] == "blocked"
+    assert "dated" in res["reason"]
+    assert library.get_robot("rid-2") is not None                 # entry kept
+    assert (r2 / "readme.txt").is_file()                          # disk untouched
+    prim = library.get_robot("rid-1")
+    assert "R2" not in {a["robot"] for a in (prim.get("aliases") or [])}   # no half-merge residue
+
+
+def test_relocate_collision_merge_blocked_keeps_identity(monkeypatch, tmp_path):
+    """Renaming onto an existing robot is a merge; when that merge can fold
+    nothing (flat-only source), the rename must not half-happen: identity,
+    entries and disk all stay put, and the caller learns why."""
+    _iso(monkeypatch, tmp_path)
+    root = _lib(tmp_path)
+    flat = root / "P" / "L" / "R1"
+    _sidecar(flat, "rid-1", "P", "L", "R1")
+    (flat / "readme.txt").write_text("flat import", encoding="utf-8")
+    r2 = root / "P" / "L" / "R2"
+    _snap(r2, "2026_02_02", "09_30_00", robot="R2", line="L", plant="P")
+    _sidecar(r2, "rid-2", "P", "L", "R2")
+    library.scan_library_root(root)
+
+    res = library.relocate_robot("rid-1", "P", "L", "R2")
+    assert res["action"] == "blocked" and "dated" in res["reason"]
+    e = library.get_robot("rid-1")
+    assert e["robot"] == "R1" and e["line"] == "L"                # identity unchanged
+    assert flat.is_dir() and (flat / "readme.txt").is_file()
+    assert library.get_robot("rid-2")["robot"] == "R2"
+
+
+def test_lib_merge_endpoint_buckets_blocked(monkeypatch, tmp_path):
+    from backupviewer.api import Api
+    _iso(monkeypatch, tmp_path)
+    root = _lib(tmp_path)
+    r1 = root / "P" / "L" / "R1"
+    _snap(r1, "2026_01_01", "12_00_00", robot="R1", line="L", plant="P")
+    _sidecar(r1, "rid-1", "P", "L", "R1")
+    r2 = root / "P" / "L" / "R2"
+    _sidecar(r2, "rid-2", "P", "L", "R2")
+    (r2 / "readme.txt").write_text("flat", encoding="utf-8")
+    library.scan_library_root(root)
+
+    res = Api().lib_merge("rid-1", ["rid-2"])["data"]
+    assert res["merged"] == [] and len(res["blocked"]) == 1
+    assert "dated" in res["blocked"][0]["reason"]
+    assert res["blocked"][0]["secondary"]["robot"] == "R2"        # the UI names who
+
+
+def test_lib_apply_renames_failures_carry_robot_and_reason(monkeypatch, tmp_path):
+    """Failure results name the robot and say why - the UI toasts them verbatim
+    (a bare count sent people hunting for which rename didn't land)."""
+    from backupviewer.api import Api
+    _iso(monkeypatch, tmp_path)
+    root = _lib(tmp_path)
+    flat = root / "P" / "L" / "R1"
+    _sidecar(flat, "rid-1", "P", "L", "R1")
+    (flat / "readme.txt").write_text("flat", encoding="utf-8")
+    r2 = root / "P" / "L" / "R2"
+    _snap(r2, "2026_02_02", "09_30_00", robot="R2", line="L", plant="P")
+    _sidecar(r2, "rid-2", "P", "L", "R2")
+    library.scan_library_root(root)
+
+    res = Api().lib_apply_renames([
+        {"id": "rid-nope", "robot": "GHOST9"},                        # unknown id
+        {"id": "rid-1", "plant": "P", "line": "L", "robot": "R2"},    # blocked collision-merge
+    ])["data"]
+    assert res["renamed"] == [] and res["merged"] == []
+    assert len(res["failed"]) == 2
+    by = {f["id"]: f for f in res["failed"]}
+    assert by["rid-nope"]["robot"] == "GHOST9"                    # label from the request
+    assert "not in library" in by["rid-nope"]["error"]
+    assert by["rid-1"]["robot"] == "R1"                           # label from the entry
+    assert by["rid-1"]["error"].startswith("not merged:")
+    assert "dated" in by["rid-1"]["error"]

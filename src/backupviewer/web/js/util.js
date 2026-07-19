@@ -4,6 +4,15 @@ window.BV = {};
 (function () {
   "use strict";
 
+  /* Compound-key separator: the NUL character — it can never appear in robot
+     names, program names, or file paths. Built at RUNTIME on purpose: a raw
+     NUL byte in source makes git/grep treat the whole file as binary, and
+     spelling it as a backslash-u escape in source has repeatedly been decoded
+     into a raw NUL by editing tools (that exact bug has shipped three times).
+     Always use BV.KEYSEP; never inline either form. api.js (in-flight request
+     keys) and compare.js (hide keys) build their compound keys from this. */
+  BV.KEYSEP = String.fromCharCode(0);
+
   BV.esc = function (s) {
     if (s === null || s === undefined) return "";
     return String(s).replace(/[&<>"']/g, function (c) {
@@ -73,6 +82,24 @@ window.BV = {};
     toastTimer = setTimeout(function () { toastEl.classList.remove("show"); }, ms || 1800);
   };
 
+  /* clipboard with the WebView2-safe fallback; every report/copy button in the
+     app (scan report, backup log, future exports) shares this one path */
+  BV.copyText = function (text, okMsg) {
+    function done() { BV.toast(okMsg || "copied"); }
+    function fallback() {
+      var ta = BV.el("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); done(); }
+      catch (e) { BV.toast("copy failed"); }
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else fallback();
+  };
+
   /* simple modal helper; returns {close}. opts.beforeClose() -> false blocks a
      dismissal (backdrop / Esc / cancel) — the unsaved-work guard. close(true)
      bypasses it for a committed save or an explicit discard; the check is
@@ -131,12 +158,25 @@ window.BV = {};
   BV.menu = function (anchorEl, items) {
     var menu = BV.el("div", { class: "ctx-menu" });
     items.forEach(function (it) {
-      var b = BV.el("button", { class: "ctx-item" + (it.danger ? " danger" : "") }, BV.esc(it.label));
+      /* it.action = {label,title,onClick}: a small trailing pill on the row with
+         its own click (e.g. the date-picker's "vs" -> compare with that date) */
+      var b = BV.el("button", { class: "ctx-item" + (it.danger ? " danger" : "") },
+        BV.esc(it.label) +
+        (it.action ? '<span class="ctx-act" title="' + BV.esc(it.action.title || "") + '">' +
+          BV.esc(it.action.label) + "</span>" : ""));
       b.addEventListener("click", function (e) {
         e.stopPropagation();
         close();
         if (it.onClick) it.onClick();
       });
+      var act = it.action && b.querySelector(".ctx-act");
+      if (act) {
+        act.addEventListener("click", function (e) {
+          e.stopPropagation();
+          close();
+          it.action.onClick();
+        });
+      }
       menu.appendChild(b);
     });
     /* Append to <html> so no ancestor's overflow can clip it. (The page-zoom
@@ -197,6 +237,25 @@ window.BV = {};
     });
   };
 
+  /* right-click on a head: expand/collapse everything UNDER the node. The
+     clicked node itself never collapses as a side effect — you right-clicked
+     to fold the children, not the folder you're holding — but expanding DOES
+     open a closed node, so the result is never invisible. Leaf nodes (no
+     collapsible children) are a no-op: left-click is the toggle. */
+  BV.subtreeToggle = function (node) {
+    var kids = Array.prototype.slice.call(node.querySelectorAll(".bv-collapsible"));
+    if (!kids.length) return;
+    var expand = !kids.every(function (n) { return n.classList.contains("open"); });
+    kids.forEach(function (n) {
+      BV.setOpen(n, expand);
+      if (n._bvOnToggle) n._bvOnToggle(expand);
+    });
+    if (expand && !node.classList.contains("open")) {
+      BV.setOpen(node, true);
+      if (node._bvOnToggle) node._bvOnToggle(true);
+    }
+  };
+
   BV.collapsible = function (node, head, body, opts) {
     opts = opts || {};
     node.classList.add("bv-collapsible");
@@ -206,8 +265,10 @@ window.BV = {};
       head.insertBefore(BV.el("span", { class: "bv-caret" }, "▸"), head.firstChild);
     }
     if (opts.onToggle) node._bvOnToggle = opts.onToggle;
+    /* no onToggle echo here: construction just PAINTS opts.open. Notifying it
+       let a forced-open render (library filter) overwrite remembered fold
+       state — onToggle now means "the user toggled it", nothing else. */
     BV.setOpen(node, !!opts.open);
-    if (opts.onToggle && opts.open) opts.onToggle(true);
     head.addEventListener("click", function () {
       var open = !node.classList.contains("open");
       BV.setOpen(node, open);
@@ -215,10 +276,7 @@ window.BV = {};
     });
     head.addEventListener("contextmenu", function (e) {
       e.preventDefault();
-      /* if everything under here is already open, collapse all; else expand all */
-      var all = [node].concat(Array.prototype.slice.call(node.querySelectorAll(".bv-collapsible")));
-      var allOpen = all.every(function (n) { return n.classList.contains("open"); });
-      BV.collapseAll(node, !allOpen);
+      BV.subtreeToggle(node);
     });
     return node;
   };

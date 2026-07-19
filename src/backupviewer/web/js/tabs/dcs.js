@@ -147,8 +147,12 @@
         dl.insertAdjacentHTML("beforeend",
           '<dt class="dcs-detail-sub" style="grid-column:1/-1">' + BV.esc(d.sub) + "</dt>");
       } else if (d.key !== undefined) {
+        /* note = a cross-reference the parser attached (e.g. the user-model
+           comment behind a numeric "Target model" value) - shown dim, the
+           pendant's verbatim value stays untouched */
         dl.insertAdjacentHTML("beforeend",
-          "<dt>" + BV.esc(d.key) + "</dt><dd>" + BV.esc(d.value || "—") + "</dd>");
+          "<dt>" + BV.esc(d.key) + "</dt><dd>" + BV.esc(d.value || "—") +
+          (d.note ? ' <span class="dim">· ' + BV.esc(d.note) + "</span>" : "") + "</dd>");
       } else {
         dl.insertAdjacentHTML("beforeend",
           '<dt class="dcs-raw" style="grid-column:1/-1;color:var(--sub)">' + BV.esc(d.raw) + "</dt>");
@@ -156,6 +160,8 @@
     });
     return dl;
   }
+  /* the 3D view's side panel shows the same pendant-style detail blocks */
+  BV.dcsDetail = detailList;
 
   /* user model: each model drops down to its elements as nested collapsible
      headers, and each element drops down to its own fields (headers on headers) */
@@ -255,10 +261,13 @@
     ], rows);
   }
 
-  function renderTableGrouped(sec) {
+  function renderTableGrouped(sec, opts) {
     var box = BV.el("div");
+    /* a single-group robot inside the dashboard cell skips the "group 1" noise;
+       section pages keep it (multi-group robots need the labels either way) */
+    var soloHead = opts && opts.hideSoloGroupHead && sec.groups.length === 1;
     sec.groups.forEach(function (g) {
-      box.insertAdjacentHTML("beforeend",
+      if (!soloHead) box.insertAdjacentHTML("beforeend",
         '<h3 style="font-size:.78rem;color:var(--sub);margin:.6rem 0 .4rem">group ' + g.group + "</h3>");
       box.appendChild(BV.table([
         { key: "axis", label: "axis" },
@@ -332,22 +341,26 @@
     return b;
   }
 
-  /* condensed body for a dashboard cell */
-  function dashSummary(sec) {
-    if (sec.id === "mastering-parameter") {
-      var n = (sec.groups || []).reduce(function (a, g) { return a + g.rows.length; }, 0);
-      return '<span class="dim">' + n + " axes mastered</span>";
+  /* body for a dashboard cell: mastering gets its REAL per-axis table (position,
+     master count, status - the counts are the point, not "N axes mastered"),
+     the other sections a few kv lines */
+  function dashBody(sec) {
+    var body = BV.el("div", { class: "dcs-dash-body" });
+    if (sec.id === "mastering-parameter" && sec.groups && sec.groups.length) {
+      body.appendChild(renderTableGrouped(sec, { hideSoloGroupHead: true }));
+      return body;
     }
     var rows = (sec.rows || []).filter(function (r) { return r.kind === "kv"; }).slice(0, 4);
-    return rows.map(function (r) {
+    body.innerHTML = rows.map(function (r) {
       return '<div class="dcs-dash-line"><span class="dim">' + BV.esc(r.key) + "</span> " +
         BV.esc(r.value || "") + statusPill(r.status) + "</div>";
     }).join("") || '<span class="dim">—</span>';
+    return body;
   }
 
   /* stapled top dashboard: shrunk signatures + the small sections inline */
   function dcsDashboard(rep, curFile) {
-    var dash = BV.el("div", { class: "dcs-dash stick" });
+    var dash = BV.el("div", { class: "dcs-dash" });
     if (rep.signatures && rep.signatures.length) {
       var cell = BV.el("div", { class: "dcs-dash-cell" });
       /* stacked rows showing the ACTUAL signature value (current, plus the latched
@@ -378,8 +391,8 @@
         var sec = rep.sections.find(function (s) { return s.id === pair[0]; });
         if (!sec) return;
         var cell = BV.el("div", { class: "dcs-dash-cell clickable", title: "open " + sec.title });
-        cell.innerHTML = '<div class="dcs-dash-h">' + BV.esc(pair[1]) + " " + menuBadge(sec.summary) +
-          "</div><div class=\"dcs-dash-body\">" + dashSummary(sec) + "</div>";
+        cell.innerHTML = '<div class="dcs-dash-h">' + BV.esc(pair[1]) + " " + menuBadge(sec.summary) + "</div>";
+        cell.appendChild(dashBody(sec));
         cell.addEventListener("click", function () {
           location.hash = "#dcs/" + encodeURIComponent(curFile) + "/" + sec.id;
         });

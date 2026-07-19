@@ -70,7 +70,16 @@
         }, "from SUMMARY.DG"));
       }
 
-      var state = { cat: cats[0], showIn: true, showOut: true, asg: false, vs: false };
+      /* view state (category, in/out, configuration) survives leaving the tab.
+         BV.tabState is per-backup, so a different robot starts fresh; vs mode is
+         deliberately not remembered (it needs the compare fetch). */
+      var ts = BV.tabState("io");
+      if (!cats.some(function (c) { return c.id === ts.cat; })) ts.cat = cats[0].id;
+      if (ts.showIn === undefined) { ts.showIn = true; ts.showOut = true; ts.asg = false; }
+      var state = {
+        cat: cats.find(function (c) { return c.id === ts.cat; }),
+        showIn: ts.showIn, showOut: ts.showOut, asg: !!ts.asg, vs: false,
+      };
       var mt = null;
       var byTypeB = null; /* comparison robot's signals, fetched on first vs toggle */
       var hlState = null; /* highlight-differences state (vs mode only) */
@@ -173,6 +182,10 @@
       }
 
       function syncToolbar() {
+        ts.cat = state.cat.id;
+        ts.asg = state.asg;
+        /* vs forces a single direction — don't let that override the remembered pair */
+        if (!state.vs) { ts.showIn = state.showIn; ts.showOut = state.showOut; }
         catSeg.setActive(state.cat.id);
         var single = !!state.cat.single;
         dirSeg.el.style.display = (single || state.asg) ? "none" : "";
@@ -205,6 +218,7 @@
           var keyFn = function (r) { return r.type + "[" + r.index + "]"; };
           mt = new BV.MultiTable(host, {
             mode: "pair",
+            stateKey: "io.vs." + c.id + "." + tv,
             panes: [
               { label: nameA + " · " + tv, columns: signalColumns(false), data: byType[tv] || [],
                 rowClass: BV.vsDiff.marker(hlState, byTypeB[tv] || [], keyFn, BV.vsDiff.io) },
@@ -222,6 +236,7 @@
           var t = c.single || (state.showIn ? c.inT : c.outT);
           mt = new BV.MultiTable(host, {
             mode: "split",
+            stateKey: "io." + c.id + "." + t,
             columns: signalColumns(false),
             data: byType[t] || [],
             onOpen: openSearch,
@@ -230,6 +245,7 @@
         } else {
           mt = new BV.MultiTable(host, {
             mode: "pair",
+            stateKey: "io." + c.id + ".both",
             panes: [
               { label: (c.inT || "") + " · inputs", columns: signalColumns(false), data: byType[c.inT] || [] },
               { label: (c.outT || "") + " · outputs", columns: signalColumns(false), data: byType[c.outT] || [] },
@@ -264,12 +280,14 @@
         if (c.single) {
           mt = new BV.MultiTable(host, {
             mode: "split", columns: cfgCols, data: rowsFor(c.single),
+            stateKey: "io.cfg." + c.id,
             onOpen: open,
             onCount: function (n, all) { sb.setCount(n, all); },
           });
         } else {
           mt = new BV.MultiTable(host, {
             mode: "pair",
+            stateKey: "io.cfg." + c.id,
             panes: [
               { label: (c.inT || "") + " · inputs", columns: cfgCols, data: rowsFor(c.inT) },
               { label: (c.outT || "") + " · outputs", columns: cfgCols, data: rowsFor(c.outT) },

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 from collections import defaultdict
@@ -72,8 +73,17 @@ def looks_like_backup(d: Path) -> bool:
     return False
 
 
+def _entry_is_dir(e) -> bool:
+    """DirEntry.is_dir with OSError folded to False — the same answer
+    Path.is_dir gives for an unstat-able entry."""
+    try:
+        return e.is_dir()
+    except OSError:
+        return False
+
+
 def find_backup_roots(parent: Path, max_depth: int = 7, cap: int = 5000,
-                      stats: dict | None = None) -> list[Path]:
+                      stats: dict | None = None, on_root=None) -> list[Path]:
     """Every backup root at or beneath `parent`. A folder that looks_like_backup
     is a root and is NOT descended into (its dated <date>/<time> subfolders are
     snapshots of the same backup, not separate ones). Handles a per-line Latest/
@@ -81,7 +91,8 @@ def find_backup_roots(parent: Path, max_depth: int = 7, cap: int = 5000,
     folder is the root), and a flat folder of backups. Bounded by depth + count;
     when a bound trips, stats["truncated"] is set so callers can SAY SO instead
     of silently listing a partial library (each dated snapshot counts as one
-    root, so a plant-scale tree runs to thousands)."""
+    root, so a plant-scale tree runs to thousands). `on_root(count)`, when
+    given, is called as roots are found (feeds the library-scan progress)."""
     parent = Path(parent)
     if not parent.is_dir():
         return []
@@ -92,7 +103,10 @@ def find_backup_roots(parent: Path, max_depth: int = 7, cap: int = 5000,
     while stack and len(roots) < cap:
         d, depth = stack.pop()
         try:
-            children = sorted(p for p in d.iterdir() if p.is_dir())
+            # scandir, not iterdir + is_dir: the dir bit comes with the listing,
+            # saving a stat per entry (thousands of them on a plant-scale tree)
+            with os.scandir(d) as it:
+                children = sorted(Path(e.path) for e in it if _entry_is_dir(e))
         except OSError:
             continue
         for c in children:
@@ -102,6 +116,8 @@ def find_backup_roots(parent: Path, max_depth: int = 7, cap: int = 5000,
                 continue    # transient staging dir (crash residue mid move/mirror-regen)
             if looks_like_backup(c):
                 roots.append(c)
+                if on_root:
+                    on_root(len(roots))
             elif depth + 1 < max_depth:
                 stack.append((c, depth + 1))
     if len(roots) >= cap:
