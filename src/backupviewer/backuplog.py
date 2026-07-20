@@ -5,9 +5,14 @@ survives - it powers the "last run" summary and the retry-failed button in
 Manage backups.
 
 One RUN = one user action (a bulk line backup or a single robot), grouped by
-the run_id the frontend stamps on every start_backup spec of that click. Jobs
-are recorded when they start and finished with their final snapshot, so a
-crash mid-run leaves honest "running" rows rather than nothing.
+the run_id the frontend stamps on every start_backup spec of that click -
+except that backups fired while a run is still going JOIN that run (the API
+reuses the in-flight run_id), so a mid-run retry of a few refused robots
+lands in the same "last run" report instead of burying it. A joining job
+reopens the run, and a re-fire of a robot the run already settled replaces
+that robot's row (attempts counts the tries) rather than duplicating it.
+Jobs are recorded when they start and finished with their final snapshot, so
+a crash mid-run leaves honest "running" rows rather than nothing.
 
 Passwords are NEVER written here - retry re-prompts, exactly like the bulk
 flow does.
@@ -65,9 +70,25 @@ def sanitize_spec(spec: dict) -> dict:
     return {k: spec[k] for k in _SPEC_KEYS if k in spec}
 
 
+def _same_target(a: dict, b: dict) -> bool:
+    """Do two job records point at the same physical robot? host (the IP we
+    dialed) is the strongest key, then the library row id, then the visible
+    name - compared at the FIRST key both records carry, because two robots
+    that differ there are different no matter what the weaker keys say
+    (FANUC's default name is literally "ROBOT")."""
+    for k in ("host", "robot_id", "robot"):
+        if a.get(k) and b.get(k):
+            return a[k] == b[k]
+    return False
+
+
 def start_job(run_id: str, job_id: str, spec: dict) -> None:
     """Record a job the moment it is fired (status 'running'). Creates the run
-    on first sight; runs list stays newest-first and capped."""
+    on first sight; runs list stays newest-first and capped. A job joining an
+    existing run reopens it, and if the run already SETTLED this robot (its
+    previous try errored / finished), the old row is replaced in place with
+    attempts counted - a retry must not double-count the robot. A row still
+    running is a real concurrent job and is never clobbered."""
     with _LOCK:
         data = load()
         run = next((r for r in data["runs"] if r.get("id") == run_id), None)
@@ -78,7 +99,14 @@ def start_job(run_id: str, job_id: str, spec: dict) -> None:
         rec = dict(sanitize_spec(spec))
         rec.update({"job_id": job_id, "status": "running", "error": "",
                     "dated_path": "", "started": _now(), "finished": ""})
-        run["jobs"].append(rec)
+        run["finished"] = ""
+        prev = next((j for j in run["jobs"]
+                     if j.get("status") != "running" and _same_target(j, rec)), None)
+        if prev is None:
+            run["jobs"].append(rec)
+        else:
+            rec["attempts"] = int(prev.get("attempts", 1)) + 1
+            run["jobs"][run["jobs"].index(prev)] = rec
         _write(data)
 
 

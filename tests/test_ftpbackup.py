@@ -228,3 +228,38 @@ def test_backup_completion_marker(monkeypatch, tmp_path):
     assert meta["complete"] is False               # ...and says it never finished
     assert not (dated / "notes.txt").exists()      # the success sidecars never ran
     assert bad["latest_path"] == ""                # and no Latest mirror was made
+
+
+def test_terminal_vocabulary_and_run_id_in_snapshot(tmp_path):
+    assert all(ftpbackup.is_terminal(s) for s in ("done", "error", "cancelled"))
+    assert not any(ftpbackup.is_terminal(s)
+                   for s in ("pending", "connecting", "listing", "downloading", ""))
+    job = ftpbackup.BackupJob("192.0.2.9", tmp_path, "", "L1", "R1", run_id="run-x",
+                              ftp_factory=lambda timeout=None: FakeFTP(tmp_path))
+    assert job.snapshot()["run_id"] == "run-x"
+
+
+class _StubJob:
+    """snapshot()-only stand-in for registry-level Api tests."""
+
+    def __init__(self, status, run_id):
+        self._snap = {"status": status, "run_id": run_id}
+
+    def snapshot(self):
+        return dict(self._snap)
+
+
+def test_api_joins_the_in_flight_run():
+    """A backup started while another run is live must reuse that run's id -
+    a mid-run retry lands in the same "last run" report instead of pushing a
+    new run on top of one that hasn't finished (api._active_run_id)."""
+    from backupviewer.api import Api
+
+    api = Api()
+    assert api._active_run_id() == ""
+    api._jobs["a"] = _StubJob("done", "run-old")
+    assert api._active_run_id() == ""              # settled jobs hold no run open
+    api._jobs["b"] = _StubJob("downloading", "run-live")
+    assert api._active_run_id() == "run-live"
+    api._jobs["b"] = _StubJob("cancelled", "run-live")
+    assert api._active_run_id() == ""

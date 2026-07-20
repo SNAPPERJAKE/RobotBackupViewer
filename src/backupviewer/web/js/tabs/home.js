@@ -20,6 +20,7 @@
   var _filter = "";             /* library filter query, lowercased ("" = off) */
   var _filterBox = null;        /* the head's search box (match counter lives on it) */
   var _lastData = null;         /* last lib_list payload — filter re-renders without a refetch */
+  var _liveTargets = null;      /* BV.jobs.activeTargets() snapshot, taken once per tree paint */
 
   var SORT_LABELS = { name: "name", ip: "IP", date: "last backup" };
 
@@ -37,7 +38,11 @@
     BV.api.call("set_setting", "lib_sort", mode).catch(function () {});
     var b = _libWrap && _libWrap.querySelector(".lib-sort");
     if (b) b.textContent = "sort: " + SORT_LABELS[mode];   /* head persists across refreshes */
-    refresh();
+    /* sorting is client-side ordering: re-render the cached listing. Hitting
+       lib_list here forced a full rescan whenever the tree had changed — and
+       DURING a mass backup the tree changes every second, so flipping the sort
+       re-scanned mid-run and pilled every in-flight robot "partial". */
+    rerenderFromCache();
   }
 
   function nameCmp(a, b) { return (a.robot || "").localeCompare(b.robot || ""); }
@@ -179,8 +184,7 @@
       placeholder: "filter robots…",
       onChange: function (q) {
         _filter = (q || "").toLowerCase();
-        var body = _libWrap && _libWrap.querySelector(".home-lib-body");
-        if (body && _lastData) renderTree(body, _lastData);
+        rerenderFromCache();
       },
     });
     _filterBox.input.value = _filter;    /* a remount keeps the active filter */
@@ -286,6 +290,7 @@
 
   /* per-row progress bars: painted from the global jobs poller's events
      whenever the library is on screen (jobs.js owns the polling + the strip) */
+  var _hadActiveJobs = false;   /* for the run-just-ended edge below */
   BV.state.on("jobs", function (ev) {
     if (!_libWrap || !document.body.contains(_libWrap)) return;
     var ids = Object.keys(ev.jobs || {});
@@ -300,6 +305,12 @@
       if (rid) renderRowProgress(rid, p);
     });
     setCancelAllVisible(anyActive);
+    /* the run just ENDED: re-list once so rows settle on the truth (fresh
+       "last" dates, partial pills only where a pull really died). The library
+       watcher would catch it a few seconds later; this closes the gap. */
+    var ended = _hadActiveJobs && !anyActive;
+    _hadActiveJobs = anyActive;
+    if (ended && !BV.modalOpen()) refresh();
   });
 
   /* which library row a job belongs to: tracked meta first (we started it),
@@ -318,6 +329,19 @@
     if (_libWrap && document.body.contains(_libWrap)) loadLibrary();
   }
 
+  /* repaint the tree from the cached listing — no lib_list, no rescan. Filter
+     and sort both live here: they change how the same data is shown, and a
+     refetch mid-backup would rescan a tree that is being written to. */
+  function rerenderFromCache() {
+    var body = _libWrap && _libWrap.querySelector(".home-lib-body");
+    if (!body || !_lastData) { refresh(); return; }
+    var scroller = document.getElementById("view");
+    var keep = scroller ? scroller.scrollTop : 0;
+    renderTree(body, _lastData);
+    if (scroller) scroller.scrollTop = keep;
+    reattachProgress();
+  }
+
   function updateHiddenToggle(hiddenCount) {
     if (!_showHiddenBtn) return;
     _showHiddenBtn.classList.toggle("hidden", hiddenCount === 0);
@@ -327,6 +351,9 @@
 
   function renderTree(body, data) {
     var robots = (data && data.robots) || [];
+    /* one snapshot of who is mid-backup for this whole paint (not per row) */
+    _liveTargets = (BV.jobs && BV.jobs.activeTargets)
+      ? BV.jobs.activeTargets() : { ids: {}, hosts: {} };
     /* the folder skeleton: empty plant/line folders are real structure the
        user built in Explorer — show them, so "make the folder, see the plant"
        holds even before any robots/backups exist inside */
@@ -383,13 +410,17 @@
     if (r.last_backup) meta.push("last " + BV.esc(r.last_backup));
     if (r.backups && r.backups.length) meta.push(r.backups.length + " saved");
     if (r.stale) meta.push('<span class="pill warn">missing</span>');
+    /* while a pull is RUNNING for this robot its newest snapshot is partial by
+       design — the row's live progress bar tells that story; the warning pills
+       below would just cry wolf about a backup that is still being written */
+    var backingUp = BV.jobs && BV.jobs.isRobotActive && BV.jobs.isRobotActive(r, _liveTargets);
     /* newest snapshot is a partial (a pull that died mid-download): say so -
        "last <date>" above is already the last COMPLETE one */
-    if (r.backups && r.backups.length && r.backups[0].partial) {
+    if (!backingUp && r.backups && r.backups.length && r.backups[0].partial) {
       meta.push('<span class="pill warn" title="the newest snapshot is a partial backup ' +
         '(the pull never finished) — opening latest uses the last complete one">partial</span>');
     }
-    if (!r.latest_path && !(r.backups && r.backups.length) && !r.stale) {
+    if (!backingUp && !r.latest_path && !(r.backups && r.backups.length) && !r.stale) {
       meta.push('<span class="pill ghost">no backup</span>');
     }
     main.appendChild(BV.el("div", { class: "lib-robot-meta" },
@@ -852,13 +883,6 @@
 
   /* ---- multi-backup ---- */
 
-  function statusText(p) {
-    return {
-      connecting: "connecting…", listing: "listing files…", downloading: "downloading…",
-      done: "done", error: "failed", cancelled: "cancelled", pending: "starting…",
-    }[p.status] || p.status;
-  }
-
   function startLineBackup(lineRobots) {
     var sel = selectedInLine(lineRobots);
     if (!sel.length) { BV.toast("select robots first"); return; }
@@ -946,7 +970,7 @@
       return;
     }
     var pct = p.total ? Math.round(100 * p.done / p.total) : 8;
-    var html = '<div class="membar"><div class="mb-label"><span>' + BV.esc(statusText(p)) +
+    var html = '<div class="membar"><div class="mb-label"><span>' + BV.esc(BV.jobs.statusText(p)) +
       "</span><span>" + (p.total ? p.done + " / " + p.total : "") + "</span></div>" +
       '<div class="mb-track"><div class="mb-fill" style="width:' + pct + '%"></div></div></div>';
     if (p.current) html += '<div class="bf-current dim">' + BV.esc(p.current) + "</div>";

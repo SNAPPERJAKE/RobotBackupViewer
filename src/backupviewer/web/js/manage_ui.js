@@ -94,13 +94,20 @@
           pwrap.appendChild(BV.el("div", { class: "mb-none" },
             "none — every snapshot on disk completed"));
         } else {
+          /* a robot being backed up RIGHT NOW has a partial snapshot by design
+             (the complete-marker lands last) — say that instead of implying a
+             dead pull */
+          var live = (BV.jobs && BV.jobs.activeTargets) ? BV.jobs.activeTargets() : null;
           var plist = BV.el("div", { class: "mb-list" });
           partial.forEach(function (r) {
             var parts = (r.backups || []).filter(function (b) { return b.partial; });
+            var mid = live && BV.jobs.isRobotActive(r, live);
             plist.appendChild(robotRowEl(r,
               parts.length + " partial snapshot" + (parts.length === 1 ? "" : "s") +
-              " — newest " + fmtWhen(parts[0].taken),
-              "a pull that died mid-download; never opened as latest, never auto-deleted"));
+              " — newest " + fmtWhen(parts[0].taken) +
+              (mid ? " · backing up right now" : ""),
+              mid ? "a pull is running — its snapshot completes when the pull finishes"
+                : "a pull that died mid-download; never opened as latest, never auto-deleted"));
           });
           pwrap.appendChild(plist);
         }
@@ -142,7 +149,8 @@
                 BV.pill("failed", "err") +
                 '<span class="hs-robot">' + BV.esc(j.robot || j.host || "?") + "</span>" +
                 (j.line ? '<span class="hs-line">' + BV.esc(j.line) + "</span>" : "") +
-                '<span class="hs-sum">' + BV.esc(j.error || "failed") + "</span>");
+                '<span class="hs-sum">' + BV.esc((j.error || "failed") +
+                  (j.attempts > 1 ? " · try " + j.attempts : "")) + "</span>");
               if (r) {
                 row.title = "open this robot";
                 row.addEventListener("click", function () { openRobot(r.id); });
@@ -240,7 +248,8 @@
         (run.jobs || []).forEach(function (j) {
           lines.push("  " + (mark[j.status] || "?") + " " +
             (j.robot || j.host || "?") + (j.line ? " (" + j.line + ")" : "") +
-            " — " + j.status + (j.error ? " — " + j.error : ""));
+            " — " + j.status + (j.attempts > 1 ? " (try " + j.attempts + ")" : "") +
+            (j.error ? " — " + j.error : ""));
         });
         return lines.join("\n");
       }

@@ -201,16 +201,51 @@ body { overflow: hidden; }
    router never touches — running backups + busy ops stay visible on EVERY
    screen. Hidden (zero height) when idle. */
 #jobstrip {
+  position: relative;   /* the details panel anchors to the strip, no coordinate math */
   display: flex; align-items: center; gap: 0.9em;
   flex: none; padding: 0.5em 1.6em;
   border-top: 1px solid var(--edge-soft, transparent);
   background: var(--bg2); font-size: calc(var(--chrome-fs, 15px) * 0.78);
   color: var(--sub);
 }
+#jobstrip .jobstrip-run {
+  display: flex; align-items: center; gap: 0.9em;
+  flex: 1 1 auto; min-width: 0;
+}
 #jobstrip .membar { flex: 1 1 auto; min-width: 0; }
 #jobstrip .mb-label { font-size: 1em; }
 #jobstrip .btn { flex: none; padding: 0.2em 0.7em; font-size: 0.95em; }
 #jobstrip .jobstrip-cancel { color: var(--error); }
+/* the live per-robot panel: grows UP from the strip, its own scroll */
+.jobstrip-panel {
+  position: absolute; right: 1.6em; bottom: 100%; margin-bottom: 0.4em;
+  width: min(34em, calc(100vw - 3.2em));
+  max-height: 46vh; overflow-y: auto;
+  background: var(--bg2); border: 1px solid var(--edge);
+  border-radius: var(--radius); padding: 0.3em;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  z-index: 40;
+}
+.jobstrip-panel .js-row {
+  display: flex; align-items: center; gap: 0.6em;
+  padding: 0.22em 0.5em; border-radius: 4px;
+}
+.jobstrip-panel .js-row:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.jobstrip-panel .js-mark { flex: none; width: 1.1em; text-align: center; }
+.jobstrip-panel .js-row.ok .js-mark { color: var(--ok); }
+.jobstrip-panel .js-row.err .js-mark,
+.jobstrip-panel .js-row.err .js-detail { color: var(--error); }
+.jobstrip-panel .js-row.dim { opacity: 0.6; }
+.jobstrip-panel .js-robot {
+  flex: none; max-width: 12em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.jobstrip-panel .js-line { flex: none; color: var(--sub-alt); }
+.jobstrip-panel .js-detail {
+  flex: 1 1 auto; min-width: 0; text-align: right; color: var(--sub);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.jobstrip-panel .js-cancel { flex: none; padding: 0 0.45em; }
 #jobstrip .jobstrip-busy { display: flex; align-items: center; gap: 0.5rem; flex: none; }
 #jobstrip .busy-pulse {
   width: 0.55rem; height: 0.55rem; border-radius: 50%;

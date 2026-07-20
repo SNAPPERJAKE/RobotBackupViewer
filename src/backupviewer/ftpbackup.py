@@ -43,6 +43,14 @@ FR_MAX_FILES = 5000
 CONNECT_TIMEOUT = 20
 RETRIES = 2
 
+TERMINAL_STATUSES = ("done", "error", "cancelled")
+
+
+def is_terminal(status) -> bool:
+    """The one Python-side home of "this job is over" (jobs.js keeps the JS
+    copy) - a future status lands here, not in scattered tuples."""
+    return status in TERMINAL_STATUSES
+
 
 def _now() -> _dt.datetime:
     return _dt.datetime.now()
@@ -80,9 +88,10 @@ class BackupJob:
 
     def __init__(self, host, dest_root, plant, line, robot, *,
                  user="", passwd="", passive=True, port=21,
-                 devices=None, note="", recurse_fr=False,
+                 devices=None, note="", recurse_fr=False, run_id="",
                  ftp_factory=ftplib.FTP, throttle=0.03, on_complete=None):
         self.id = uuid.uuid4().hex
+        self.run_id = run_id or ""
         self.host = host
         self.port = int(port or 21)
         self.dest_root = Path(dest_root)
@@ -102,7 +111,7 @@ class BackupJob:
         self._cancel = threading.Event()
         self._lock = threading.Lock()
         self._p = {
-            "id": self.id, "status": "pending", "host": host,
+            "id": self.id, "run_id": self.run_id, "status": "pending", "host": host,
             "robot": self.robot, "line": self.line, "plant": self.plant,
             "total": 0, "done": 0, "bytes": 0, "current": "",
             "skipped": [], "error": "", "dated_path": "", "latest_path": "",

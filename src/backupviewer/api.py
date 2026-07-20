@@ -144,7 +144,18 @@ class Api:
 
     def _active_backup_count(self) -> int:
         return sum(1 for j in self._jobs.values()
-                   if j.snapshot().get("status") not in ("done", "error", "cancelled"))
+                   if not ftpbackup.is_terminal(j.snapshot().get("status")))
+
+    def _active_run_id(self) -> str:
+        """The run_id of the backup run still in flight, or "". A backup fired
+        while others are running JOINS their run: a mid-run retry of a few
+        refused robots must land in the same "last run" report, not push a new
+        run on top of one that hasn't finished."""
+        for j in self._jobs.values():
+            snap = j.snapshot()
+            if not ftpbackup.is_terminal(snap.get("status")):
+                return snap.get("run_id") or ""
+        return ""
 
     def _backups_active(self) -> bool:
         return self._active_backup_count() > 0
@@ -1824,7 +1835,9 @@ class Api:
     def start_backup(self, spec: dict):
         """Kick off an FTP backup on a worker thread; returns a job_id to poll.
         spec.run_id (the frontend stamps one per bulk click) groups the jobs of
-        one user action in the durable backup log."""
+        one user action in the durable backup log - but while a run is still in
+        flight, every new job joins THAT run regardless of the stamp (see
+        _active_run_id)."""
         return self._start_backup_job(spec or {})
 
     def _start_backup_job(self, spec: dict) -> dict:
@@ -1841,15 +1854,18 @@ class Api:
                 latest_path=job.snapshot().get("latest_path", ""),
             )
 
+        run_id = (self._active_run_id()
+                  or (spec.get("run_id") or "").strip()
+                  or uuid.uuid4().hex)
         job = ftpbackup.BackupJob(
             host, root, spec.get("plant", ""), spec.get("line", ""), spec.get("robot", ""),
             user=spec.get("user", ""), passwd=spec.get("passwd", ""),
             passive=spec.get("passive", True), port=spec.get("port", 21),
             devices=spec.get("devices"), note=spec.get("note", ""),
-            recurse_fr=spec.get("recurse_fr", False), on_complete=_register,
+            recurse_fr=spec.get("recurse_fr", False), run_id=run_id,
+            on_complete=_register,
         )
         self._jobs[job.id] = job
-        run_id = (spec.get("run_id") or "").strip() or uuid.uuid4().hex
         backuplog.start_job(run_id, job.id, spec)
 
         def _run_and_log():
@@ -1870,24 +1886,26 @@ class Api:
 
     @_endpoint
     def retry_failed_backups(self, run_id: str = "", passwd: str = ""):
-        """Re-fire exactly the FAILED jobs of a run (default: the newest run)
-        as a fresh run. passwd, when given, applies to retried robots whose
-        saved spec carries an FTP user - the same shared-password model the
-        bulk flow uses; nothing is persisted."""
+        """Re-fire exactly the FAILED jobs of a run (default: the newest run).
+        While that run is still in flight the retries fold back into it (its
+        failed rows are replaced, attempts counted); only against an idle
+        engine do they open a fresh run. passwd, when given, applies to
+        retried robots whose saved spec carries an FTP user - the same
+        shared-password model the bulk flow uses; nothing is persisted."""
         specs = backuplog.failed_specs(run_id or None)
         if not specs:
             raise ApiError("NOTHING_TO_RETRY", "that run has no failed backups")
-        new_run = uuid.uuid4().hex
         fired = []
+        actual_run = ""
         for sp in specs:
             sp = dict(sp)
-            sp["run_id"] = new_run
             if sp.get("user") and passwd:
                 sp["passwd"] = passwd
             res = self._start_backup_job(sp)
+            actual_run = res["run_id"]
             fired.append({"robot_id": sp.get("robot_id", ""), "robot": sp.get("robot", ""),
                           "job_id": res["job_id"]})
-        return {"run_id": new_run, "jobs": fired}
+        return {"run_id": actual_run, "jobs": fired}
 
     @_endpoint
     def get_backup_progress(self, job_id: str):

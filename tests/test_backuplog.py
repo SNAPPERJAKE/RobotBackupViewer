@@ -59,6 +59,46 @@ def test_failed_specs_only_errors(monkeypatch, tmp_path):
     assert backuplog.failed_specs("missing") == []
 
 
+def test_late_joiner_reopens_run_and_replaces_settled_row(monkeypatch, tmp_path):
+    _iso(monkeypatch, tmp_path)
+    backuplog.start_job("run-1", "j1", SPEC_A)
+    backuplog.start_job("run-1", "j2", SPEC_B)
+    backuplog.finish_job("run-1", "j1", {"status": "error", "error": "refused"})
+    backuplog.finish_job("run-1", "j2", {"status": "done"})
+    assert backuplog.last_run()["finished"]
+
+    # R1's retry fired back into the same run: the run reopens, R1's settled
+    # row is replaced (not duplicated), attempts counts both tries
+    backuplog.start_job("run-1", "j3", SPEC_A)
+    run = backuplog.last_run()
+    assert run["id"] == "run-1" and not run["finished"]
+    assert len(run["jobs"]) == 2
+    rec = next(j for j in run["jobs"] if j["job_id"] == "j3")
+    assert rec["status"] == "running" and rec["attempts"] == 2
+    assert not any(j["job_id"] == "j1" for j in run["jobs"])
+
+    backuplog.finish_job("run-1", "j3", {"status": "done"})
+    run = backuplog.last_run()
+    assert run["finished"]
+    assert sorted(j["status"] for j in run["jobs"]) == ["done", "done"]
+    assert backuplog.failed_specs("run-1") == []
+
+
+def test_running_row_never_clobbered_and_hosts_differ(monkeypatch, tmp_path):
+    _iso(monkeypatch, tmp_path)
+    backuplog.start_job("run-1", "j1", SPEC_A)
+    # the same robot fired again while its first job still runs: two real jobs,
+    # two rows - only SETTLED rows are ever replaced
+    backuplog.start_job("run-1", "j2", SPEC_A)
+    assert len(backuplog.last_run()["jobs"]) == 2
+
+    # the same NAME on a different host is a different robot - never replaced
+    backuplog.finish_job("run-1", "j1", {"status": "error", "error": "x"})
+    backuplog.finish_job("run-1", "j2", {"status": "error", "error": "x"})
+    backuplog.start_job("run-1", "j4", dict(SPEC_A, host="192.0.2.99", robot_id="id-r9"))
+    assert len(backuplog.last_run()["jobs"]) == 3
+
+
 def test_runs_newest_first_and_capped(monkeypatch, tmp_path):
     _iso(monkeypatch, tmp_path)
     for i in range(25):
