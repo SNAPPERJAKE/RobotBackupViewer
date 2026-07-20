@@ -907,7 +907,7 @@
           note: "",
         };
         /* a multi-camera station pulls each IP into its own CAM<n> subfolder;
-           credentials (MTXuser/MATROX, or anonymous for CV-X) fill server-side */
+           credentials (mtxuser/Matrox, or anonymous for CV-X) fill server-side */
         if ((r.device_type || "").indexOf("camera") === 0 && r.ips.length > 1) {
           spec.cameras = r.ips.map(function (ip, i) { return { label: "CAM" + (i + 1), host: ip }; });
         }

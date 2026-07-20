@@ -1,6 +1,15 @@
 # Changelog
 
 ## v1.2 — the big merge
+- **Matrox camera backups now take on the first try.** The camera password
+  baked into the app was the wrong case — `MATROX` where the camera wants
+  `Matrox` — and the camera's Linux Samba compares passwords case-sensitively,
+  so every programmatic login was refused (`WinError 86` / `STATUS_LOGON_FAILURE`).
+  A first backup only ever succeeded when a tech had already opened `\\<ip>` in
+  Explorer by hand (the app rode that session), which is exactly why "the first
+  backup always fails, the retry works" — and why it looked like "SMB only works
+  interactively." Corrected the default; the SMB login now authenticates on its
+  own, no manual Explorer step. Live-verified against two cameras.
 - **The camera line and the viewer line are one app again.** Everything from
   v0.99a–v0.99q below (Matrox + Keyence CV-X backup, the photos tab, both live
   remotes, camera↔robot linking) merged onto v1.1's 3d view, fleet health scan,

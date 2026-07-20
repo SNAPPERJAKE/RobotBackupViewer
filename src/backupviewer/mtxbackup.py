@@ -4,8 +4,8 @@ settings + latest inspection images off the camera over SMB (Windows file share)
 A Matrox smart camera runs embedded Linux with a **Samba** server (confirmed live
 2026-07-14: `\\\\<ip>\\mtxuser` is the MTXuser home share). It does NOT expose FTP
 (port 21 closed) or accept the DA login over SSH - the way the shop reaches it is
-exactly what a tech does in Explorer: `\\\\<ip>`, then the MTXuser / MATROX
-credentials. The `mtxuser` share is `/home/MTXuser`, which holds:
+exactly what a tech does in Explorer: `\\\\<ip>`, then the mtxuser / Matrox
+credentials (both case-sensitive - see MTX_USER/MTX_PASS below). The `mtxuser` share is `/home/MTXuser`, which holds:
 
   da/                                    the Design Assistant project data (the
                                          "DA folder" - Projects, Calibrations,
@@ -50,11 +50,17 @@ from . import ftpbackup
 log = logging.getLogger(__name__)
 
 # Default credentials burned into every Matrox DA camera on the shop floor, and
-# the Samba share that maps to the camera's home dir. The account is the lowercase
-# Linux user `mtxuser` (what a tech types in Explorer) - NOT "MTXuser": mixed case
-# is rejected by the camera's Samba on a programmatic login.
+# the Samba share that maps to the camera's home dir. BOTH are case-sensitive - the
+# camera runs Linux/Samba, which compares them exactly:
+#   * user `mtxuser` all-lowercase (what a tech types in Explorer) - NOT "MTXuser":
+#     mixed case is rejected on a programmatic login.
+#   * pass `Matrox` Title-case - NOT "MATROX" all-caps. Live-verified 2026-07-20
+#     against two cameras: `Matrox` authenticates, `MATROX`/`matrox` are refused
+#     server-side (STATUS_LOGON_FAILURE). The old all-caps default is why a FIRST
+#     backup always failed - the only "working" pulls were riding an Explorer
+#     session a tech had opened by hand with the correctly-cased password.
 MTX_USER = "mtxuser"
-MTX_PASS = "MATROX"
+MTX_PASS = "Matrox"
 MTX_SHARE = "mtxuser"
 
 # SavedImages path under the share, as path segments (contains a space).
@@ -166,7 +172,7 @@ def _smb_connect(unc: str, user: str, passwd: str) -> bool:
     facing guidance if every strategy fails.
 
     The camera's Samba is fussy about programmatic logins in ways Explorer's own
-    prompt isn't, so this tries, in order: (1) plain mtxuser/MATROX; (2) the user
+    prompt isn't, so this tries, in order: (1) plain mtxuser/Matrox; (2) the user
     qualified with the server (`<ip>\\mtxuser`) - a WORKGROUP PC otherwise sends
     its OWN name as the domain, which the camera rejects with WinError 86/1326;
     (3) NO creds, to ride an existing server session (the tech's Explorer login -

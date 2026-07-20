@@ -2185,7 +2185,7 @@ class Api:
     def probe_controller(self, spec: dict):
         """Pre-flight reachability check - connect + sniff devices, no writes.
         A Matrox camera (device_type='camera-mtx') sniffs da/ + SavedImages with
-        the MTXuser/MATROX default login instead of the FANUC MD:/FR: devices."""
+        the mtxuser/Matrox default login instead of the FANUC MD:/FR: devices."""
         spec = spec or {}
         host = (spec.get("host") or "").strip()
         if not host:
@@ -2225,7 +2225,7 @@ class Api:
     def start_backup(self, spec: dict):
         """Kick off an FTP backup on a worker thread; returns a job_id to poll.
         device_type='camera-mtx' runs a Matrox CameraBackupJob (da/ + newest
-        SavedImages, MTXuser/MATROX), 'camera-keyence' a CV-X job; anything else
+        SavedImages, mtxuser/Matrox), 'camera-keyence' a CV-X job; anything else
         runs the FANUC BackupJob. All jobs share the snapshot()/cancel()/library_*
         shape the poll + strip endpoints rely on.
         spec.run_id (the frontend stamps one per bulk click) groups the jobs of
