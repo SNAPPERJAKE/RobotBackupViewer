@@ -21,6 +21,7 @@
   var _filterBox = null;        /* the head's search box (match counter lives on it) */
   var _lastData = null;         /* last lib_list payload — filter re-renders without a refetch */
   var _liveTargets = null;      /* BV.jobs.activeTargets() snapshot, taken once per tree paint */
+  var _camCounts = {};          /* robot id -> linked-camera count, built once per tree paint */
 
   var SORT_LABELS = { name: "name", ip: "IP", date: "last backup" };
 
@@ -369,6 +370,13 @@
     /* one snapshot of who is mid-backup for this whole paint (not per row) */
     _liveTargets = (BV.jobs && BV.jobs.activeTargets)
       ? BV.jobs.activeTargets() : { ids: {}, hosts: {} };
+    /* linked-camera counts, also once per paint: robotRow runs for every row,
+       and a per-row filter() over the whole list is n² at plant scale */
+    _camCounts = {};
+    robots.forEach(function (c) {
+      if (c.linked_robot_id)
+        _camCounts[c.linked_robot_id] = (_camCounts[c.linked_robot_id] || 0) + 1;
+    });
     /* the folder skeleton: empty plant/line folders are real structure the
        user built in Explorer — show them, so "make the folder, see the plant"
        holds even before any robots/backups exist inside */
@@ -426,7 +434,7 @@
     else {
       /* which twin holds the cameras? (duplicate robot names exist across lines,
          and a link to the WRONG twin looks like "nothing happened") */
-      var nCams = _robots.filter(function (c) { return c.linked_robot_id === r.id; }).length;
+      var nCams = _camCounts[r.id] || 0;
       if (nCams) nameHtml += ' <span class="pill acc">' + nCams + " cam" + (nCams > 1 ? "s" : "") + "</span>";
     }
     main.appendChild(BV.el("div", null, nameHtml));
