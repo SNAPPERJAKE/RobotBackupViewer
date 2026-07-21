@@ -277,6 +277,51 @@ def link_camera(camera_id: str, robot_id: str) -> dict | None:
     return update_robot(camera_id, {"linked_robot_id": robot_id or ""})
 
 
+_IP_NAME_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+
+
+def _is_placeholder_name(e: dict) -> bool:
+    """True when a camera entry is 'named' by fallback only - blank, or the bare
+    IP the discover flow uses when the live name read came back empty."""
+    n = (e.get("robot") or "").strip()
+    return not n or bool(_IP_NAME_RE.match(n)) or n in (e.get("ips") or [])
+
+
+def teach_camera_name(camera_id: str, name: str, model: str = "") -> dict | None:
+    """Give a placeholder-named camera its real name (read from a completed
+    backup's saved-image sidecar - see mtxbackup.name_from_backup), the same way
+    a robot self-names from SUMMARY.DG. A real name someone typed (or discovery
+    resolved) is NEVER overwritten; the old placeholder is remembered as an alias
+    so anything recorded under it still re-merges. Model fills only when blank.
+    Returns the entry (unchanged when there was nothing to teach), None on a bad
+    id / non-camera."""
+    name = (name or "").strip()
+    if not name:
+        return None
+    with _LOCK:
+        data = load()
+        for e in data["robots"]:
+            if e.get("id") != camera_id:
+                continue
+            if not str(e.get("device_type", "")).startswith("camera"):
+                return None
+            changed = False
+            if model and not e.get("model"):
+                e["model"] = model
+                changed = True
+            old = e.get("robot", "")
+            if _is_placeholder_name(e) and old != name:
+                e["robot"] = name                       # rename FIRST, then record
+                _add_alias(e, e.get("plant", ""), e.get("line", ""), old)
+                changed = True
+            if changed:
+                _reconcile(data)
+                _write(data)
+                _persist_sidecar(e)
+            return e
+        return None
+
+
 def cameras_for_robot(robot_id: str) -> list:
     """Camera entries linked to a robot (newest-backup first)."""
     if not robot_id:
@@ -290,16 +335,22 @@ def cameras_for_robot(robot_id: str) -> list:
 
 def auto_link_cameras() -> dict:
     """Link every UNLINKED camera to a robot whose station+robot key matches its
-    name (manual links are left alone). Only links on an unambiguous single match.
+    name - falling back to a robot with the SAME name (a camera deliberately
+    named after its robot, which the key regex can't always parse) - manual
+    links are left alone. Only links on an unambiguous single match.
     Returns {linked:[{camera,robot}], ambiguous:[names], unmatched:[names]}."""
     with _LOCK:
         data = load()
         by_key: dict = {}
+        by_name: dict = {}
         for e in data["robots"]:
             if e.get("device_type", "robot") == "robot":
                 k = _station_robot_key(e.get("robot", ""))
                 if k:
                     by_key.setdefault(k, []).append(e)
+                n = (e.get("robot") or "").strip().upper()
+                if n:
+                    by_name.setdefault(n, []).append(e)
         linked, ambiguous, unmatched = [], [], []
         touched = []
         for e in data["robots"]:
@@ -309,6 +360,11 @@ def auto_link_cameras() -> dict:
                 continue                                # keep an existing (manual) link
             k = _station_robot_key(e.get("robot", ""))
             matches = by_key.get(k, []) if k else []
+            if not matches:
+                # same-name fallback: robot + camera(s) sharing one name across
+                # device types link even when the key can't be read
+                n = (e.get("robot") or "").strip().upper()
+                matches = by_name.get(n, []) if n else []
             if len(matches) > 1:
                 # the same robot name lives under several lines (test-cell copies,
                 # legacy folders). Prefer the robot in the CAMERA's own cell -

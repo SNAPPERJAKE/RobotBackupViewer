@@ -1,6 +1,17 @@
 # Changelog
 
 ## v1.2 — the big merge
+- **Cameras self-name from their first backup and auto-link to their robot.**
+  A camera the scan couldn't name live (no saved images yet, a flaky read)
+  lands in the library as its bare IP; now, the moment a backup completes, the
+  camera reads its real name + model out of the snapshot it just pulled (the
+  newest saved-image sidecar — the camera twin of a robot naming itself from
+  `SUMMARY.DG`), keeps the old IP name as an alias so nothing recorded under it
+  is orphaned, and auto-linking runs to seat it under its robot. A name someone
+  typed by hand is never overwritten. Auto-link also gained a **same-name
+  fallback**: a robot and camera(s) sharing one name across device types link
+  even when the station+robot key can't parse the name — with the same
+  ambiguity guards (same-cell tiebreak, or left for manual linking).
 - **Matrox camera backups now take on the first try.** The camera password
   baked into the app was the wrong case — `MATROX` where the camera wants
   `Matrox` — and the camera's Linux Samba compares passwords case-sensitively,

@@ -31,8 +31,8 @@ from . import search as search_mod
 from . import settings
 from .parsers import (alarms, callgraph, curpos, dcs, dcszones, frames,
                       gmwizlog, io_dg, kinematics, ls_program, macros, magnet,
-                      mastering, mhvalves, mtx_saved_image, payloads, registers,
-                      styles, summary_dg, sysvars)
+                      mastering, mhvalves, mtx_portal, mtx_saved_image,
+                      payloads, registers, styles, summary_dg, sysvars)
 from .parsers.common import is_binary, read_text
 from .session import BackupSession
 
@@ -43,8 +43,6 @@ HEX_PREVIEW_BYTES = 4096
 MAX_IMAGE_BYTES = 12_000_000
 _IMAGE_MIME = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                ".png": "image/png", ".bmp": "image/bmp"}
-_RESULT_RE = re.compile(r"-(Pass|Fail)-", re.IGNORECASE)
-_TS_RE = re.compile(r"(\d{4})_(\d{2})_(\d{2})-(\d{2})\.(\d{2})\.(\d{2})\.(\d+)")
 
 
 class ApiError(Exception):
@@ -100,64 +98,6 @@ def _probe_http(url: str, timeout: float = 4.0):
         return e.code, dict(e.headers or {}), url, body
 
 
-# a Matrox portal launches its operator page(s) as popups to
-# /DesignAssistant/<project>/default.htm - harvest those links from the page
-# markup so the remote view can offer them as in-app tabs instead.
-_DA_LINK_RE = re.compile(
-    r"""["']((?:https?://[^"'\s]+?)?[^"'\s]*?DesignAssistant/[^"'\s]+?\.html?"""
-    r"""(?:\?[^"'\s]*)?)["']""", re.IGNORECASE)
-# DA 9.x portals never write that link in HTML: each project row carries a
-# prj-name attribute (unquoted in the wild) and projectsTableView.js does
-#   window.open("/DesignAssistant/" + project + "/default.htm?pgx=" + Math.random())
-# - so harvest the project names and build the same URL the portal builds.
-_PRJ_NAME_RE = re.compile(r"""prj-name\s*=\s*["']?([A-Za-z0-9_.\-]+)""", re.IGNORECASE)
-
-
-def _find_da_pages(ip: str, html: str) -> list[dict]:
-    """DesignAssistant page links scraped from portal markup, absolutized and
-    restricted to the camera itself (never embed a foreign host a page names).
-    The portal's per-launch ?pgx= cache-buster is stripped; the viewer adds its
-    own. Each: {label, url}."""
-    import urllib.parse
-    pages, seen = [], set()
-    for m in _DA_LINK_RE.finditer(html or ""):
-        url = urllib.parse.urljoin(f"http://{ip}/", m.group(1))
-        parts = urllib.parse.urlsplit(url)
-        if parts.scheme not in ("http", "https") or parts.hostname != ip:
-            continue
-        q = [kv for kv in urllib.parse.parse_qsl(parts.query) if kv[0] != "pgx"]
-        url = urllib.parse.urlunsplit(
-            (parts.scheme, parts.netloc, parts.path, urllib.parse.urlencode(q), ""))
-        if url in seen:
-            continue
-        seen.add(url)
-        segs = [s for s in parts.path.split("/") if s]
-        low = [s.lower() for s in segs]
-        try:
-            label = segs[low.index("designassistant") + 1]
-            if label.lower().endswith((".htm", ".html")):   # no project folder in path
-                label = "design assistant"
-        except (ValueError, IndexError):
-            label = "design assistant"
-        pages.append({"label": label, "url": url})
-        if len(pages) >= 8:
-            break
-    # DA 9.x: no literal links - build the URL from each project row's prj-name,
-    # exactly as the portal's own projectsTableView.js does
-    for m in _PRJ_NAME_RE.finditer(html or ""):
-        if len(pages) >= 8:
-            break
-        name = m.group(1)
-        url = f"http://{ip}/DesignAssistant/{name}/default.htm"
-        if url in seen:
-            continue
-        seen.add(url)
-        pages.append({"label": name, "url": url})
-    if len(pages) == 1:
-        pages[0]["label"] = "design assistant"
-    return pages
-
-
 # -- merge-identity evidence ------------------------------------------------------
 # What confirms two library entries are the SAME physical robot (Cody's field
 # checklist): hostname (sometimes changes), IP (sometimes changes), F-number
@@ -203,6 +143,63 @@ def _watch_step(last: str | None, pending: bool, sig: str) -> tuple[str, bool, b
     if pending:
         return last, False, True
     return last, False, False
+
+
+# -- device-type registry ---------------------------------------------------------
+# One row per backable device brand: how to probe it (pre-flight, no writes), how
+# to diagnose it (read-only), and how to build its backup job from a start_backup
+# spec. The per-brand credential defaults live here and nowhere else, so adding a
+# brand is one registration (+ its module), not three edits to matching if/elif
+# chains. "" is the FANUC robot default row; job rows get the common
+# (host, root, plant, line, robot, note, run_id, on_complete) plus their job_kw.
+
+_DEVICE_REGISTRY = {
+    "camera-mtx": {   # SMB - no port/passive; blank creds -> burned-in camera login
+        "probe": lambda host, spec: mtxbackup.probe_camera(
+            host, user=spec.get("user") or mtxbackup.MTX_USER,
+            passwd=spec.get("passwd") or mtxbackup.MTX_PASS),
+        "diagnose": lambda host, spec: mtxbackup.diagnose_camera(
+            host, user=spec.get("user") or mtxbackup.MTX_USER,
+            passwd=spec.get("passwd") or mtxbackup.MTX_PASS),
+        "job_cls": mtxbackup.CameraBackupJob,
+        "job_kw": lambda spec: {
+            "cameras": spec.get("cameras"),
+            "user": spec.get("user") or mtxbackup.MTX_USER,
+            "passwd": spec.get("passwd") or mtxbackup.MTX_PASS,
+        },
+    },
+    "camera-keyence": {   # anonymous FTP
+        "probe": lambda host, spec: keyencebackup.probe_keyence(
+            host, passive=spec.get("passive", True), port=spec.get("port", 21)),
+        "diagnose": lambda host, spec: keyencebackup.diagnose_keyence(
+            host, passive=spec.get("passive", True), port=spec.get("port", 21)),
+        "job_cls": keyencebackup.KeyenceBackupJob,
+        "job_kw": lambda spec: {
+            "cameras": spec.get("cameras"),
+            "passive": spec.get("passive", True), "port": spec.get("port", 21),
+            "include_box": bool(spec.get("include_box")),
+        },
+    },
+    "": {   # FANUC robot (the default row)
+        "probe": lambda host, spec: ftpbackup.probe_controller(
+            host, user=spec.get("user", ""), passwd=spec.get("passwd", ""),
+            passive=spec.get("passive", True), port=spec.get("port", 21)),
+        "diagnose": lambda host, spec: discover.diagnose_controller(
+            host, port=spec.get("port", 21)),
+        "job_cls": ftpbackup.BackupJob,
+        "job_kw": lambda spec: {
+            "user": spec.get("user", ""), "passwd": spec.get("passwd", ""),
+            "passive": spec.get("passive", True), "port": spec.get("port", 21),
+            "devices": spec.get("devices"),
+            "recurse_fr": spec.get("recurse_fr", False),
+        },
+    },
+}
+
+
+def _device_row(spec: dict) -> dict:
+    dt = spec.get("device_type") or ""
+    return _DEVICE_REGISTRY.get(dt, _DEVICE_REGISTRY[""])
 
 
 class Api:
@@ -1285,11 +1282,6 @@ class Api:
     # results), and returns them newest-first; get_image streams one image as a
     # base64 data-URI (the reliable path under pywebview's private-mode CSP).
 
-    @staticmethod
-    def _photo_sort_key(name: str, mtime: int) -> tuple:
-        m = _TS_RE.search(name)
-        return ("".join(m.groups()) if m else "", mtime)
-
     def _camera_session(self, camera_id: str) -> BackupSession:
         """Open (and cache) a library camera's latest backup as a session, so a
         robot's Cameras tab can show a linked camera's photos without making it
@@ -1316,58 +1308,28 @@ class Api:
         return cached[2]
 
     def _photos_data(self, s: BackupSession):
+        """Thin wrapper: the grouping + record shaping is the parser's
+        (mtx_saved_image.group_photo_files / photo_record); this layer owns the
+        session index, sidecar reads and file stats."""
         def build():
-            groups: dict[str, dict] = {}
-            for key, p in s.files.items():
-                if "SAVEDIMAGES/" not in key:
-                    continue
-                ext = p.suffix.lower()
-                if ext not in (".jpg", ".jpeg", ".png", ".bmp", ".txt"):
-                    continue
-                rel = s.rel(p)
-                stem = rel[: len(rel) - len(p.suffix)]
-                g = groups.setdefault(stem, {})
-                if ext == ".txt":
-                    g["txt"], g["txt_p"] = rel, p
-                elif ext == ".png":
-                    g["png"], g["png_p"] = rel, p
-                else:  # jpg/jpeg/bmp
-                    g["jpg"], g["jpg_p"] = rel, p
-
+            by_rel = {s.rel(p): p for key, p in s.files.items()
+                      if "SAVEDIMAGES/" in key}
             photos = []
-            for g in groups.values():
-                if not (g.get("jpg") or g.get("png")):
-                    continue  # a stray sidecar with no image
-                rel_any = g.get("jpg") or g.get("png")
-                parts = rel_any.split("/")
-                name = parts[-1]
-                date = parts[-2] if len(parts) >= 2 else ""
+            for g in mtx_saved_image.group_photo_files(by_rel).values():
                 info: dict = {}
-                if g.get("txt_p"):
+                if g.get("txt"):
                     try:
-                        info = mtx_saved_image.parse_saved_image(read_text(g["txt_p"]))
+                        info = mtx_saved_image.parse_saved_image(read_text(by_rel[g["txt"]]))
                     except Exception:  # noqa: BLE001 - a bad sidecar must not sink the grid
                         log.exception("saved-image sidecar parse failed: %s", g.get("txt"))
-                img_p = g.get("jpg_p") or g.get("png_p")
+                img_p = by_rel.get(g.get("jpg") or g.get("png") or "")
                 try:
-                    mtime = int(img_p.stat().st_mtime)
+                    mtime = int(img_p.stat().st_mtime) if img_p else 0
                 except OSError:
                     mtime = 0
-                rname = _RESULT_RE.search(name)
-                photos.append({
-                    "name": name,
-                    "date": date,
-                    "thumb": g.get("jpg") or g.get("png"),   # small preview for the grid
-                    "full": g.get("png") or g.get("jpg"),    # full image for the hero
-                    "txt": g.get("txt", ""),
-                    "result": info.get("result") or (rname.group(1).title() if rname else ""),
-                    "timestamp": info.get("timestamp", ""),
-                    "camera": info.get("camera", {}),
-                    "recipe": info.get("recipe", {}),
-                    "tools": info.get("tools", []),
-                    "sections": info.get("sections", []),
-                    "_sort": self._photo_sort_key(name, mtime),
-                })
+                rec = mtx_saved_image.photo_record(g, info, mtime)
+                if rec is not None:   # None = a stray sidecar with no image
+                    photos.append(rec)
             photos.sort(key=lambda x: x.pop("_sort"), reverse=True)
             camera = photos[0]["camera"] if photos else {}
             return {"photos": photos, "count": len(photos), "camera": camera}
@@ -1524,11 +1486,11 @@ class Api:
         xfo = (h.get("x-frame-options") or "").strip().lower()
         csp = (h.get("content-security-policy") or "").lower()
         embeddable = xfo in ("", "allowall") and "frame-ancestors" not in csp
-        pages = _find_da_pages(ip, body)
+        pages = mtx_portal.find_da_pages(ip, body)
         if not pages:
             # portal home didn't name any operator page - try the DA root itself
             try:
-                pages = _find_da_pages(ip, _probe_http(f"http://{ip}/DesignAssistant/")[3])
+                pages = mtx_portal.find_da_pages(ip, _probe_http(f"http://{ip}/DesignAssistant/")[3])
             except OSError:
                 pass
         return {"url": final or url, "embeddable": embeddable, "status": status,
@@ -2212,17 +2174,7 @@ class Api:
         host = (spec.get("host") or "").strip()
         if not host:
             raise ApiError("BAD_SPEC", "host/IP is required")
-        if spec.get("device_type") == "camera-mtx":
-            return mtxbackup.probe_camera(
-                host, user=spec.get("user") or mtxbackup.MTX_USER,
-                passwd=spec.get("passwd") or mtxbackup.MTX_PASS)   # SMB, no port/passive
-        if spec.get("device_type") == "camera-keyence":
-            return keyencebackup.probe_keyence(
-                host, passive=spec.get("passive", True), port=spec.get("port", 21))
-        return ftpbackup.probe_controller(
-            host, user=spec.get("user", ""), passwd=spec.get("passwd", ""),
-            passive=spec.get("passive", True), port=spec.get("port", 21),
-        )
+        return _device_row(spec)["probe"](host, spec)
 
     @_endpoint
     def diagnose_controller(self, spec: dict):
@@ -2234,14 +2186,7 @@ class Api:
         host = (spec.get("host") or "").strip()
         if not host:
             raise ApiError("BAD_SPEC", "host/IP is required")
-        if spec.get("device_type") == "camera-mtx":
-            return mtxbackup.diagnose_camera(
-                host, user=spec.get("user") or mtxbackup.MTX_USER,
-                passwd=spec.get("passwd") or mtxbackup.MTX_PASS)   # SMB, no port/passive
-        if spec.get("device_type") == "camera-keyence":
-            return keyencebackup.diagnose_keyence(
-                host, passive=spec.get("passive", True), port=spec.get("port", 21))
-        return discover.diagnose_controller(host, port=spec.get("port", 21))
+        return _device_row(spec)["diagnose"](host, spec)
 
     @_endpoint
     def start_backup(self, spec: dict):
@@ -2274,10 +2219,24 @@ class Api:
             log.warning("could not persist library root (backup continues)")
 
         def _register(job):
-            library.register_backup(
+            entry = library.register_backup(
                 job.library_match(), job.library_backup(),
                 latest_path=job.snapshot().get("latest_path", ""),
             )
+            # A Matrox camera self-names from the backup it just pulled (newest
+            # saved-image sidecar) when its entry only carries a placeholder -
+            # the camera twin of a robot naming itself from SUMMARY.DG - and
+            # then auto-linking gets a fresh chance to seat it under its robot.
+            # Best-effort: identity work must never fail a finished backup.
+            if spec.get("device_type") == "camera-mtx":
+                try:
+                    ident = mtxbackup.name_from_backup(job.snapshot().get("dated_path", ""))
+                    if ident.get("name"):
+                        library.teach_camera_name(
+                            entry["id"], ident["name"], ident.get("model", ""))
+                    library.auto_link_cameras()
+                except Exception:  # noqa: BLE001
+                    log.exception("camera self-name/auto-link after backup failed")
 
         # in-flight run joining: a backup fired while a run is still live joins
         # that run instead of stacking a new one. Every job kind (FANUC + both
@@ -2286,31 +2245,12 @@ class Api:
         run_id = (self._active_run_id()
                   or (spec.get("run_id") or "").strip()
                   or uuid.uuid4().hex)
-        if spec.get("device_type") == "camera-mtx":
-            job = mtxbackup.CameraBackupJob(
-                host, root, spec.get("plant", ""), spec.get("line", ""), spec.get("robot", ""),
-                cameras=spec.get("cameras"),
-                user=spec.get("user") or mtxbackup.MTX_USER,
-                passwd=spec.get("passwd") or mtxbackup.MTX_PASS,   # SMB, no port/passive
-                note=spec.get("note", ""), run_id=run_id, on_complete=_register,
-            )
-        elif spec.get("device_type") == "camera-keyence":
-            job = keyencebackup.KeyenceBackupJob(
-                host, root, spec.get("plant", ""), spec.get("line", ""), spec.get("robot", ""),
-                cameras=spec.get("cameras"),
-                passive=spec.get("passive", True), port=spec.get("port", 21),
-                include_box=bool(spec.get("include_box")),
-                note=spec.get("note", ""), run_id=run_id, on_complete=_register,
-            )
-        else:
-            job = ftpbackup.BackupJob(
-                host, root, spec.get("plant", ""), spec.get("line", ""), spec.get("robot", ""),
-                user=spec.get("user", ""), passwd=spec.get("passwd", ""),
-                passive=spec.get("passive", True), port=spec.get("port", 21),
-                devices=spec.get("devices"), note=spec.get("note", ""),
-                recurse_fr=spec.get("recurse_fr", False), run_id=run_id,
-                on_complete=_register,
-            )
+        row = _device_row(spec)
+        job = row["job_cls"](
+            host, root, spec.get("plant", ""), spec.get("line", ""), spec.get("robot", ""),
+            note=spec.get("note", ""), run_id=run_id, on_complete=_register,
+            **row["job_kw"](spec),
+        )
         self._jobs[job.id] = job
         backuplog.start_job(run_id, job.id, spec)
 

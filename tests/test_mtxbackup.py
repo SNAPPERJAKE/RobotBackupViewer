@@ -239,6 +239,59 @@ def test_backup_cancel(monkeypatch, tmp_path):
     assert library.list_robots()["robots"] == []  # nothing registered on cancel
 
 
+def test_name_from_backup(monkeypatch, tmp_path):
+    """A pulled snapshot teaches the camera's real name offline (newest sidecar)."""
+    _iso_lib(monkeypatch, tmp_path)
+    home = _make_camera(tmp_path)
+    job = mtxbackup.CameraBackupJob("10.0.0.7", tmp_path / "out", "P", "L", "CAM",
+                                    mount=_mount_factory(home), throttle=0)
+    res = job.run()
+    assert res["status"] == "done", res
+    ident = mtxbackup.name_from_backup(res["dated_path"])
+    assert ident == {"name": "CELL-01RB172-R01CAM02", "model": "Matrox GTX2000"}
+
+
+def test_name_from_backup_blank_on_nothing(tmp_path):
+    """No sidecars / no folder -> blanks, never an exception."""
+    (tmp_path / "CAM1" / "da").mkdir(parents=True)
+    assert mtxbackup.name_from_backup(tmp_path) == {"name": "", "model": ""}
+    assert mtxbackup.name_from_backup("") == {"name": "", "model": ""}
+    assert mtxbackup.name_from_backup(tmp_path / "nope") == {"name": "", "model": ""}
+
+
+def test_camera_self_names_and_links_after_first_backup(monkeypatch, tmp_path):
+    """The api register flow end-to-end: a placeholder(IP)-named camera renames
+    itself from the snapshot it just pulled (old name kept as an alias, model
+    filled) and auto-links to its robot - the user story 'first backup teaches
+    the camera who it is'."""
+    _iso_lib(monkeypatch, tmp_path)
+    home = _make_camera(tmp_path)
+    robot = library.add_robot({"robot": "RB172R01B01", "plant": "FAKEPLANT",
+                               "line": "RBB01", "device_type": "robot"})
+    cam = library.add_robot({"robot": "10.0.0.7", "plant": "FAKEPLANT",
+                             "line": "RBB01", "device_type": "camera-mtx",
+                             "ips": ["10.0.0.7"]})
+
+    def register(job):       # exactly what api._start_backup_job's on_complete does
+        entry = library.register_backup(job.library_match(), job.library_backup(),
+                                        latest_path=job.snapshot().get("latest_path", ""))
+        ident = mtxbackup.name_from_backup(job.snapshot().get("dated_path", ""))
+        if ident.get("name"):
+            library.teach_camera_name(entry["id"], ident["name"], ident.get("model", ""))
+        library.auto_link_cameras()
+
+    job = mtxbackup.CameraBackupJob("10.0.0.7", tmp_path / "MTXBackups", "FAKEPLANT",
+                                    "RBB01", "10.0.0.7", mount=_mount_factory(home),
+                                    throttle=0, on_complete=register)
+    assert job.run()["status"] == "done"
+
+    e = next(x for x in library.list_robots()["robots"] if x["id"] == cam["id"])
+    assert e["robot"] == "CELL-01RB172-R01CAM02"            # self-named
+    assert e["model"] == "Matrox GTX2000"
+    assert {"plant": "FAKEPLANT", "line": "RBB01", "robot": "10.0.0.7"} in e["aliases"]
+    assert e["linked_robot_id"] == robot["id"]             # and auto-linked
+
+
 # -- the FANUC guard still refuses an FTP host that looks like a camera ----------
 
 class _CameraFTP:

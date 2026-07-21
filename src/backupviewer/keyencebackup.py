@@ -27,12 +27,10 @@ validation.
 """
 from __future__ import annotations
 
-import datetime as _dt
 import ftplib
 import json
 import logging
-import threading
-import uuid
+import time
 from pathlib import Path
 
 from . import ftpbackup
@@ -47,11 +45,6 @@ KEYENCE_PASS = ""
 SETTING_DIR = "cv-x/setting"       # relative to the FTP login dir (/SD1)
 BOX_DIR = "cv-x/box"
 BACKUP_TYPE = "keyence cv-x setting"
-WALK_MAX_FILES = 20_000
-
-
-def _now() -> _dt.datetime:
-    return _dt.datetime.now()
 
 
 def keyence_enumerate(ftp, home: str, *, include_box: bool = False, cancel=None) -> list[str]:
@@ -79,113 +72,32 @@ def keyence_enumerate(ftp, home: str, *, include_box: bool = False, cancel=None)
     return out
 
 
-class KeyenceBackupJob:
+class KeyenceBackupJob(ftpbackup.CameraJobBase):
     """One Keyence CV-X station backup run. Construct, then .run() on a worker
-    thread; poll .snapshot(); .cancel() stops gracefully between files."""
+    thread; poll .snapshot(); .cancel() stops gracefully between files. The
+    state machine, crash-safety and library record live in
+    ftpbackup.CameraJobBase; this class is the CV-X FTP transport."""
+
+    DEVICE_TYPE = "camera-keyence"
+    TYPE_STR = BACKUP_TYPE
+    SOURCE = "ftp"
+    NOTE_PREFIX = "keyence backup of"
+    LOG_LABEL = "keyence"
+    PULL_ERRORS = ftplib.all_errors   # tuple incl. OSError (long-path/os ops)
 
     def __init__(self, host, dest_root, plant, line, station, *,
                  cameras=None, user=KEYENCE_USER, passwd=KEYENCE_PASS, passive=True,
                  port=21, include_box=False, note="", run_id="", ftp_factory=ftplib.FTP,
                  throttle=0.03, on_complete=None):
-        self.id = uuid.uuid4().hex
-        self.run_id = run_id or ""
-        self.host = host
+        super().__init__(host, dest_root, plant, line, station, cameras=cameras,
+                         note=note, run_id=run_id, throttle=throttle,
+                         on_complete=on_complete)
         self.port = int(port or 21)
-        self.dest_root = Path(dest_root)
-        self.plant = plant or ""
-        self.line = line or ""
-        self.station = station or ""
-        self.cameras = list(cameras) if cameras else [{"label": "CAM1", "host": host}]
         self.user = user or ""
         self.passwd = passwd or ""
         self.passive = passive
         self.include_box = include_box
-        self.note = note or ""
         self._ftp_factory = ftp_factory
-        self._throttle = throttle
-        self._on_complete = on_complete
-
-        self._cancel = threading.Event()
-        self._lock = threading.Lock()
-        self._p = {
-            "id": self.id, "run_id": self.run_id, "status": "pending", "host": host,
-            "robot": self.station, "line": self.line, "plant": self.plant,
-            "device_type": "camera-keyence", "cameras": [c["label"] for c in self.cameras],
-            "total": 0, "done": 0, "bytes": 0, "current": "",
-            "skipped": [], "error": "", "dated_path": "", "latest_path": "",
-            "started": "", "finished": "",
-        }
-
-    def _set(self, **kw):
-        with self._lock:
-            self._p.update(kw)
-
-    def snapshot(self) -> dict:
-        with self._lock:
-            s = dict(self._p)
-            s["skipped"] = list(self._p["skipped"])
-            s["cameras"] = list(self._p["cameras"])
-        return s
-
-    def cancel(self):
-        self._cancel.set()
-
-    @property
-    def cancelled(self) -> bool:
-        return self._cancel.is_set()
-
-    def run(self) -> dict:
-        self._set(status="connecting", started=_now().isoformat(timespec="seconds"))
-        when = _now()
-        dated = ftpbackup.dated_dir(self.dest_root, self.plant, self.line, self.station, when)
-        try:
-            dated.mkdir(parents=True, exist_ok=True)
-            self._set(dated_path=str(dated))
-            # started-marker written FIRST (complete:false); _write_sidecars flips
-            # it true only on a successful pull, so a mid-download death is
-            # self-identifying and never adopted as latest (matches ftpbackup).
-            self._write_meta(dated, when, complete=False)
-
-            done = 0
-            nbytes = 0
-            errors: list[str] = []
-            for cam in self.cameras:
-                if self.cancelled:
-                    return self._finish("cancelled")
-                label = ftpbackup._safe_name(cam.get("label") or "CAM1")
-                chost = cam.get("host") or self.host
-                try:
-                    done, nbytes = self._pull_camera(chost, label, dated, done, nbytes)
-                except ftplib.all_errors as e:
-                    msg = f"{label}@{chost}: {type(e).__name__}: {e}"
-                    log.warning("keyence pull failed %s", msg)
-                    errors.append(msg)
-
-            if self.cancelled:
-                return self._finish("cancelled")
-            if done == 0:
-                return self._finish("error", error=errors[0] if errors else "no files pulled")
-
-            self._write_sidecars(dated, when, done, nbytes, errors)
-            latest = ftpbackup.mirror_latest(
-                dated, ftpbackup.latest_dir(self.dest_root, self.plant, self.line, self.station),
-                label=self.station)
-            self._set(latest_path=str(latest) if latest else "")
-            result = self._finish("done", error="; ".join(errors))
-            if self._on_complete:
-                try:
-                    self._on_complete(self)
-                except Exception:  # noqa: BLE001 - registration must not fail the backup
-                    log.exception("on_complete callback failed for %s", self.station)
-            return result
-        except Exception as e:  # noqa: BLE001 - surface, never crash the worker
-            log.exception("keyence backup of %s failed", self.station)
-            return self._finish("error", error=f"{type(e).__name__}: {e}")
-
-    def _finish(self, status, error="") -> dict:
-        self._set(status=status, error=error, current="",
-                  finished=_now().isoformat(timespec="seconds"))
-        return self.snapshot()
 
     def _pull_camera(self, host, label, dated: Path, done, nbytes):
         """Connect to one CV-X, enumerate cv-x/setting (+box), and download each
@@ -226,7 +138,6 @@ class KeyenceBackupJob:
                     log.info("skipped %s (%s)", rel, e)
                 self._set(done=done, bytes=nbytes)
                 if self._throttle:
-                    import time
                     time.sleep(self._throttle)
             return done, nbytes
         finally:
@@ -257,45 +168,6 @@ class KeyenceBackupJob:
         except Exception:  # noqa: BLE001
             pass
         return ftp
-
-    def _write_meta(self, dated: Path, when: _dt.datetime, *, complete: bool,
-                    files: int = 0, nbytes: int = 0, errors: list | None = None):
-        meta = {
-            "robot": self.station, "line": self.line, "plant": self.plant,
-            "host": self.host, "taken": when.isoformat(timespec="seconds"),
-            "type": BACKUP_TYPE, "device_type": "camera-keyence",
-            "cameras": [c.get("label") for c in self.cameras],
-            "files": files, "bytes": nbytes, "source": "ftp",
-            "complete": complete,
-        }
-        if errors:
-            meta["errors"] = errors
-        tmp = dated / "backup.json.tmp"
-        tmp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-        tmp.replace(dated / "backup.json")
-
-    def _write_sidecars(self, dated: Path, when: _dt.datetime, files: int,
-                        nbytes: int, errors: list):
-        note = self.note.strip() or (
-            f"keyence backup of {self.station} taken {when.strftime('%Y-%m-%d %H:%M:%S')}")
-        (dated / "notes.txt").write_text(note + "\n", encoding="utf-8")
-        self._write_meta(dated, when, complete=True, files=files, nbytes=nbytes, errors=errors)
-
-    def library_match(self) -> dict:
-        dated = self.snapshot().get("dated_path", "")
-        history_root = str(Path(dated).parent.parent) if dated else ""
-        ips = [c.get("host") for c in self.cameras if c.get("host")]
-        return {"robot": self.station, "line": self.line, "plant": self.plant,
-                "device_type": "camera-keyence", "ips": ips, "history_root": history_root}
-
-    def library_backup(self) -> dict:
-        s = self.snapshot()
-        return {
-            "path": s["dated_path"], "taken": s["started"],
-            "type": BACKUP_TYPE, "files": s["done"], "bytes": s["bytes"],
-            "source": "ftp", "note": self.note,
-        }
-
 
 # -- pre-flight probe + read-only diagnose ---------------------------------------
 

@@ -96,6 +96,14 @@ def test_patch_addr_rewrites_advertised_ip_same_length():
         assert len(patched) == len(raw)
         assert b"TCP:192.0.2.9\x00" in patched
         assert cx._ADDR_RE.search(raw), f"chan{p}_tx.bin lost its addr field"
+    # a field too small for the dialed ip must fail loudly, never silently
+    # replay the capture-time address
+    tiny = b"TCP:1.2.3.4" + bytes([0])
+    try:
+        cx._patch_addr(tiny, "100.100.100.100")
+        raise AssertionError("expected ValueError for a too-small addr field")
+    except ValueError:
+        pass
 
 
 # -- JPEG harvest ------------------------------------------------------------
@@ -226,7 +234,7 @@ def test_send_mouse_clamps_to_screen():
     s._socks[cx.CTRL_PORT] = fake
     s.send_mouse(cx.EV_MOVE, 99999, -40)
     b = fake.sent
-    assert _u32(b, 48) == cx.SCREEN_W
+    assert _u32(b, 48) == cx.SCREEN_W - 1   # clamped to the last pixel
     assert _u32(b, 52) == 0
 
 
