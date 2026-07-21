@@ -34,15 +34,12 @@ testing is never the first validation.
 """
 from __future__ import annotations
 
-import datetime as _dt
 import json
 import logging
 import os
 import re
 import shutil
-import threading
 import time
-import uuid
 from pathlib import Path
 
 from . import ftpbackup
@@ -67,10 +64,6 @@ MTX_SHARE = "mtxuser"
 IMAGES_PARTS = ("Documents", "Matrox Design Assistant", "SavedImages")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")     # SavedImages/<YYYY-MM-DD>
 BACKUP_TYPE = "matrox da + latest images"
-
-
-def _now() -> _dt.datetime:
-    return _dt.datetime.now()
 
 
 # -- SMB session (native Windows, via mpr.dll) -----------------------------------
@@ -300,112 +293,28 @@ def _copy_file(src: Path, dest: Path, *, retries: int = 2) -> int:
 
 # -- the job ---------------------------------------------------------------------
 
-class CameraBackupJob:
+class CameraBackupJob(ftpbackup.CameraJobBase):
     """One Matrox-camera-station backup run. Construct, then .run() on a worker
     thread; poll .snapshot() for live progress; .cancel() requests a graceful stop
-    between files."""
+    between files. The state machine, crash-safety and library record live in
+    ftpbackup.CameraJobBase; this class is the SMB transport."""
+
+    DEVICE_TYPE = "camera-mtx"
+    TYPE_STR = BACKUP_TYPE
+    SOURCE = "smb"
+    NOTE_PREFIX = "matrox backup of"
+    LOG_LABEL = "mtx"
+    PULL_ERRORS = (OSError,)
 
     def __init__(self, host, dest_root, plant, line, station, *,
                  cameras=None, user=MTX_USER, passwd=MTX_PASS,
                  note="", run_id="", mount=_smb_mount, throttle=0.0, on_complete=None):
-        self.id = uuid.uuid4().hex
-        self.run_id = run_id or ""
-        self.host = host
-        self.dest_root = Path(dest_root)
-        self.plant = plant or ""
-        self.line = line or ""
-        self.station = station or ""
-        self.cameras = list(cameras) if cameras else [{"label": "CAM1", "host": host}]
+        super().__init__(host, dest_root, plant, line, station, cameras=cameras,
+                         note=note, run_id=run_id, throttle=throttle,
+                         on_complete=on_complete)
         self.user = user or ""
         self.passwd = passwd or ""
-        self.note = note or ""
         self._mount = mount
-        self._throttle = throttle
-        self._on_complete = on_complete
-
-        self._cancel = threading.Event()
-        self._lock = threading.Lock()
-        self._p = {
-            "id": self.id, "run_id": self.run_id, "status": "pending", "host": host,
-            "robot": self.station, "line": self.line, "plant": self.plant,
-            "device_type": "camera-mtx", "cameras": [c["label"] for c in self.cameras],
-            "total": 0, "done": 0, "bytes": 0, "current": "",
-            "skipped": [], "error": "", "dated_path": "", "latest_path": "",
-            "started": "", "finished": "",
-        }
-
-    def _set(self, **kw):
-        with self._lock:
-            self._p.update(kw)
-
-    def snapshot(self) -> dict:
-        with self._lock:
-            s = dict(self._p)
-            s["skipped"] = list(self._p["skipped"])
-            s["cameras"] = list(self._p["cameras"])
-        return s
-
-    def cancel(self):
-        self._cancel.set()
-
-    @property
-    def cancelled(self) -> bool:
-        return self._cancel.is_set()
-
-    def run(self) -> dict:
-        self._set(status="connecting", started=_now().isoformat(timespec="seconds"))
-        when = _now()
-        dated = ftpbackup.dated_dir(self.dest_root, self.plant, self.line, self.station, when)
-        try:
-            dated.mkdir(parents=True, exist_ok=True)
-            self._set(dated_path=str(dated))
-            # started-marker written FIRST: backup.json exists from the first
-            # moment with complete:false, and only _write_sidecars - the LAST step
-            # of a successful pull - flips it true. A pull that dies mid-copy is
-            # then self-identifying on disk, and the library rescan demotes it
-            # instead of adopting it as the newest backup (matches ftpbackup).
-            self._write_meta(dated, when, complete=False)
-
-            done = 0
-            nbytes = 0
-            errors: list[str] = []
-            for cam in self.cameras:
-                if self.cancelled:
-                    return self._finish("cancelled")
-                label = ftpbackup._safe_name(cam.get("label") or "CAM1")
-                chost = cam.get("host") or self.host
-                try:
-                    done, nbytes = self._pull_camera(chost, label, dated, done, nbytes)
-                except OSError as e:
-                    msg = f"{label}@{chost}: {type(e).__name__}: {e}"
-                    log.warning("camera pull failed %s", msg)
-                    errors.append(msg)
-
-            if self.cancelled:
-                return self._finish("cancelled")
-            if done == 0:
-                return self._finish("error", error=errors[0] if errors else "no files pulled")
-
-            self._write_sidecars(dated, when, done, nbytes, errors)
-            latest = ftpbackup.mirror_latest(
-                dated, ftpbackup.latest_dir(self.dest_root, self.plant, self.line, self.station),
-                label=self.station)
-            self._set(latest_path=str(latest) if latest else "")
-            result = self._finish("done", error="; ".join(errors))
-            if self._on_complete:
-                try:
-                    self._on_complete(self)
-                except Exception:  # noqa: BLE001 - registration must not fail the backup
-                    log.exception("on_complete callback failed for %s", self.station)
-            return result
-        except Exception as e:  # noqa: BLE001 - surface, never crash the worker
-            log.exception("mtx backup of %s failed", self.station)
-            return self._finish("error", error=f"{type(e).__name__}: {e}")
-
-    def _finish(self, status, error="") -> dict:
-        self._set(status=status, error=error, current="",
-                  finished=_now().isoformat(timespec="seconds"))
-        return self.snapshot()
 
     def _pull_camera(self, host, label, dated: Path, done, nbytes):
         """Mount one camera's share, enumerate da/ + newest images, and copy each
@@ -438,45 +347,6 @@ class CameraBackupJob:
             return done, nbytes
         finally:
             cleanup()
-
-    def _write_meta(self, dated: Path, when: _dt.datetime, *, complete: bool,
-                    files: int = 0, nbytes: int = 0, errors: list | None = None):
-        meta = {
-            "robot": self.station, "line": self.line, "plant": self.plant,
-            "host": self.host, "taken": when.isoformat(timespec="seconds"),
-            "type": BACKUP_TYPE, "device_type": "camera-mtx",
-            "cameras": [c.get("label") for c in self.cameras],
-            "files": files, "bytes": nbytes, "source": "smb",
-            "complete": complete,
-        }
-        if errors:
-            meta["errors"] = errors
-        tmp = dated / "backup.json.tmp"
-        tmp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-        tmp.replace(dated / "backup.json")
-
-    def _write_sidecars(self, dated: Path, when: _dt.datetime, files: int,
-                        nbytes: int, errors: list):
-        note = self.note.strip() or (
-            f"matrox backup of {self.station} taken {when.strftime('%Y-%m-%d %H:%M:%S')}")
-        (dated / "notes.txt").write_text(note + "\n", encoding="utf-8")
-        self._write_meta(dated, when, complete=True, files=files, nbytes=nbytes, errors=errors)
-
-    def library_match(self) -> dict:
-        dated = self.snapshot().get("dated_path", "")
-        history_root = str(Path(dated).parent.parent) if dated else ""
-        ips = [c.get("host") for c in self.cameras if c.get("host")]
-        return {"robot": self.station, "line": self.line, "plant": self.plant,
-                "device_type": "camera-mtx", "ips": ips, "history_root": history_root}
-
-    def library_backup(self) -> dict:
-        s = self.snapshot()
-        return {
-            "path": s["dated_path"], "taken": s["started"],
-            "type": BACKUP_TYPE, "files": s["done"], "bytes": s["bytes"],
-            "source": "smb", "note": self.note,
-        }
-
 
 # -- probe / diagnose / name (all over SMB) --------------------------------------
 

@@ -202,29 +202,31 @@ def _walk(ftp, rel: str, out: list, cancel=None) -> None:
             return
 
 
-class BackupJob:
-    """One backup run. Construct, then .run() on a worker thread; poll .snapshot()
-    for live progress; .cancel() requests a graceful stop between files."""
+class _JobBase:
+    """The backup-job state machine every transport shares: the progress dict
+    behind _set/snapshot/cancel, _finish, the crash-safety invariants
+    (backup.json written FIRST with complete:false and flipped true only by
+    _write_sidecars - the LAST step of a successful pull - so a job that dies
+    mid-download is self-identifying on disk and never adopted as latest), the
+    Latest mirror, the guarded on_complete, and the library record. Subclasses
+    supply the transport (run()/_pull_camera) and their meta strings."""
+
+    DEVICE_TYPE = ""             # "" = a FANUC robot (no device_type keys written)
+    TYPE_STR = ""                # backup.json / library "type" string
+    SOURCE = ""                  # backup.json / library "source" ("ftp"/"smb")
+    NOTE_PREFIX = "backup of"    # notes.txt default wording
+    LOG_LABEL = "backup"         # log wording on failures
 
     def __init__(self, host, dest_root, plant, line, robot, *,
-                 user="", passwd="", passive=True, port=21,
-                 devices=None, note="", recurse_fr=False, run_id="",
-                 ftp_factory=ftplib.FTP, throttle=0.03, on_complete=None):
+                 note="", run_id="", throttle=0.0, on_complete=None):
         self.id = uuid.uuid4().hex
         self.run_id = run_id or ""
         self.host = host
-        self.port = int(port or 21)
         self.dest_root = Path(dest_root)
         self.plant = plant or ""
         self.line = line or ""
         self.robot = robot or ""
-        self.user = user or ""
-        self.passwd = passwd or ""
-        self.passive = passive
-        self.devices = list(devices) if devices else list(DEFAULT_DEVICES)
         self.note = note or ""
-        self.recurse_fr = recurse_fr
-        self._ftp_factory = ftp_factory
         self._throttle = throttle
         self._on_complete = on_complete  # callback(job) after a successful run
 
@@ -248,6 +250,8 @@ class BackupJob:
         with self._lock:
             s = dict(self._p)
             s["skipped"] = list(self._p["skipped"])
+            if "cameras" in s:
+                s["cameras"] = list(s["cameras"])
         return s
 
     def cancel(self):
@@ -256,6 +260,176 @@ class BackupJob:
     @property
     def cancelled(self) -> bool:
         return self._cancel.is_set()
+
+    def _finish(self, status, error="") -> dict:
+        self._set(status=status, error=error, current="",
+                  finished=_now().isoformat(timespec="seconds"))
+        return self.snapshot()
+
+    def _fire_on_complete(self):
+        """Post-success registration hook, guarded so library/identity work can
+        NEVER fail a finished backup (load-bearing - the tests encode it)."""
+        if self._on_complete:
+            try:
+                self._on_complete(self)
+            except Exception:  # noqa: BLE001 - registration must not fail the backup
+                log.exception("on_complete callback failed for %s", self.robot)
+
+    # -- on disk -------------------------------------------------------------
+
+    def _meta_extra(self) -> dict:
+        """Per-transport backup.json fields (devices / device_type+cameras)."""
+        return {}
+
+    def _write_meta(self, dated: Path, when: _dt.datetime, *, complete: bool,
+                    files: int = 0, nbytes: int = 0, errors: list | None = None):
+        meta = {
+            "robot": self.robot, "line": self.line, "plant": self.plant,
+            "host": self.host, "taken": when.isoformat(timespec="seconds"),
+            "type": self.TYPE_STR, **self._meta_extra(),
+            "files": files, "bytes": nbytes, "source": self.SOURCE,
+            "complete": complete,
+        }
+        if errors:
+            meta["errors"] = errors
+        tmp = dated / "backup.json.tmp"
+        tmp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        tmp.replace(dated / "backup.json")
+
+    def _write_sidecars(self, dated: Path, when: _dt.datetime, files: int,
+                        nbytes: int, errors: list | None = None):
+        note = self.note.strip() or (
+            f"{self.NOTE_PREFIX} {self.robot} taken {when.strftime('%Y-%m-%d %H:%M:%S')}")
+        (dated / "notes.txt").write_text(note + "\n", encoding="utf-8")
+        self._write_meta(dated, when, complete=True, files=files, nbytes=nbytes,
+                         errors=errors)
+
+    def _mirror_latest(self, dated: Path) -> Path | None:
+        """Overwrite <...>/Latest/<robot> with this snapshot (see mirror_latest)."""
+        latest = latest_dir(self.dest_root, self.plant, self.line, self.robot)
+        return mirror_latest(dated, latest, label=self.robot)
+
+    # -- library record ------------------------------------------------------
+
+    def _ips(self) -> list:
+        return [self.host] if self.host else []
+
+    def library_match(self) -> dict:
+        dated = self.snapshot().get("dated_path", "")
+        # <root>/<plant>/<line>/<robot>/<date>/<time> -> the robot folder
+        history_root = str(Path(dated).parent.parent) if dated else ""
+        m = {"robot": self.robot, "line": self.line, "plant": self.plant,
+             "ips": self._ips(), "history_root": history_root}
+        if self.DEVICE_TYPE:
+            m["device_type"] = self.DEVICE_TYPE
+        return m
+
+    def library_backup(self) -> dict:
+        s = self.snapshot()
+        return {
+            "path": s["dated_path"], "taken": s["started"],
+            "type": self.TYPE_STR, "files": s["done"], "bytes": s["bytes"],
+            "source": self.SOURCE, "note": self.note,
+        }
+
+
+class CameraJobBase(_JobBase):
+    """The shared run() skeleton for multi-camera station backups: loop the
+    station's cameras, capture one camera's transport failure without sinking
+    the others, and error only when NOTHING was pulled. Subclasses implement
+    _pull_camera(host, label, dated, done, nbytes) -> (done, nbytes) and set
+    PULL_ERRORS to their transport's exception tuple."""
+
+    PULL_ERRORS: tuple = (OSError,)
+
+    def __init__(self, host, dest_root, plant, line, station, *,
+                 cameras=None, note="", run_id="", throttle=0.0, on_complete=None):
+        super().__init__(host, dest_root, plant, line, station, note=note,
+                         run_id=run_id, throttle=throttle, on_complete=on_complete)
+        self.station = station or ""     # alias: cameras call their leaf a station
+        self.cameras = list(cameras) if cameras else [{"label": "CAM1", "host": host}]
+        self._p.update({"device_type": self.DEVICE_TYPE,
+                        "cameras": [c["label"] for c in self.cameras]})
+
+    def _meta_extra(self) -> dict:
+        return {"device_type": self.DEVICE_TYPE,
+                "cameras": [c.get("label") for c in self.cameras]}
+
+    def _ips(self) -> list:
+        return [c.get("host") for c in self.cameras if c.get("host")]
+
+    def _pull_camera(self, host, label, dated: Path, done, nbytes):
+        raise NotImplementedError
+
+    def run(self) -> dict:
+        self._set(status="connecting", started=_now().isoformat(timespec="seconds"))
+        when = _now()
+        dated = dated_dir(self.dest_root, self.plant, self.line, self.robot, when)
+        try:
+            dated.mkdir(parents=True, exist_ok=True)
+            self._set(dated_path=str(dated))
+            # started-marker written FIRST: backup.json exists from the first
+            # moment with complete:false, and only _write_sidecars - the LAST
+            # step of a successful pull - flips it true (see _JobBase).
+            self._write_meta(dated, when, complete=False)
+
+            done = 0
+            nbytes = 0
+            errors: list[str] = []
+            for cam in self.cameras:
+                if self.cancelled:
+                    return self._finish("cancelled")
+                label = _safe_name(cam.get("label") or "CAM1")
+                chost = cam.get("host") or self.host
+                try:
+                    done, nbytes = self._pull_camera(chost, label, dated, done, nbytes)
+                except self.PULL_ERRORS as e:
+                    msg = f"{label}@{chost}: {type(e).__name__}: {e}"
+                    log.warning("%s pull failed %s", self.LOG_LABEL, msg)
+                    errors.append(msg)
+
+            if self.cancelled:
+                return self._finish("cancelled")
+            if done == 0:
+                return self._finish("error", error=errors[0] if errors else "no files pulled")
+
+            self._write_sidecars(dated, when, done, nbytes, errors)
+            latest = self._mirror_latest(dated)
+            self._set(latest_path=str(latest) if latest else "")
+            result = self._finish("done", error="; ".join(errors))
+            self._fire_on_complete()
+            return result
+        except Exception as e:  # noqa: BLE001 - surface, never crash the worker
+            log.exception("%s backup of %s failed", self.LOG_LABEL, self.robot)
+            return self._finish("error", error=f"{type(e).__name__}: {e}")
+
+
+class BackupJob(_JobBase):
+    """One FANUC backup run. Construct, then .run() on a worker thread; poll
+    .snapshot() for live progress; .cancel() requests a graceful stop between
+    files."""
+
+    TYPE_STR = "all of above"
+    SOURCE = "ftp"
+    NOTE_PREFIX = "backup of"
+    LOG_LABEL = "backup"
+
+    def __init__(self, host, dest_root, plant, line, robot, *,
+                 user="", passwd="", passive=True, port=21,
+                 devices=None, note="", recurse_fr=False, run_id="",
+                 ftp_factory=ftplib.FTP, throttle=0.03, on_complete=None):
+        super().__init__(host, dest_root, plant, line, robot, note=note,
+                         run_id=run_id, throttle=throttle, on_complete=on_complete)
+        self.port = int(port or 21)
+        self.user = user or ""
+        self.passwd = passwd or ""
+        self.passive = passive
+        self.devices = list(devices) if devices else list(DEFAULT_DEVICES)
+        self.recurse_fr = recurse_fr
+        self._ftp_factory = ftp_factory
+
+    def _meta_extra(self) -> dict:
+        return {"devices": self.devices}
 
     # -- run -----------------------------------------------------------------
 
@@ -296,11 +470,7 @@ class BackupJob:
             latest = self._mirror_latest(dated)
             self._set(latest_path=str(latest) if latest else "")
             result = self._finish("done")
-            if self._on_complete:
-                try:
-                    self._on_complete(self)
-                except Exception:  # noqa: BLE001 - registration must not fail the backup
-                    log.exception("on_complete callback failed for %s", self.robot)
+            self._fire_on_complete()
             return result
         except ftplib.all_errors as e:
             log.warning("ftp backup of %s@%s failed: %s", self.robot, self.host, e)
@@ -317,11 +487,6 @@ class BackupJob:
                         ftp.close()
                     except Exception:  # noqa: BLE001
                         pass
-
-    def _finish(self, status, error="") -> dict:
-        self._set(status=status, error=error, current="",
-                  finished=_now().isoformat(timespec="seconds"))
-        return self.snapshot()
 
     # -- ftp -----------------------------------------------------------------
 
@@ -426,48 +591,6 @@ class BackupJob:
         # MD: is flat, so CWD is already the device and a bare basename RETRs;
         # the dest keeps the (possibly nested FR:) relpath.
         return retrieve(ftp, rel.rsplit("/", 1)[-1], dated / rel.replace("/", os.sep))
-
-    # -- on disk -------------------------------------------------------------
-
-    def _write_meta(self, dated: Path, when: _dt.datetime, *, complete: bool,
-                    files: int = 0, nbytes: int = 0):
-        meta = {
-            "robot": self.robot, "line": self.line, "plant": self.plant,
-            "host": self.host, "taken": when.isoformat(timespec="seconds"),
-            "type": "all of above", "devices": self.devices,
-            "files": files, "bytes": nbytes, "source": "ftp",
-            "complete": complete,
-        }
-        tmp = dated / "backup.json.tmp"
-        tmp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-        tmp.replace(dated / "backup.json")
-
-    def _write_sidecars(self, dated: Path, when: _dt.datetime, files: int, nbytes: int):
-        note = self.note.strip() or f"backup of {self.robot} taken {when.strftime('%Y-%m-%d %H:%M:%S')}"
-        (dated / "notes.txt").write_text(note + "\n", encoding="utf-8")
-        self._write_meta(dated, when, complete=True, files=files, nbytes=nbytes)
-
-    def _mirror_latest(self, dated: Path) -> Path | None:
-        """Overwrite <...>/Latest/<robot> with this snapshot (see mirror_latest)."""
-        latest = latest_dir(self.dest_root, self.plant, self.line, self.robot)
-        return mirror_latest(dated, latest, label=self.robot)
-
-    # -- library record ------------------------------------------------------
-
-    def library_match(self) -> dict:
-        dated = self.snapshot().get("dated_path", "")
-        # <root>/<plant>/<line>/<robot>/<date>/<time> -> the robot folder
-        history_root = str(Path(dated).parent.parent) if dated else ""
-        return {"robot": self.robot, "line": self.line, "plant": self.plant,
-                "ips": [self.host] if self.host else [], "history_root": history_root}
-
-    def library_backup(self) -> dict:
-        s = self.snapshot()
-        return {
-            "path": s["dated_path"], "taken": s["started"],
-            "type": "all of above", "files": s["done"], "bytes": s["bytes"],
-            "source": "ftp", "note": self.note,
-        }
 
 
 def probe_controller(host, *, user="", passwd="", passive=True, port=21,
