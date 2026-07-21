@@ -44,7 +44,8 @@
 
     function openFullscreen(rel) {
       var overlay = BV.el("div", { style:
-        "position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.93);cursor:zoom-out;" +
+        "position:fixed;inset:0;z-index:9999;cursor:zoom-out;" +
+        "background:color-mix(in srgb, var(--bg) 93%, transparent);" +
         "display:flex;align-items:center;justify-content:center" });
       var fimg = BV.el("img", { alt: "", style: "max-width:98vw;max-height:98vh;object-fit:contain" });
       overlay.appendChild(fimg);
