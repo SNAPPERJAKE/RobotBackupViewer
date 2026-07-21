@@ -970,11 +970,15 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .home-library.cam-mode .home-lib-selacts,
 .home-library.cam-mode .lib-sort { display: none; }
 
-/* multi-cam grid: live camera tiles inside the same plant/line folders */
+/* multi-cam grid: live camera tiles inside the same plant/line folders.
+   display rides the .open rule: a flat display:grid here outranked the shared
+   fold rules — collapsed lines kept showing tiles while open ones stacked
+   them full-width (the .open>block rule won). Folded = hidden, open = grid. */
 .lib-line-body.cam-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 0.7rem; padding: 0.2rem 0 0.6rem 0.6rem;
 }
+.bv-collapsible.open > .lib-line-body.cam-grid { display: grid; }
 .cam-tile {
   border: 1px solid var(--edge); border-radius: var(--radius); background: var(--bg2);
   overflow: hidden; cursor: pointer; transition: background var(--trans);
