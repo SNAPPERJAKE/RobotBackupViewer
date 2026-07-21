@@ -539,6 +539,35 @@ def diagnose_camera(host, *, user=MTX_USER, passwd=MTX_PASS, mount=_smb_mount) -
     return out
 
 
+def name_from_backup(snapshot) -> dict:
+    """Best-effort {name, model} from the newest SavedImages .txt sidecar already
+    PULLED into a snapshot folder - the offline twin of resolve_camera_name. This
+    is how a camera that could not be named live (no images yet at scan time, a
+    flaky read) still teaches the library its real name from any completed backup,
+    the way a robot self-names from SUMMARY.DG. Blanks on any failure so naming
+    never sinks a backup."""
+    out = {"name": "", "model": ""}
+    try:
+        root = Path(snapshot or "")
+        if not root.is_dir():
+            return out
+        # snapshot layout: <dated>/<CAM label>/Documents/.../SavedImages/<date>/*.txt
+        txts = [p for p in root.rglob("*.txt")
+                if p.parent.parent.name == IMAGES_PARTS[-1] and _DATE_RE.match(p.parent.name)]
+        if not txts:
+            return out
+        txts.sort(key=lambda p: (p.parent.name, p.name))     # newest date, newest file
+        from .parsers import mtx_saved_image
+        info = mtx_saved_image.parse_saved_image(
+            Path(ftpbackup.long_path(txts[-1])).read_text(encoding="cp1252", errors="replace"))
+        cam = info.get("camera") or {}
+        out["name"] = cam.get("name", "") or ""
+        out["model"] = cam.get("type", "") or ""
+        return out
+    except OSError:
+        return out
+
+
 def resolve_camera_name(host, *, user=MTX_USER, passwd=MTX_PASS, mount=_smb_mount) -> dict:
     """Best-effort {name, model} from the newest SavedImages .txt sidecar (the
     camera analogue of the robot's SUMMARY.DG). Blanks on any failure so naming

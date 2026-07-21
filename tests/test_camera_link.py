@@ -71,6 +71,49 @@ def test_auto_link_still_ambiguous_when_no_same_cell(monkeypatch, tmp_path):
     assert "CELL-01RB172-R02CAM01" in res["ambiguous"]
 
 
+def test_auto_link_same_name_fallback(monkeypatch, tmp_path):
+    """A robot and a camera sharing one name (different device types) link even
+    when the station+robot key can't read the name. Case-insensitive."""
+    _iso(monkeypatch, tmp_path)
+    robot = library.add_robot({"robot": "GLUECELL-EYE", "line": "RBB01", "device_type": "robot"})
+    cam = library.add_robot({"robot": "GlueCell-Eye", "line": "RBB01", "device_type": "camera-mtx"})
+    res = library.auto_link_cameras()
+    assert res["linked"] == [{"camera": "GlueCell-Eye", "robot": "GLUECELL-EYE"}]
+    assert [c["id"] for c in library.cameras_for_robot(robot["id"])] == [cam["id"]]
+
+
+def test_auto_link_same_name_still_guards_ambiguity(monkeypatch, tmp_path):
+    """The same-name fallback keeps the ambiguity rules: a twin name in two
+    lines with no same-cell tiebreak stays unlinked (manual)."""
+    _iso(monkeypatch, tmp_path)
+    library.add_robot({"robot": "EYE-STATION", "plant": "P", "line": "L1", "device_type": "robot"})
+    library.add_robot({"robot": "EYE-STATION", "plant": "P", "line": "L2", "device_type": "robot"})
+    library.add_robot({"robot": "EYE-STATION", "plant": "Q", "line": "X", "device_type": "camera-mtx"})
+    res = library.auto_link_cameras()
+    assert res["linked"] == []
+    assert "EYE-STATION" in res["ambiguous"]
+
+
+def test_teach_camera_name(monkeypatch, tmp_path):
+    """A placeholder(IP)-named camera takes its taught name (old name kept as an
+    alias, model fills); a real name is never overwritten; non-cameras refuse."""
+    _iso(monkeypatch, tmp_path)
+    cam = library.add_robot({"robot": "192.0.2.7", "line": "RBB01",
+                             "device_type": "camera-mtx", "ips": ["192.0.2.7"]})
+    e = library.teach_camera_name(cam["id"], "CELL-01RB172-R01CAM02", "Matrox GTX2000")
+    assert e["robot"] == "CELL-01RB172-R01CAM02"
+    assert e["model"] == "Matrox GTX2000"
+    assert {"plant": "", "line": "RBB01", "robot": "192.0.2.7"} in e["aliases"]
+
+    e2 = library.teach_camera_name(cam["id"], "SOMETHING-ELSE")
+    assert e2["robot"] == "CELL-01RB172-R01CAM02"           # real name kept
+
+    rob = library.add_robot({"robot": "RB172R01B01", "device_type": "robot"})
+    assert library.teach_camera_name(rob["id"], "X") is None    # robots refuse
+    assert library.teach_camera_name("nope", "X") is None       # unknown id
+    assert library.teach_camera_name(cam["id"], "") is None     # blank name
+
+
 def test_link_persists_across_rescan(monkeypatch, tmp_path):
     """A camera's link survives a folder rescan (it's carried in robot.json)."""
     _iso(monkeypatch, tmp_path)

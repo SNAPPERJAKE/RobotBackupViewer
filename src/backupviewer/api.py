@@ -2274,10 +2274,24 @@ class Api:
             log.warning("could not persist library root (backup continues)")
 
         def _register(job):
-            library.register_backup(
+            entry = library.register_backup(
                 job.library_match(), job.library_backup(),
                 latest_path=job.snapshot().get("latest_path", ""),
             )
+            # A Matrox camera self-names from the backup it just pulled (newest
+            # saved-image sidecar) when its entry only carries a placeholder -
+            # the camera twin of a robot naming itself from SUMMARY.DG - and
+            # then auto-linking gets a fresh chance to seat it under its robot.
+            # Best-effort: identity work must never fail a finished backup.
+            if spec.get("device_type") == "camera-mtx":
+                try:
+                    ident = mtxbackup.name_from_backup(job.snapshot().get("dated_path", ""))
+                    if ident.get("name"):
+                        library.teach_camera_name(
+                            entry["id"], ident["name"], ident.get("model", ""))
+                    library.auto_link_cameras()
+                except Exception:  # noqa: BLE001
+                    log.exception("camera self-name/auto-link after backup failed")
 
         # in-flight run joining: a backup fired while a run is still live joins
         # that run instead of stacking a new one. Every job kind (FANUC + both
