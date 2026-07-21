@@ -4,10 +4,11 @@
    a selection checkbox + edit; clicking the row opens the robot's backup. Per-LINE
    controls (select-all / backup / trash) act on that line's selected robots, and
    "backup" pulls fresh FTP backups for all selected at once, showing live per-row
-   progress. A head toggle flips the same library into MULTI-CAM: live camera
+   progress. A head toggle flips the same library into MULTI-CAM: live Matrox
    tiles in the same plant/line folders, each opening the camera's remote
-   operation on click. Starring a robot pins it — its nested cameras in tow —
-   to the top of its line in both lenses.
+   operation on click (CV-X has no live frame to tile — it stays out of this
+   lens). Starring a robot pins it — its nested cameras in tow — to the top
+   of its line in both lenses.
    Marked shell:true so the router lets it render with no manifest. */
 (function () {
   "use strict";
@@ -634,11 +635,14 @@
       if (r.favorite) favIds[r.id] = 1;
     });
     _camRobotNames = robotNames;
+    /* matrox only: those serve a live HMI frame this grid can show. A CV-X
+       has no image to offer here, so it isn't tiled — its screen mirror
+       stays one click away on its library row / the robot's photos tab */
     var cams = robots.filter(function (r) {
-      return (r.device_type || "").indexOf("camera") === 0;
+      return r.device_type === "camera-mtx";
     });
     if (!cams.length) {
-      body.innerHTML = '<div class="empty-lib">no cameras in the library yet — ' +
+      body.innerHTML = '<div class="empty-lib">no matrox cameras in the library yet — ' +
         "add them with “+ add robot → discover on network”.</div>";
       if (_filterBox) _filterBox.setCount(undefined, 0);
       return;
@@ -656,14 +660,13 @@
     startCamRefresh();
   }
 
-  /* one live tile: the camera's current HMI image (Matrox), or an honest note
-     for CV-X / no-IP entries. Clicking goes straight to remote operation. */
+  /* one live tile: the camera's current HMI image, or an honest note for a
+     no-IP entry. Clicking goes straight to remote operation. */
   function camTile(c) {
     var ip = (c.ips && c.ips[0]) || "";
-    var isCvx = c.device_type === "camera-keyence";
     var tile = BV.el("div", { class: "cam-tile" + (ip ? "" : " no-ip") });
     var box = BV.el("div", { class: "cam-tile-box" });
-    if (ip && !isCvx) {
+    if (ip) {
       var img = BV.el("img", { class: "cam-live", alt: "" });
       img.dataset.ip = ip;
       /* a camera that stops answering keeps its slot and says so; the next
@@ -674,15 +677,13 @@
       box.appendChild(img);
       box.appendChild(BV.el("div", { class: "cam-tile-note dim" }, "no image — not answering"));
     } else {
-      box.appendChild(BV.el("div", { class: "cam-tile-note dim" },
-        ip ? "CV-X — live view opens in the remote" : "no IP on record"));
+      box.appendChild(BV.el("div", { class: "cam-tile-note dim" }, "no IP on record"));
     }
     tile.appendChild(box);
 
     var main = BV.el("div", { class: "cam-tile-main" });
     main.appendChild(BV.el("div", null,
-      '<span class="lib-robot-name">' + BV.esc(c.robot || "(unnamed)") + "</span> " +
-      BV.pill(isCvx ? "CV-X" : "MTX", "acc")));
+      '<span class="lib-robot-name">' + BV.esc(c.robot || "(unnamed)") + "</span>"));
     var meta = [];
     if (ip) meta.push(BV.esc(ip));
     var linked = _camRobotNames[c.linked_robot_id];
@@ -694,8 +695,7 @@
     tile.title = ip ? "remote operation · " + ip : "no IP on record";
     tile.addEventListener("click", function () {
       if (!ip) { BV.toast("this camera has no IP on record"); return; }
-      if (isCvx) BV.openCvxRemote(ip, c.robot || ip);
-      else BV.openMtxRemote(ip, c.robot || ip);
+      BV.openMtxRemote(ip, c.robot || ip);
     });
     return tile;
   }
