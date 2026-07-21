@@ -23,5 +23,8 @@ TAB_REQUIREMENTS = {
     "view3d": ["DCSPOS.VA", "DCSVRFY.DG"],
     "sysvars": ["SYSTEM.VA"],
     "mhvalves": ["MHGRIPDT.VA"],
+    # matrox camera: lights up when the backup carries saved inspection photos
+    # (BackupSession special-cases "*photos", like "*programs"/"*alarms")
+    "photos": ["*photos"],
     "files": [],
 }

@@ -30,7 +30,8 @@
   }
 
   /* opts (all per-instance):
-       row(r) -> node          REQUIRED: one robot row, click behavior included
+       row(r, nested) -> node  REQUIRED: one robot row, click behavior included
+                               (nested = a camera indented under its linked robot)
        lineExtras(ln, lineRobots, key) -> node|null   appended to a line head
                                (home hangs its select-all checkbox here)
        matches(r, q) -> bool   row filter (default: robot/model/IP/notes text)
@@ -122,7 +123,6 @@
             lineRobots = lineRobots.slice().sort(cmp);
             shown += lineRobots.length;
             plantRobots += lineRobots.length;
-            lineRobots.forEach(function (r) { visible.push(r); });
             var key = pl + "|||" + ln;
             var lineNode = BV.el("div", { class: "lib-line" });
             var lineHead = BV.el("div", { class: "lib-line-h" });
@@ -138,7 +138,26 @@
               lineBody.appendChild(BV.el("div", { class: "dim lib-empty-note" },
                 "empty line folder — no robot folders yet"));
             }
-            lineRobots.forEach(function (r) { lineBody.appendChild(opts.row(r)); });
+            /* nest linked cameras under the robot they inspect (same line);
+               unlinked cameras and cross-line links stay at top level so
+               nothing disappears. visible gets the NESTED order — it must
+               match what the user sees for shift+click ranges */
+            var lineRobotIds = {};
+            lineRobots.forEach(function (r) {
+              if ((r.device_type || "robot") === "robot") lineRobotIds[r.id] = 1;
+            });
+            lineRobots.forEach(function (r) {
+              var isCam = (r.device_type || "").indexOf("camera") === 0;
+              if (isCam && r.linked_robot_id && lineRobotIds[r.linked_robot_id]) return;
+              visible.push(r);
+              lineBody.appendChild(opts.row(r));
+              lineRobots.forEach(function (c) {
+                if ((c.device_type || "").indexOf("camera") === 0 && c.linked_robot_id === r.id) {
+                  visible.push(c);
+                  lineBody.appendChild(opts.row(c, true));
+                }
+              });
+            });
             fold(lineNode, lineHead, lineBody, key, "line", !!q);
             plantBody.appendChild(lineNode);
             renderedLines++;

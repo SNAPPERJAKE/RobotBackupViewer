@@ -29,6 +29,32 @@ def test_looks_like_backup(tmp_path):
     assert session.looks_like_backup(maint) is True
 
 
+def test_looks_like_backup_camera_markers(tmp_path):
+    # a Keyence cv-x/ tree is distinctive enough to stand alone
+    cvx = tmp_path / "cvx"
+    (cvx / "cv-x" / "setting").mkdir(parents=True)
+    assert session.looks_like_backup(cvx) is True
+
+    # a Matrox export needs da/ AND Documents/ together...
+    mtx = tmp_path / "mtx"
+    (mtx / "da").mkdir(parents=True)
+    (mtx / "Documents").mkdir()
+    assert session.looks_like_backup(mtx) is True
+
+    # ...da/ alone is too common a folder name to claim (a source tree, "DA"
+    # initials) - the tightened guard must leave it be
+    bare_da = tmp_path / "project"
+    (bare_da / "da").mkdir(parents=True)
+    (bare_da / "src").mkdir()
+    assert session.looks_like_backup(bare_da) is False
+
+    # the app's own camera snapshot (CAM<n>/ + backup.json) is always recognised
+    snap = tmp_path / "snap"
+    (snap / "CAM1" / "da").mkdir(parents=True)
+    (snap / "backup.json").write_text("{}", encoding="utf-8")
+    assert session.looks_like_backup(snap) is True
+
+
 def test_find_backup_roots_latest_style(tmp_path):
     # a per-line Latest/ mirror: one backup per robot folder
     parent = tmp_path / "Latest"
@@ -145,7 +171,8 @@ def test_network_scan_finds_only_fanuc():
         "10.0.0.0/24",
         ftp_factory=lambda timeout=None: FakeFTP(timeout),
         host_provider=lambda cidr: hosts,
-        port_check=lambda h, p, t: h in ("10.0.0.1", "10.0.0.5"),  # .9 is down
+        port_check=lambda h, p, t: p == 21 and h in ("10.0.0.1", "10.0.0.5"),  # .9 is down
+        eip_probe=lambda b: [],
     )
     job.run()
     snap = job.snapshot()
@@ -173,7 +200,7 @@ def test_network_scan_name_falls_back_to_ip():
         "10.0.0.0/24",
         ftp_factory=lambda timeout=None: NoName(timeout),
         host_provider=lambda cidr: ["10.0.0.5"],
-        port_check=lambda h, p, t: True,
+        port_check=lambda h, p, t: p == 21, eip_probe=lambda b: [],
     )
     job.run()
     r = job.snapshot()["results"][0]
@@ -197,7 +224,7 @@ def test_network_scan_name_from_summary():
         "10.0.0.0/24",
         ftp_factory=lambda timeout=None: WithSummary(timeout),
         host_provider=lambda cidr: ["10.0.0.5"],
-        port_check=lambda h, p, t: True,
+        port_check=lambda h, p, t: p == 21, eip_probe=lambda b: [],
     )
     job.run()
     r = job.snapshot()["results"][0]
@@ -217,7 +244,7 @@ def test_network_scan_name_from_unlisted_report():
         "10.0.0.0/24",
         ftp_factory=lambda timeout=None: Hidden(timeout),
         host_provider=lambda cidr: ["10.0.0.5"],
-        port_check=lambda h, p, t: True,
+        port_check=lambda h, p, t: p == 21, eip_probe=lambda b: [],
     )
     job.run()
     r = job.snapshot()["results"][0]
@@ -253,10 +280,114 @@ def test_network_scan_name_skips_programs_finds_logbook():
 
     job = discover.NetworkScanJob(
         "10.0.0.0/24", ftp_factory=lambda timeout=None: R30iB(timeout),
-        host_provider=lambda c: ["10.0.0.5"], port_check=lambda h, p, t: True)
+        host_provider=lambda c: ["10.0.0.5"], port_check=lambda h, p, t: p == 21,
+        eip_probe=lambda b: [])
     job.run()
     r = job.snapshot()["results"][0]
     assert r["name"] == "RB232R01B01"   # skipped the programs, RETR'd LOGBOOK by name
+
+
+def test_network_scan_finds_matrox_camera(tmp_path):
+    """A Matrox camera named by the EtherNet/IP broadcast and reachable over SMB
+    (port 445, no FTP) is discovered as camera-mtx and named from its newest
+    SavedImages sidecar - port 21 is closed, so the robot/CV-X FTP path is
+    skipped entirely."""
+    from test_mtxbackup import _make_camera, _mount_factory
+
+    home = _make_camera(tmp_path)                 # newest sidecar names CELL-01RB172-R01CAM02
+    # only SMB (445) answers on the camera; port 21 is closed
+    def port_check(host, port, timeout):
+        return port == 445
+
+    job = discover.NetworkScanJob(
+        "10.0.0.0/24",
+        ftp_factory=lambda timeout=None: None,    # never used (port 21 closed)
+        host_provider=lambda cidr: ["10.0.0.7"],
+        port_check=port_check,
+        mtx_mount=_mount_factory(home),
+        eip_probe=lambda b: [{"ip": "10.0.0.7", "vendor": 1144, "serial": 7,
+                              "product": "Matrox GTX2000"}],
+    )
+    job.run()
+    snap = job.snapshot()
+    assert snap["status"] == "done"
+    assert len(snap["results"]) == 1
+    r = snap["results"][0]
+    assert r["device_type"] == "camera-mtx"
+    assert r["host"] == "10.0.0.7"
+    assert r["name"] == "CELL-01RB172-R01CAM02"    # from the newest sidecar
+    assert r["model"] == "Matrox GTX2000"
+    assert r["has_da"] is True and r["has_images"] is True
+    assert r["backup_ready"] is True and r["via"] == "smb"
+
+
+def test_network_scan_ignores_open_smb_host_without_identity(tmp_path):
+    """The safety guarantee behind the EtherNet/IP gate: a host with SMB (445)
+    open but NOT named a Matrox by the identity broadcast is left completely
+    alone - never authenticated, never adopted. Blindly logging the camera
+    credential into every open-445 host (ordinary PCs, file servers) is exactly
+    what a gentle discovery scan must never do."""
+    from test_mtxbackup import _make_camera, _mount_factory
+
+    home = _make_camera(tmp_path)
+    touched = []
+
+    def spy_mount(host, user, passwd):
+        touched.append(host)                      # records any SMB authentication
+        return _mount_factory(home)(host, user, passwd)
+
+    job = discover.NetworkScanJob(
+        "10.0.0.0/24",
+        ftp_factory=lambda timeout=None: None,
+        host_provider=lambda cidr: ["10.0.0.7"],
+        port_check=lambda h, p, t: p == 445,      # SMB is open...
+        mtx_mount=spy_mount,
+        eip_probe=lambda b: [],                   # ...but the broadcast names no Matrox
+    )
+    job.run()
+    assert job.snapshot()["results"] == []        # not adopted
+    assert touched == []                          # and its share was never touched
+
+
+def test_parse_list_identity():
+    """The EtherNet/IP ListIdentity parser pulls vendor/serial/product from the
+    ODVA byte layout (vendor@48, serial@58, length-prefixed name@62)."""
+    import struct
+    product = b"Matrox Imaging Vision System"
+    buf = bytearray(63 + len(product) + 1)
+    struct.pack_into("<H", buf, 48, discover.MATROX_VENDOR_ID)
+    struct.pack_into("<I", buf, 58, 305419896)
+    buf[62] = len(product)
+    buf[63:63 + len(product)] = product
+    info = discover._parse_list_identity(bytes(buf))
+    assert info["vendor"] == discover.MATROX_VENDOR_ID
+    assert info["serial"] == 305419896
+    assert info["product"] == "Matrox Imaging Vision System"
+    assert discover._parse_list_identity(b"too short") is None
+
+
+def test_network_scan_finds_matrox_via_ethernet_ip_when_smb_closed():
+    """A Matrox camera whose SMB (445) is closed is STILL discovered by its
+    EtherNet/IP identity (vendor 1144), flagged backup_ready=False so it surfaces
+    for manual handling rather than vanishing - the audit's core requirement."""
+    def eip(bcast):
+        return [{"ip": "10.0.0.7", "vendor": 1144, "serial": 99,
+                 "product": "Matrox Imaging Vision System"}]
+
+    job = discover.NetworkScanJob(
+        "10.0.0.0/24",
+        ftp_factory=lambda timeout=None: None,
+        host_provider=lambda cidr: ["10.0.0.7"],
+        port_check=lambda h, p, t: False,          # nothing open (SMB closed too)
+        eip_probe=eip,
+    )
+    job.run()
+    r = job.snapshot()["results"][0]
+    assert r["device_type"] == "camera-mtx"
+    assert r["host"] == "10.0.0.7"
+    assert r["serial"] == 99
+    assert r["model"] == "Matrox Imaging Vision System"
+    assert r["backup_ready"] is False and r["via"] == "eip"
 
 
 def test_resolve_robot_name_roots_at_md():
