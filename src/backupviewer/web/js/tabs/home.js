@@ -4,7 +4,11 @@
    a selection checkbox + edit; clicking the row opens the robot's backup. Per-LINE
    controls (select-all / backup / trash) act on that line's selected robots, and
    "backup" pulls fresh FTP backups for all selected at once, showing live per-row
-   progress. Marked shell:true so the router lets it render with no manifest. */
+   progress. A head toggle flips the same library into MULTI-CAM: live camera
+   tiles in the same plant/line folders, each opening the camera's remote
+   operation on click. Starring a robot pins it — its nested cameras in tow —
+   to the top of its line in both lenses.
+   Marked shell:true so the router lets it render with no manifest. */
 (function () {
   "use strict";
 
@@ -22,8 +26,12 @@
   var _lastData = null;         /* last lib_list payload — filter re-renders without a refetch */
   var _liveTargets = null;      /* BV.jobs.activeTargets() snapshot, taken once per tree paint */
   var _camCounts = {};          /* robot id -> linked-camera count, built once per tree paint */
+  var _viewMode = "";           /* backup | multicam; lazily read from settings (home_view) */
+  var _camTimer = null;         /* multi-cam live-image refresher (self-stops off-screen) */
+  var _camRobotNames = {};      /* robot id -> name, for the tiles' "↳ robot" note */
 
   var SORT_LABELS = { name: "name", ip: "IP", date: "last backup" };
+  var CAM_REFRESH_MS = 2000;    /* live tile refresh — a beat gentler than the HMI's 1s */
 
   function sortMode() {
     if (!_sortMode) {
@@ -46,6 +54,34 @@
     rerenderFromCache();
   }
 
+  /* ---- backup <-> multi-cam: two lenses on the same library ---- */
+
+  function viewMode() {
+    if (!_viewMode) {
+      _viewMode = ((BV.state.settings || {}).home_view) || "backup";
+      if (_viewMode !== "multicam") _viewMode = "backup";
+    }
+    return _viewMode;
+  }
+
+  function setViewMode(mode) {
+    if (mode === viewMode()) return;
+    _viewMode = mode;
+    if (BV.state.settings) BV.state.settings.home_view = mode;
+    BV.api.call("set_setting", "home_view", mode).catch(function () {});
+    syncHeadMode();
+    rerenderFromCache();   /* same cached listing, different lens — no rescan */
+  }
+
+  /* the head is built once per mount: a mode flip retints it in place (the
+     backup-selection actions and the sort make no sense over live tiles) */
+  function syncHeadMode() {
+    if (!_libWrap) return;
+    var cam = viewMode() === "multicam";
+    _libWrap.classList.toggle("cam-mode", cam);
+    if (_filterBox) _filterBox.input.placeholder = cam ? "filter cameras…" : "filter robots…";
+  }
+
   function nameCmp(a, b) { return (a.robot || "").localeCompare(b.robot || ""); }
 
   function ipNum(r) {
@@ -56,21 +92,27 @@
 
   function robotComparator() {
     var mode = sortMode();
+    var base = nameCmp;
     if (mode === "ip") {
-      return function (a, b) {
+      base = function (a, b) {
         var ia = ipNum(a), ib = ipNum(b);
         if (ia !== ib) return ia < ib ? -1 : 1;      /* octet-numeric, not lexicographic */
         return nameCmp(a, b);
       };
-    }
-    if (mode === "date") {
-      return function (a, b) {
+    } else if (mode === "date") {
+      base = function (a, b) {
         var da = a.last_backup || "", db = b.last_backup || "";
         if (da !== db) return da < db ? 1 : -1;      /* ISO strings: newest first, never-backed-up last */
         return nameCmp(a, b);
       };
     }
-    return nameCmp;
+    /* starred robots pin to the top of their line (nested cameras ride along
+       via the tree), still in the chosen order among themselves */
+    return function (a, b) {
+      var fa = a.favorite ? 0 : 1, fb = b.favorite ? 0 : 1;
+      if (fa !== fb) return fa - fb;
+      return base(a, b);
+    };
   }
 
   /* the shared library tree renders the PLANT -> LINE folders (grouping, sort,
@@ -93,6 +135,14 @@
       controls.appendChild(sa);
       return controls;
     },
+  });
+
+  /* the multi-cam lens reuses the same shared tree (same folders, fold state,
+     filter semantics) with tiles for rows and a grid for line bodies */
+  var _camTree = BV.libTree({
+    counts: true,
+    lineBodyClass: "cam-grid",
+    row: function (c) { return camTile(c); },
   });
 
   /* ---- screen ---- */
@@ -190,6 +240,15 @@
     });
     _filterBox.input.value = _filter;    /* a remount keeps the active filter */
     head.appendChild(_filterBox.el);
+
+    /* the two lenses on the same library: backup rows, or live camera tiles
+       (the in-app version of the all-cameras wall page) */
+    var seg = BV.segmented([
+      { id: "backup", label: "backup" },
+      { id: "multicam", label: "multi-cam" },
+    ], { value: viewMode(), onChange: setViewMode });
+    seg.el.classList.add("home-view-seg");
+    head.appendChild(seg.el);
 
     var selActs = BV.el("div", { class: "home-lib-selacts" });
     selActs.appendChild(BV.el("span", { class: "lib-sel-count dim" }, ""));
@@ -292,6 +351,7 @@
     headActs.appendChild(linkBtn);
     headActs.appendChild(addBtn);
     head.appendChild(headActs);
+    syncHeadMode();   /* a remount lands in the persisted lens, head included */
     return head;
   }
 
@@ -397,6 +457,12 @@
       return true;
     });
     updateHiddenToggle(hiddenCount);
+    if (viewMode() === "multicam") {
+      _visibleRobots = [];        /* the selection toolbar acts on backup rows only */
+      _cl.sync();
+      renderCamGrid(body, shownList);
+      return;
+    }
     if (!shownList.length && !emptyPlants.length && !emptyLines.length) {
       body.innerHTML = '<div class="empty-lib">all robots are hidden — use “show hidden” above.</div>';
       _visibleRobots = [];
@@ -425,6 +491,21 @@
       title: "select (shift+click selects a range)" });
     _cl.bind(cb, r.id);
     row.appendChild(cb);
+
+    /* the favorite star (top-level rows only — a nested camera rides with its
+       robot, so its own star would be a lie about what moves) */
+    if (!nested) {
+      var fav = !!r.favorite;
+      var star = BV.el("button", { class: "lib-star" + (fav ? " on" : ""),
+        title: fav ? "unstar — drops back into line order"
+                   : "star — pins it (cameras in tow) to the top of its line" },
+        fav ? "★" : "☆");
+      star.addEventListener("click", function (e) {
+        e.stopPropagation();
+        toggleFavorite(r);
+      });
+      row.appendChild(star);
+    }
 
     var main = BV.el("div", { class: "lib-robot-main" });
     var nameHtml = '<span class="lib-robot-name">' + BV.esc(r.robot || "(unnamed)") + "</span>";
@@ -535,6 +616,108 @@
     }).catch(function (e) { BV.toast(e.message); });
   }
 
+  /* ---- multi-cam (live camera tiles) ---- */
+
+  /* the Matrox web server's live HMI frame — the same image the wall-monitor
+     page shows, cache-busted per fetch so every load is fresh */
+  function camLiveUrl(ip) {
+    return "http://" + ip + "/SavedImages/HMIImage.jpg?t=" + Date.now();
+  }
+
+  function renderCamGrid(body, robots) {
+    /* names + stars come from the FULL cached list: a camera linked to a
+       hidden (or filtered-out) robot still knows who it inspects */
+    var favIds = {}, robotNames = {};
+    (_robots || []).forEach(function (r) {
+      if ((r.device_type || "robot") !== "robot") return;
+      robotNames[r.id] = r.robot || "";
+      if (r.favorite) favIds[r.id] = 1;
+    });
+    _camRobotNames = robotNames;
+    var cams = robots.filter(function (r) {
+      return (r.device_type || "").indexOf("camera") === 0;
+    });
+    if (!cams.length) {
+      body.innerHTML = '<div class="empty-lib">no cameras in the library yet — ' +
+        "add them with “+ add robot → discover on network”.</div>";
+      if (_filterBox) _filterBox.setCount(undefined, 0);
+      return;
+    }
+    /* a camera pins with its own star or its linked robot's — the same robots
+       that float in the backup lens float here */
+    var cmp = function (a, b) {
+      var fa = (a.favorite || favIds[a.linked_robot_id]) ? 0 : 1;
+      var fb = (b.favorite || favIds[b.linked_robot_id]) ? 0 : 1;
+      if (fa !== fb) return fa - fb;
+      return nameCmp(a, b);
+    };
+    var res = _camTree.render(body, { robots: cams }, { q: _filter, cmp: cmp });
+    if (_filterBox) _filterBox.setCount(_filter ? res.shown : undefined, res.total);
+    startCamRefresh();
+  }
+
+  /* one live tile: the camera's current HMI image (Matrox), or an honest note
+     for CV-X / no-IP entries. Clicking goes straight to remote operation. */
+  function camTile(c) {
+    var ip = (c.ips && c.ips[0]) || "";
+    var isCvx = c.device_type === "camera-keyence";
+    var tile = BV.el("div", { class: "cam-tile" + (ip ? "" : " no-ip") });
+    var box = BV.el("div", { class: "cam-tile-box" });
+    if (ip && !isCvx) {
+      var img = BV.el("img", { class: "cam-live", alt: "" });
+      img.dataset.ip = ip;
+      /* a camera that stops answering keeps its slot and says so; the next
+         tick that loads flips it back to live */
+      img.addEventListener("error", function () { tile.classList.add("cam-off"); });
+      img.addEventListener("load", function () { tile.classList.remove("cam-off"); });
+      img.src = camLiveUrl(ip);
+      box.appendChild(img);
+      box.appendChild(BV.el("div", { class: "cam-tile-note dim" }, "no image — not answering"));
+    } else {
+      box.appendChild(BV.el("div", { class: "cam-tile-note dim" },
+        ip ? "CV-X — live view opens in the remote" : "no IP on record"));
+    }
+    tile.appendChild(box);
+
+    var main = BV.el("div", { class: "cam-tile-main" });
+    main.appendChild(BV.el("div", null,
+      '<span class="lib-robot-name">' + BV.esc(c.robot || "(unnamed)") + "</span> " +
+      BV.pill(isCvx ? "CV-X" : "MTX", "acc")));
+    var meta = [];
+    if (ip) meta.push(BV.esc(ip));
+    var linked = _camRobotNames[c.linked_robot_id];
+    if (linked) meta.push("↳ " + BV.esc(linked));
+    main.appendChild(BV.el("div", { class: "lib-robot-meta" },
+      meta.join(' <span class="sep">·</span> ')));
+    tile.appendChild(main);
+
+    tile.title = ip ? "remote operation · " + ip : "no IP on record";
+    tile.addEventListener("click", function () {
+      if (!ip) { BV.toast("this camera has no IP on record"); return; }
+      if (isCvx) BV.openCvxRemote(ip, c.robot || ip);
+      else BV.openMtxRemote(ip, c.robot || ip);
+    });
+    return tile;
+  }
+
+  /* one interval refreshes every visible live tile; folded tiles and a hidden
+     window don't fetch (gentle with the line's cameras). Self-stops when the
+     library leaves the screen or the lens flips back to backup. */
+  function startCamRefresh() {
+    if (_camTimer) return;
+    _camTimer = setInterval(function () {
+      if (!_libWrap || !document.body.contains(_libWrap) || viewMode() !== "multicam") {
+        clearInterval(_camTimer); _camTimer = null; return;
+      }
+      if (document.hidden) return;
+      var imgs = _libWrap.querySelectorAll("img.cam-live");
+      for (var i = 0; i < imgs.length; i++) {
+        if (imgs[i].offsetParent === null) continue;   /* folded away */
+        imgs[i].src = camLiveUrl(imgs[i].dataset.ip);
+      }
+    }, CAM_REFRESH_MS);
+  }
+
   /* ---- selection ---- */
 
   function selectedInLine(lineRobots) {
@@ -599,6 +782,14 @@
     BV.api.call("lib_set_hidden", r.id, hidden).then(function () {
       BV.toast(hidden ? "hidden" : "unhidden");
       refresh();
+    }).catch(function (e) { BV.toast(e.message); });
+  }
+
+  function toggleFavorite(r) {
+    var want = !r.favorite;
+    BV.api.call("lib_set_favorite", r.id, want).then(function () {
+      r.favorite = want;      /* same object the cached listing holds */
+      rerenderFromCache();    /* re-sort in place — no rescan, no flash */
     }).catch(function (e) { BV.toast(e.message); });
   }
 

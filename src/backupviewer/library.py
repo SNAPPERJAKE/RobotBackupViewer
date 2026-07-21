@@ -98,6 +98,7 @@ def _normalize(entry: dict) -> dict:
     e.setdefault("history_root", "")
     e.setdefault("last_backup", "")
     e["hidden"] = bool(e.get("hidden", False))
+    e["favorite"] = bool(e.get("favorite", False))
     backups = e.get("backups")
     e["backups"] = backups if isinstance(backups, list) else []
     aliases = e.get("aliases")
@@ -250,6 +251,12 @@ def set_hidden(robot_id: str, hidden: bool) -> dict | None:
     """Toggle a robot's hidden flag (an overlay-only, per-machine preference the
     folder scan preserves - the everyday alternative to deleting)."""
     return update_robot(robot_id, {"hidden": bool(hidden)})
+
+
+def set_favorite(robot_id: str, favorite: bool) -> dict | None:
+    """Toggle a robot's favorite star (overlay-only, like hidden — the scan
+    preserves it). The home library pins favorites to the top of their line."""
+    return update_robot(robot_id, {"favorite": bool(favorite)})
 
 
 # -- camera <-> robot linking ----------------------------------------------------
