@@ -45,7 +45,6 @@ KEYENCE_PASS = ""
 SETTING_DIR = "cv-x/setting"       # relative to the FTP login dir (/SD1)
 BOX_DIR = "cv-x/box"
 BACKUP_TYPE = "keyence cv-x setting"
-WALK_MAX_FILES = 20_000
 
 
 def keyence_enumerate(ftp, home: str, *, include_box: bool = False, cancel=None) -> list[str]:

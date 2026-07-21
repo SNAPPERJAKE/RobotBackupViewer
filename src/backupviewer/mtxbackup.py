@@ -28,7 +28,7 @@ path rules (dated_dir / latest_dir / mirror_latest) and BackupJob's public shape
 A station can carry several cameras: the job takes a `cameras` list [{label,host}]
 and pulls each - sequentially - into its own CAM<label> subfolder of one snapshot.
 
-The SMB `mount` is injected (default `_smb_mount`) so the whole enumerate+copy flow
+The SMB `mount` is injected (default `smb_mount`) so the whole enumerate+copy flow
 is testable offline against a local temp dir (see tests/test_mtxbackup.py) - live
 testing is never the first validation.
 """
@@ -181,7 +181,7 @@ def _smb_connect(unc: str, user: str, passwd: str) -> tuple[bool, bool]:
     # 0. stage the credential (Explorer's "remember me") then connect with NO
     #    explicit creds - the redirector uses the staged/any existing session.
     #    This is the automation that lets a fresh camera back up without the tech
-    #    opening it in Explorer first. _smb_mount deletes it once the pull is done.
+    #    opening it in Explorer first. smb_mount deletes it once the pull is done.
     staged = _cred_write(host, user, passwd)
     rc = _wnet_add(unc, None, None)
     if rc in (0, _ERROR_ALREADY_ASSIGNED):
@@ -217,7 +217,7 @@ def _smb_disconnect(unc: str) -> None:
     _wnet_cancel(unc)
 
 
-def _smb_mount(host: str, user: str, passwd: str):
+def smb_mount(host: str, user: str, passwd: str):
     """Default mount: return (base_path, cleanup) for `\\\\host\\mtxuser`.
 
     Ride an existing session first - if the share is already reachable (the tech
@@ -308,7 +308,7 @@ class CameraBackupJob(ftpbackup.CameraJobBase):
 
     def __init__(self, host, dest_root, plant, line, station, *,
                  cameras=None, user=MTX_USER, passwd=MTX_PASS,
-                 note="", run_id="", mount=_smb_mount, throttle=0.0, on_complete=None):
+                 note="", run_id="", mount=smb_mount, throttle=0.0, on_complete=None):
         super().__init__(host, dest_root, plant, line, station, cameras=cameras,
                          note=note, run_id=run_id, throttle=throttle,
                          on_complete=on_complete)
@@ -350,7 +350,7 @@ class CameraBackupJob(ftpbackup.CameraJobBase):
 
 # -- probe / diagnose / name (all over SMB) --------------------------------------
 
-def probe_camera(host, *, user=MTX_USER, passwd=MTX_PASS, mount=_smb_mount) -> dict:
+def probe_camera(host, *, user=MTX_USER, passwd=MTX_PASS, mount=smb_mount) -> dict:
     """Pre-flight: authenticate the share and confirm da/ + SavedImages. NO
     writes. `has_da` is what marks a real Matrox camera (a host that merely
     accepts the login but has no da/ is not one)."""
@@ -373,7 +373,7 @@ def probe_camera(host, *, user=MTX_USER, passwd=MTX_PASS, mount=_smb_mount) -> d
     return out
 
 
-def diagnose_camera(host, *, user=MTX_USER, passwd=MTX_PASS, mount=_smb_mount) -> dict:
+def diagnose_camera(host, *, user=MTX_USER, passwd=MTX_PASS, mount=smb_mount) -> dict:
     """Read-only probe of a live Matrox camera share: the home + da listings and
     the SavedImages date folders (newest flagged). ZERO writes. Also log.info'd
     as JSON for app.log."""
@@ -438,7 +438,7 @@ def name_from_backup(snapshot) -> dict:
         return out
 
 
-def resolve_camera_name(host, *, user=MTX_USER, passwd=MTX_PASS, mount=_smb_mount) -> dict:
+def resolve_camera_name(host, *, user=MTX_USER, passwd=MTX_PASS, mount=smb_mount) -> dict:
     """Best-effort {name, model} from the newest SavedImages .txt sidecar (the
     camera analogue of the robot's SUMMARY.DG). Blanks on any failure so naming
     never sinks a scan."""

@@ -364,7 +364,7 @@ class NetworkScanJob(_ScanJob):
         self._host_provider = host_provider
         self._port_check = port_check
         self._workers = workers
-        self._mtx_mount = mtx_mount or mtxbackup._smb_mount   # SMB mount (injectable for tests)
+        self._mtx_mount = mtx_mount or mtxbackup.smb_mount   # SMB mount (injectable for tests)
         self._eip_probe = eip_probe or eip_list_identity      # EtherNet/IP (injectable for tests)
         self._matrox_eip: dict = {}                           # ip -> identity from the broadcast
 

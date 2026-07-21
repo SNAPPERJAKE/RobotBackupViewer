@@ -85,7 +85,13 @@ def _patch_addr(blob: bytes, ip: str) -> bytes:
     def _sub(m):
         new = b"TCP:" + ip.encode("ascii")
         pad = len(m.group(0)) - len(new)
-        return new + b"\x00" * pad if pad >= 0 else m.group(0)
+        if pad < 0:
+            # a re-captured blob whose address field can't hold this ip must fail
+            # LOUDLY - silently replaying the capture-time address is exactly the
+            # regression this rewrite exists to prevent
+            raise ValueError(
+                f"handshake addr field ({len(m.group(0))} bytes) too small for {ip}")
+        return new + b"\x00" * pad
     return _ADDR_RE.sub(_sub, blob)
 
 
@@ -180,8 +186,8 @@ class CvxRemoteSession:
         sets .error) if the controller can't be reached / is busy."""
         try:
             messages = self._load_handshake()
-        except OSError as e:
-            self.error = f"handshake blobs missing: {e}"
+        except (OSError, ValueError) as e:   # missing blobs / addr field too small
+            self.error = f"handshake blobs missing/unusable: {e}"
             return False
         try:
             for p in PORTS:
@@ -369,8 +375,8 @@ class CvxRemoteSession:
         s = self._socks.get(CTRL_PORT)
         if s is None or not self.alive:
             return
-        x = max(0, min(SCREEN_W, int(x)))
-        y = max(0, min(SCREEN_H, int(y)))
+        x = max(0, min(SCREEN_W - 1, int(x)))   # last valid pixel, not one past it
+        y = max(0, min(SCREEN_H - 1, int(y)))
         with self._ctx_lock:
             ctx = self._ctx.get(RD_TYPE, _NONE_CTX)
         b = bytearray(60)
