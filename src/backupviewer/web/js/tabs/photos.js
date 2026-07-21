@@ -67,7 +67,8 @@
         return;
       }
 
-      var pst = BV.tabState(source.stateKey || "photos");
+      var stateKey = source.stateKey || "photos";
+      var pst = BV.tabState(stateKey);
       var filter = pst.filter || "all";
 
       function pass(p) { return (p.result || "").toLowerCase() === "pass"; }
@@ -109,10 +110,8 @@
       wrap.appendChild(grid);
       view.appendChild(wrap);
 
-      var selected = null;
-
       function selectPhoto(p) {
-        selected = p;
+        pst.sel = p ? (p.thumb || p.full) : null;   /* remembered across tab switches */
         hero.innerHTML = "";
         if (!p) return;
 
@@ -250,8 +249,23 @@
       }
 
       var list0 = filtered();
-      selectPhoto(list0[0] || null);
+      var sel0 = pst.sel && list0.filter(function (p) {
+        return (p.thumb || p.full) === pst.sel;
+      })[0];
+      selectPhoto(sel0 || list0[0] || null);
       buildGrid(list0);
+      /* restore exactly how you left it (selection above, scroll here). The
+         hero image lands async and can outgrow its min-height, shifting the
+         grid below - once it loads, re-apply the position we actually wanted
+         (same move as the sysvars pendings re-apply) */
+      var want = pst._scroll || 0;
+      BV.persistScroll(stateKey, wrap);
+      if (want) {
+        var heroImg = hero.querySelector("img");
+        if (heroImg) heroImg.addEventListener("load", function () {
+          if (document.body.contains(wrap)) { wrap.scrollTop = want; pst._scroll = want; }
+        }, { once: true });
+      }
     }).catch(function (e) {
       view.classList.remove("no-pad");
       view.innerHTML = '<div class="empty-state"><div class="big">photos unavailable</div>' +
