@@ -205,6 +205,63 @@ def _watch_step(last: str | None, pending: bool, sig: str) -> tuple[str, bool, b
     return last, False, False
 
 
+# -- device-type registry ---------------------------------------------------------
+# One row per backable device brand: how to probe it (pre-flight, no writes), how
+# to diagnose it (read-only), and how to build its backup job from a start_backup
+# spec. The per-brand credential defaults live here and nowhere else, so adding a
+# brand is one registration (+ its module), not three edits to matching if/elif
+# chains. "" is the FANUC robot default row; job rows get the common
+# (host, root, plant, line, robot, note, run_id, on_complete) plus their job_kw.
+
+_DEVICE_REGISTRY = {
+    "camera-mtx": {   # SMB - no port/passive; blank creds -> burned-in camera login
+        "probe": lambda host, spec: mtxbackup.probe_camera(
+            host, user=spec.get("user") or mtxbackup.MTX_USER,
+            passwd=spec.get("passwd") or mtxbackup.MTX_PASS),
+        "diagnose": lambda host, spec: mtxbackup.diagnose_camera(
+            host, user=spec.get("user") or mtxbackup.MTX_USER,
+            passwd=spec.get("passwd") or mtxbackup.MTX_PASS),
+        "job_cls": mtxbackup.CameraBackupJob,
+        "job_kw": lambda spec: {
+            "cameras": spec.get("cameras"),
+            "user": spec.get("user") or mtxbackup.MTX_USER,
+            "passwd": spec.get("passwd") or mtxbackup.MTX_PASS,
+        },
+    },
+    "camera-keyence": {   # anonymous FTP
+        "probe": lambda host, spec: keyencebackup.probe_keyence(
+            host, passive=spec.get("passive", True), port=spec.get("port", 21)),
+        "diagnose": lambda host, spec: keyencebackup.diagnose_keyence(
+            host, passive=spec.get("passive", True), port=spec.get("port", 21)),
+        "job_cls": keyencebackup.KeyenceBackupJob,
+        "job_kw": lambda spec: {
+            "cameras": spec.get("cameras"),
+            "passive": spec.get("passive", True), "port": spec.get("port", 21),
+            "include_box": bool(spec.get("include_box")),
+        },
+    },
+    "": {   # FANUC robot (the default row)
+        "probe": lambda host, spec: ftpbackup.probe_controller(
+            host, user=spec.get("user", ""), passwd=spec.get("passwd", ""),
+            passive=spec.get("passive", True), port=spec.get("port", 21)),
+        "diagnose": lambda host, spec: discover.diagnose_controller(
+            host, port=spec.get("port", 21)),
+        "job_cls": ftpbackup.BackupJob,
+        "job_kw": lambda spec: {
+            "user": spec.get("user", ""), "passwd": spec.get("passwd", ""),
+            "passive": spec.get("passive", True), "port": spec.get("port", 21),
+            "devices": spec.get("devices"),
+            "recurse_fr": spec.get("recurse_fr", False),
+        },
+    },
+}
+
+
+def _device_row(spec: dict) -> dict:
+    dt = spec.get("device_type") or ""
+    return _DEVICE_REGISTRY.get(dt, _DEVICE_REGISTRY[""])
+
+
 class Api:
     def __init__(self):
         self._window = None
@@ -2212,17 +2269,7 @@ class Api:
         host = (spec.get("host") or "").strip()
         if not host:
             raise ApiError("BAD_SPEC", "host/IP is required")
-        if spec.get("device_type") == "camera-mtx":
-            return mtxbackup.probe_camera(
-                host, user=spec.get("user") or mtxbackup.MTX_USER,
-                passwd=spec.get("passwd") or mtxbackup.MTX_PASS)   # SMB, no port/passive
-        if spec.get("device_type") == "camera-keyence":
-            return keyencebackup.probe_keyence(
-                host, passive=spec.get("passive", True), port=spec.get("port", 21))
-        return ftpbackup.probe_controller(
-            host, user=spec.get("user", ""), passwd=spec.get("passwd", ""),
-            passive=spec.get("passive", True), port=spec.get("port", 21),
-        )
+        return _device_row(spec)["probe"](host, spec)
 
     @_endpoint
     def diagnose_controller(self, spec: dict):
@@ -2234,14 +2281,7 @@ class Api:
         host = (spec.get("host") or "").strip()
         if not host:
             raise ApiError("BAD_SPEC", "host/IP is required")
-        if spec.get("device_type") == "camera-mtx":
-            return mtxbackup.diagnose_camera(
-                host, user=spec.get("user") or mtxbackup.MTX_USER,
-                passwd=spec.get("passwd") or mtxbackup.MTX_PASS)   # SMB, no port/passive
-        if spec.get("device_type") == "camera-keyence":
-            return keyencebackup.diagnose_keyence(
-                host, passive=spec.get("passive", True), port=spec.get("port", 21))
-        return discover.diagnose_controller(host, port=spec.get("port", 21))
+        return _device_row(spec)["diagnose"](host, spec)
 
     @_endpoint
     def start_backup(self, spec: dict):
@@ -2300,31 +2340,12 @@ class Api:
         run_id = (self._active_run_id()
                   or (spec.get("run_id") or "").strip()
                   or uuid.uuid4().hex)
-        if spec.get("device_type") == "camera-mtx":
-            job = mtxbackup.CameraBackupJob(
-                host, root, spec.get("plant", ""), spec.get("line", ""), spec.get("robot", ""),
-                cameras=spec.get("cameras"),
-                user=spec.get("user") or mtxbackup.MTX_USER,
-                passwd=spec.get("passwd") or mtxbackup.MTX_PASS,   # SMB, no port/passive
-                note=spec.get("note", ""), run_id=run_id, on_complete=_register,
-            )
-        elif spec.get("device_type") == "camera-keyence":
-            job = keyencebackup.KeyenceBackupJob(
-                host, root, spec.get("plant", ""), spec.get("line", ""), spec.get("robot", ""),
-                cameras=spec.get("cameras"),
-                passive=spec.get("passive", True), port=spec.get("port", 21),
-                include_box=bool(spec.get("include_box")),
-                note=spec.get("note", ""), run_id=run_id, on_complete=_register,
-            )
-        else:
-            job = ftpbackup.BackupJob(
-                host, root, spec.get("plant", ""), spec.get("line", ""), spec.get("robot", ""),
-                user=spec.get("user", ""), passwd=spec.get("passwd", ""),
-                passive=spec.get("passive", True), port=spec.get("port", 21),
-                devices=spec.get("devices"), note=spec.get("note", ""),
-                recurse_fr=spec.get("recurse_fr", False), run_id=run_id,
-                on_complete=_register,
-            )
+        row = _device_row(spec)
+        job = row["job_cls"](
+            host, root, spec.get("plant", ""), spec.get("line", ""), spec.get("robot", ""),
+            note=spec.get("note", ""), run_id=run_id, on_complete=_register,
+            **row["job_kw"](spec),
+        )
         self._jobs[job.id] = job
         backuplog.start_job(run_id, job.id, spec)
 
