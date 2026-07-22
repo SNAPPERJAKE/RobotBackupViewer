@@ -22,7 +22,10 @@
     adv_dcs: "#overview", sig_mismatch: "#dcs", cip_safety: "#dcs",
     mastering: "#overview", cloned_mastering: "#overview", battery_alarm: "#overview",
     style_broken: "#programs", style_orphans: "#programs", broken_calls: "#programs",
+    remarked_positions: "#programs", remarked_logic: "#programs",
+    uninit_points: "#programs", uninit_prs: "#registers",
     software_version: "#overview", payload_unset: "#frames",
+    override_low: "#sysvars", clock_drift: "#overview",
   };
 
   function pill(status) {
@@ -65,6 +68,11 @@
           byCat[k].push(c);
         });
 
+        /* per-check inputs (the clock tolerance): the registry declares them,
+           values persist in settings (scan_params) like the picks do */
+        var paramInputs = {};
+        var savedParams = (BV.state.settings && BV.state.settings.scan_params) || {};
+
         var wrap = BV.el("div", { class: "hs-cats" });
         cats.forEach(function (cat) {
           var block = BV.el("div", { class: "hs-cat" });
@@ -82,6 +90,16 @@
             row.appendChild(BV.el("div", null,
               '<div class="hs-lbl">' + BV.esc(c.label) + "</div>" +
               '<div class="hs-desc">' + BV.esc(c.desc) + "</div>"));
+            if (c.input) {
+              var pin = BV.el("input", { type: "text", class: "hs-param", spellcheck: "false",
+                placeholder: c.input.hint || "", title: c.input.label || "" });
+              pin.value = savedParams[c.id] !== undefined
+                ? savedParams[c.id] : (c.input.default || "");
+              /* a text input inside the row's <label> must never toggle the box */
+              pin.addEventListener("click", function (e) { e.stopPropagation(); });
+              paramInputs[c.id] = pin;
+              row.appendChild(pin);
+            }
             block.appendChild(row);
           });
           wrap.appendChild(block);
@@ -159,11 +177,21 @@
             return;
           }
           _lastQueries = queries.slice();
-          if (BV.state.settings) BV.state.settings.scan_checks = picked;
+          /* persist everything typed (picked or not), send only the picked */
+          var allParams = {}, params = {};
+          Object.keys(paramInputs).forEach(function (id) {
+            allParams[id] = paramInputs[id].value.trim();
+            if (cl.has(id)) params[id] = allParams[id];
+          });
+          if (BV.state.settings) {
+            BV.state.settings.scan_checks = picked;
+            BV.state.settings.scan_params = allParams;
+          }
           BV.api.call("set_setting", "scan_checks", picked).catch(function () {});
+          BV.api.call("set_setting", "scan_params", allParams).catch(function () {});
           go.disabled = true;    /* no double-submit */
           BV.api.call("health_scan_start", robots.map(function (r) { return r.id; }),
-            picked, queries)
+            picked, queries, params)
             .then(function (res) { runView(res.job_id, res.total, checks, queries.slice()); })
             .catch(function (e) { go.disabled = false; BV.toast(e.message); });
         });

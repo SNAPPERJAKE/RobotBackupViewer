@@ -1151,6 +1151,14 @@ button.btn.danger:disabled { opacity: 0.5; cursor: default; }
 .hs-check input { margin-top: 0.18rem; }
 .hs-lbl { font-weight: 600; font-size: 0.86rem; }
 .hs-check .hs-desc { font-size: 0.76rem; color: var(--sub); }
+/* per-check input (the clock tolerance) — rides the right edge of its row */
+.hs-param {
+  margin-left: auto; flex: none; width: 4.6em; align-self: center;
+  background: var(--bg); border: 1px solid var(--edge); border-radius: 6px;
+  color: var(--text); font: inherit; font-size: 0.78rem; padding: 0.14rem 0.4rem;
+  text-align: center;
+}
+.hs-param:focus { outline: none; border-color: var(--accent); }
 .hs-find { display: flex; align-items: center; gap: 0.55rem; margin: 0.55rem 0 0.3rem; }
 .hs-find input {
   appearance: none; font: inherit; font-size: 0.85rem; flex: 1; min-width: 0;

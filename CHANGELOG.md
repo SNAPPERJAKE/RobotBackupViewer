@@ -1,6 +1,25 @@
 # Changelog
 
 ## Unreleased
+- **Six new fleet-scan checks.** Two catch hand-edits left in programs:
+  **remarked positions** (motion lines commented out with `//` — the robot is
+  skipping taught points; red flag) and **remarked logic** (remarked CALLs /
+  IO / logic — reported quietly, since some remarks are deliberate fleet
+  standards). Two catch positions that will fault the moment they run:
+  **untaught positions** (a motion line references a P[n] the program records
+  no data for — INTP-311 waiting to happen; circular-move continuation lines
+  included) and **uninitialized PRs in use** (programs read position
+  registers POSREG.VA lists as uninitialized — demoted to info when another
+  program writes that PR, since it may be set at runtime; indirect `P[R[..]]`
+  / `PR[R[..]]` references are counted and disclosed, never guessed at). Two
+  read controller config: **general override < 100%** ($MCR.$GENOVERRIDE
+  left turned down — the robot runs slow until someone notices) and
+  **controller clock drift**, the first check with its own dial: enter the
+  drift you'll tolerate (30s · 2m · 5m) right on the picker row, and the
+  check compares the controller's own stamp (BACKDATE.DT, seconds; DG heads
+  as a minute-resolution fallback) against the moment the backup was
+  written — off clocks scramble alarm timelines across a line, and a
+  decades-off stamp usually means a dead RTC battery.
 - **CV-X remote view: the patchy image glitching is fixed.** The live
   mirror was appending every video message body into the frame whole, so
   each chunk's 40-byte protocol sub-header landed inside the JPEG's
@@ -40,6 +59,7 @@
   the first flip shows where the cameras are without fetching every line's
   frames at once. Tiles are keyboard-reachable (Tab / Enter / Space, Esc
   drops focus), and a stray "undefined/0" in the filter counter is fixed.
+- **Library quality-of-life.** A real multi-line notes
   editor, inline on the row (double-click to type where you are); edit moved
   into the row's ⋯ menu, which also opens on right-click at the mouse;
   auto-link cameras lives in manage backups now; the linked-robot picker is
