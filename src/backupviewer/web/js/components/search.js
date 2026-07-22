@@ -46,7 +46,10 @@
       input: input,
       focus: function () { input.focus(); input.select(); },
       setCount: function (n, total) {
-        count.textContent = (total !== undefined && n !== total) ? n + "/" + total : (n === undefined ? "" : String(n));
+        /* n undefined = "no filter live" and always blanks the counter, even
+           when a total is passed (setCount(undefined, 0) said "undefined/0") */
+        count.textContent = (n !== undefined && total !== undefined && n !== total)
+          ? n + "/" + total : (n === undefined ? "" : String(n));
       },
       value: function () { return input.value.trim(); },
     };
