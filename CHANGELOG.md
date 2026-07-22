@@ -21,6 +21,8 @@
   static frame under prefers-reduced-motion or when requestAnimationFrame
   is missing (the probe environment). The choice persists like every other
   pref.
+
+## v1.3 — the camera wall + six sharper scans
 - **Six new fleet-scan checks.** Two catch hand-edits left in programs:
   **remarked positions** (motion lines commented out with `//` — the robot is
   skipping taught points; red flag) and **remarked logic** (remarked CALLs /
