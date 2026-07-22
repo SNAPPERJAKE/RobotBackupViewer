@@ -42,19 +42,81 @@
       });
     }
 
+    /* fullscreen lightbox: wheel zooms (around the cursor), drag pans, and it
+       closes ONLY via the ✕, Esc, or a clean click on the backdrop — click-
+       anywhere-closes kept eating pans, and with no visible close control
+       people reached for the app's own titlebar ✕ instead */
     function openFullscreen(rel) {
-      var overlay = BV.el("div", { style:
-        "position:fixed;inset:0;z-index:9999;cursor:zoom-out;" +
-        "background:color-mix(in srgb, var(--bg) 93%, transparent);" +
-        "display:flex;align-items:center;justify-content:center" });
-      var fimg = BV.el("img", { alt: "", style: "max-width:98vw;max-height:98vh;object-fit:contain" });
+      var overlay = BV.el("div", { class: "photo-fsov", style:
+        "position:fixed;inset:0;z-index:9999;overflow:hidden;" +
+        "background:color-mix(in srgb, var(--bg) 93%, transparent)" });
+      var fimg = BV.el("img", { alt: "", draggable: "false", style:
+        "position:absolute;inset:0;margin:auto;max-width:98vw;max-height:98vh;" +
+        "object-fit:contain;cursor:grab" });
       overlay.appendChild(fimg);
+      var closeBtn = BV.el("button", { class: "btn", title: "close (esc)", style:
+        "position:absolute;top:0.6rem;right:0.8rem;z-index:1;" +
+        "font-size:1.25rem;line-height:1;padding:0.3rem 0.75rem" }, "✕");
+      overlay.appendChild(closeBtn);
       loadImage(rel).then(function (uri) { fimg.src = uri; }).catch(function () {
-        overlay.innerHTML = '<span class="dim">image unavailable</span>';
+        overlay.innerHTML = '<span class="dim" style="position:absolute;inset:0;margin:auto;' +
+          'width:fit-content;height:fit-content">image unavailable</span>';
       });
+
+      /* pan/zoom state: the image stays centered at scale 1; translate happens
+         BEFORE scale so the zoom-around-cursor math stays linear */
+      var scale = 1, tx = 0, ty = 0, drag = null, justDragged = false;
+      function apply() {
+        fimg.style.transform = scale === 1 && !tx && !ty ? "" :
+          "translate(" + tx + "px," + ty + "px) scale(" + scale + ")";
+      }
+      overlay.addEventListener("wheel", function (e) {
+        e.preventDefault();
+        var ns = Math.min(20, Math.max(1, scale * (e.deltaY < 0 ? 1.2 : 1 / 1.2)));
+        if (ns === scale) return;
+        /* keep the image point under the cursor stationary while zooming */
+        var f = ns / scale;
+        var cx = e.clientX - window.innerWidth / 2;
+        var cy = e.clientY - window.innerHeight / 2;
+        tx = cx - (cx - tx) * f;
+        ty = cy - (cy - ty) * f;
+        scale = ns;
+        if (scale === 1) { tx = 0; ty = 0; }
+        apply();
+      }, { passive: false });
+      fimg.addEventListener("mousedown", function (e) {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        drag = { x: e.clientX, y: e.clientY, tx: tx, ty: ty, moved: false };
+        fimg.style.cursor = "grabbing";
+      });
+      overlay.addEventListener("mousemove", function (e) {
+        if (!drag) return;
+        var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+        if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+        tx = drag.tx + dx;
+        ty = drag.ty + dy;
+        apply();
+      });
+      overlay.addEventListener("mouseup", function () {
+        if (!drag) return;
+        justDragged = drag.moved;   /* the click that follows a pan must not close */
+        drag = null;
+        fimg.style.cursor = "grab";
+      });
+      fimg.addEventListener("dblclick", function () {
+        scale = 1; tx = 0; ty = 0; apply();
+      });
+
       function close() { document.removeEventListener("keydown", onKey); overlay.remove(); }
-      function onKey(e) { if (e.key === "Escape") close(); }
-      overlay.addEventListener("click", close);
+      function onKey(e) {
+        if (e.key === "Escape") { e.stopPropagation(); close(); }
+      }
+      closeBtn.addEventListener("click", close);
+      overlay.addEventListener("click", function (e) {
+        if (justDragged) { justDragged = false; return; }
+        if (e.target === overlay) close();   /* backdrop only — never the image */
+      });
       document.addEventListener("keydown", onKey);
       document.body.appendChild(overlay);
     }
@@ -80,7 +142,23 @@
         return photos;
       }
 
-      /* toolbar: pass/fail filter + camera label */
+      /* toolbar: just the camera label — the pass/fail filter lives down by
+         the grid it filters */
+      var cam = data.camera || {};
+      if (cam.name || cam.type) {
+        var camLabel = BV.el("span", { class: "dim", style: "margin-left:auto;align-self:center" },
+          BV.esc([cam.name, cam.type, cam.ip].filter(Boolean).join(" · ")));
+        toolbar.appendChild(camLabel);
+      }
+
+      /* layout: hero over filter row over grid */
+      var wrap = BV.el("div", { style: "height:100%;overflow:auto;padding:0 1.25rem 1rem" });
+      var hero = BV.el("div", { id: "photo-hero", style:
+        "display:flex;gap:1.25rem;flex-wrap:wrap;align-items:flex-start;margin:0.75rem 0 1rem" });
+      var grid = BV.el("div", { id: "photo-grid", style:
+        "display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:0.6rem" });
+      /* the all/pass/fail filter sits right above the strip it filters (it used
+         to float in the toolbar, a whole screen away from its list) */
       var nPass = photos.filter(pass).length;
       var nFail = photos.filter(fail).length;
       var seg = BV.segmented([
@@ -93,21 +171,11 @@
           selectPhoto(list[0] || null);
           buildGrid(list);
         } });
-      toolbar.appendChild(seg.el);
-      var cam = data.camera || {};
-      if (cam.name || cam.type) {
-        var camLabel = BV.el("span", { class: "dim", style: "margin-left:auto;align-self:center" },
-          BV.esc([cam.name, cam.type, cam.ip].filter(Boolean).join(" · ")));
-        toolbar.appendChild(camLabel);
-      }
-
-      /* layout: hero over grid */
-      var wrap = BV.el("div", { style: "height:100%;overflow:auto;padding:0 1.25rem 1rem" });
-      var hero = BV.el("div", { id: "photo-hero", style:
-        "display:flex;gap:1.25rem;flex-wrap:wrap;align-items:flex-start;margin:0.75rem 0 1rem" });
-      var grid = BV.el("div", { id: "photo-grid", style:
-        "display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:0.6rem" });
+      var filterRow = BV.el("div", { style:
+        "display:flex;align-items:center;gap:0.6rem;margin:0 0 0.6rem" });
+      filterRow.appendChild(seg.el);
       wrap.appendChild(hero);
+      wrap.appendChild(filterRow);
       wrap.appendChild(grid);
       view.appendChild(wrap);
 
@@ -133,7 +201,12 @@
             figure.innerHTML = '<span class="dim">image unavailable</span>';
           });
         }
-        showImage(p.thumb || p.full);   /* default to the annotated (green-boxes) jpg */
+        /* filtered (annotated jpg) vs raw (clean png) is a sticky preference:
+           picking raw survives changing photos and leaving the tab */
+        var hasBoth = p.thumb && p.full && p.thumb !== p.full;
+        var raw = pst.imgMode === "raw" && (hasBoth || !p.thumb);
+        showImage(raw ? p.full : (p.thumb || p.full));
+        figure.title = "click to view fullscreen";
         figure.addEventListener("click", function () { if (curRel) openFullscreen(curRel); });
         hero.appendChild(figure);
 
@@ -164,40 +237,46 @@
             '<div style="margin-top:0.6rem;display:flex;gap:0.35rem;flex-wrap:wrap">' + tools + "</div>");
         }
 
-        /* image controls: green boxes (annotated jpg) vs raw (clean png), + fullscreen */
-        var ctrls = BV.el("div", { style:
-          "margin-top:0.7rem;display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap" });
-        if (p.thumb && p.full && p.thumb !== p.full) {
+        /* image controls: filtered (annotated jpg) vs raw (clean png). No
+           fullscreen button — clicking the image is the fullscreen. */
+        if (hasBoth) {
+          var ctrls = BV.el("div", { style:
+            "margin-top:0.7rem;display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap" });
           var viewSeg = BV.segmented([
-            { id: "boxes", label: "green boxes" },
+            { id: "boxes", label: "filtered" },
             { id: "raw", label: "raw" },
-          ], { value: "boxes", onChange: function (id) {
-              showImage(id === "raw" ? p.full : p.thumb);
-            } });
+          ], { value: pst.imgMode === "raw" ? "raw" : "boxes",
+               onChange: function (id) {
+                 pst.imgMode = id;   /* sticks across photo changes + tab returns */
+                 showImage(id === "raw" ? p.full : p.thumb);
+               } });
           ctrls.appendChild(viewSeg.el);
-        }
-        var fsBtn = BV.el("button", { class: "btn" }, "fullscreen");
-        fsBtn.addEventListener("click", function () { if (curRel) openFullscreen(curRel); });
-        ctrls.appendChild(fsBtn);
-        panel.appendChild(ctrls);
-
-        /* full report sections, collapsed */
-        if (p.sections && p.sections.length) {
-          var card = BV.card({ title: "full report", collapsible: true, startCollapsed: true });
-          p.sections.forEach(function (sec) {
-            if (!sec.rows || !sec.rows.length) return;
-            card.body.insertAdjacentHTML("beforeend",
-              '<h4 style="margin:0.5rem 0 0.15rem;color:var(--sub)">' + BV.esc(sec.title) + "</h4>");
-            card.body.insertAdjacentHTML("beforeend", BV.kv.html(
-              sec.rows.map(function (r) { return [r.key, r.value]; })));
-          });
-          card.head.style.cursor = "pointer";
-          card.head.addEventListener("click", function () {
-            card.el.classList.toggle("collapsed");
-          });
-          panel.appendChild(card.el);
+          panel.appendChild(ctrls);
         }
         hero.appendChild(panel);
+
+        /* the full parsed report, in its own scrolling pane BESIDE the
+           attributes (it was a fold-out buried under them) */
+        if (p.sections && p.sections.length) {
+          var rep = BV.el("div", { style:
+            "flex:1 1 300px;min-width:260px;max-width:540px;max-height:48vh;" +
+            "display:flex;flex-direction:column;background:var(--bg2);" +
+            "border:1px solid var(--sub-alt);border-radius:8px" });
+          rep.insertAdjacentHTML("beforeend",
+            '<div style="flex:none;padding:0.5rem 0.85rem 0.35rem;color:var(--sub);' +
+            'font-size:0.8rem;text-transform:lowercase">full report</div>');
+          var repBody = BV.el("div", { style:
+            "overflow:auto;min-height:0;padding:0 0.85rem 0.6rem" });
+          p.sections.forEach(function (sec) {
+            if (!sec.rows || !sec.rows.length) return;
+            repBody.insertAdjacentHTML("beforeend",
+              '<h4 style="margin:0.5rem 0 0.15rem;color:var(--sub)">' + BV.esc(sec.title) + "</h4>");
+            repBody.insertAdjacentHTML("beforeend", BV.kv.html(
+              sec.rows.map(function (r) { return [r.key, r.value]; })));
+          });
+          rep.appendChild(repBody);
+          hero.appendChild(rep);
+        }
       }
 
       /* lazy-loading thumbnail grid */
