@@ -153,9 +153,21 @@ window.BV = {};
   };
 
   /* small anchored context menu (right-click-style popup). items is a list of
-     {label, onClick, danger?}. The menu floats just under anchorEl and dismisses
-     itself on outside-click, Esc, scroll, or resize. Returns {close}. */
+     {label, onClick, danger?}. anchorEl is an ELEMENT (menu floats just under
+     it) or a POINT {x, y} (right-click menus open at the mouse). Dismisses
+     itself on outside-click, Esc, scroll, or resize. Returns {close}.
+
+     Clicking the anchor while its own menu is open TOGGLES it closed: the
+     outside-mousedown closes the menu, and the click that follows would
+     land on the anchor and instantly reopen it — that call is swallowed. */
+  var _menuJustClosed = { el: null, at: 0 };
   BV.menu = function (anchorEl, items) {
+    var anchorNode = anchorEl && anchorEl.nodeType === 1 ? anchorEl : null;
+    if (anchorNode && _menuJustClosed.el === anchorNode &&
+        Date.now() - _menuJustClosed.at < 500) {
+      _menuJustClosed.el = null;
+      return { close: function () {} };
+    }
     var menu = BV.el("div", { class: "ctx-menu" });
     items.forEach(function (it) {
       /* it.action = {label,title,onClick}: a small trailing pill on the row with
@@ -184,7 +196,8 @@ window.BV = {};
        v0.98 chrome/content scale split, so fixed coords just work.) */
     document.documentElement.appendChild(menu);
 
-    var r = anchorEl.getBoundingClientRect();
+    var r = anchorNode ? anchorNode.getBoundingClientRect()
+      : { left: anchorEl.x, right: anchorEl.x, top: anchorEl.y - 4, bottom: anchorEl.y - 4 };
     var mw = menu.offsetWidth, mh = menu.offsetHeight;
     var left = r.left;
     if (left + mw > window.innerWidth - 8) left = Math.max(8, r.right - mw);  /* spill leftward */
@@ -193,20 +206,41 @@ window.BV = {};
     menu.style.left = left + "px";
     menu.style.top = top + "px";
 
+    /* close() must stay safe against ANY ordering: the dismiss listeners
+       attach DEFERRED (below), so a menu closed in its opening tick (an item
+       clicked immediately) must both skip the attach and not try to remove
+       listeners that never existed. The old "menu already detached -> return"
+       guard silently kept deferred listeners alive forever — a leaked
+       document-CAPTURE Escape handler that swallowed the key for every
+       element underneath it from then on. */
+    var closed = false, attached = false;
     function close() {
-      if (!menu.parentNode) return;
-      menu.parentNode.removeChild(menu);
-      document.removeEventListener("mousedown", onOutside, true);
-      document.removeEventListener("keydown", onKey, true);
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", close);
+      if (closed) return;
+      closed = true;
+      if (menu.parentNode) menu.parentNode.removeChild(menu);
+      if (attached) {
+        document.removeEventListener("mousedown", onOutside, true);
+        document.removeEventListener("keydown", onKey, true);
+        window.removeEventListener("scroll", onScroll, true);
+        window.removeEventListener("resize", close);
+      }
     }
-    function onOutside(e) { if (!menu.contains(e.target)) close(); }
+    function onOutside(e) {
+      if (menu.contains(e.target)) return;
+      /* closing because the anchor itself was pressed: remember it so the
+         click that follows toggles instead of reopening */
+      if (anchorNode && anchorNode.contains(e.target)) {
+        _menuJustClosed = { el: anchorNode, at: Date.now() };
+      }
+      close();
+    }
     function onKey(e) { if (e.key === "Escape") { e.stopPropagation(); close(); } }
     /* page scroll closes the menu, but scrolling INSIDE it (long lists) must not */
     function onScroll(e) { if (!menu.contains(e.target)) close(); }
     /* defer the listeners so the click that opened the menu doesn't close it */
     setTimeout(function () {
+      if (closed) return;                    /* closed before we ever attached */
+      attached = true;
       document.addEventListener("mousedown", onOutside, true);
       document.addEventListener("keydown", onKey, true);
       window.addEventListener("scroll", onScroll, true);
