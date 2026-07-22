@@ -954,6 +954,42 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .lib-cancel-all:hover { color: var(--error); background: color-mix(in srgb, var(--error) 14%, var(--bg2)); }
 .empty-lib { color: var(--sub); font-size: 0.9rem; padding: 0.8rem 0.2rem; }
 
+/* backup <-> multi-cam head toggle (sits between the filter and the actions) */
+.home-view-seg { flex: none; }
+
+/* multi-cam lens: the backup-selection controls and sort make no sense over
+   live tiles — hide them, keep filter / refresh / add reachable */
+.home-library.cam-mode .home-lib-selacts,
+.home-library.cam-mode .lib-sort { display: none; }
+
+/* multi-cam grid: live camera tiles inside the same plant/line folders.
+   display rides the .open rule: a flat display:grid here outranked the shared
+   fold rules — collapsed lines kept showing tiles while open ones stacked
+   them full-width (the .open>block rule won). Folded = hidden, open = grid. */
+.lib-line-body.cam-grid {
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 0.7rem; padding: 0.2rem 0 0.6rem 0.6rem;
+}
+.bv-collapsible.open > .lib-line-body.cam-grid { display: grid; }
+.cam-tile {
+  border: 1px solid var(--edge); border-radius: var(--radius); background: var(--bg2);
+  overflow: hidden; cursor: pointer; transition: background var(--trans);
+}
+.cam-tile:hover { background: color-mix(in srgb, var(--sub-alt) 22%, var(--bg2)); }
+.cam-tile.no-ip { opacity: 0.6; cursor: default; }
+.cam-tile-box {
+  height: 150px; display: flex; align-items: center; justify-content: center;
+  background: var(--bg); position: relative;
+}
+.cam-tile-box .cam-live { width: 100%; height: 100%; object-fit: contain; display: block; }
+.cam-tile-note { font-size: 0.78rem; padding: 0 0.6rem; text-align: center; }
+/* with a live img present the note is the NO-SIGNAL fallback: shown only
+   while the camera isn't answering (the .cam-off flag from the img's error) */
+.cam-tile .cam-live + .cam-tile-note { display: none; }
+.cam-tile.cam-off .cam-live { visibility: hidden; position: absolute; inset: 0; }
+.cam-tile.cam-off .cam-live + .cam-tile-note { display: block; }
+.cam-tile-main { padding: 0.45rem 0.6rem 0.55rem; }
+
 /* plant/line combo: input + a "▾" picker of existing values */
 .lf-combo { display: flex; align-items: center; gap: 0.3rem; flex: 1 1 auto; min-width: 0; }
 .lf-combo .lf-input { flex: 1 1 auto; min-width: 0; }

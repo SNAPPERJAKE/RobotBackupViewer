@@ -39,6 +39,8 @@
                                files-are-law skeleton; leave off for pickers)
        counts: true            robot-count badge on plant + line heads (for
                                mostly-folded views where rows are out of sight)
+       lineBodyClass: "x"      extra class on every line body (the multi-cam
+                               view turns line bodies into a tile grid)
        startOpen(key, kind) -> bool   first-seen fold state, kind 'plant'|'line'
                                (default open); user toggles are remembered over it
      render(body, data, ropts) — data {robots, emptyPlants, emptyLines},
@@ -133,7 +135,8 @@
               var extras = opts.lineExtras(ln, lineRobots, key);
               if (extras) lineHead.appendChild(extras);
             }
-            var lineBody = BV.el("div", { class: "lib-line-body" });
+            var lineBody = BV.el("div", { class: "lib-line-body" +
+              (opts.lineBodyClass ? " " + opts.lineBodyClass : "") });
             if (opts.skeleton && !lineRobots.length) {
               lineBody.appendChild(BV.el("div", { class: "dim lib-empty-note" },
                 "empty line folder — no robot folders yet"));

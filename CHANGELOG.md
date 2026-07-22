@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+- **Multi-cam: watch the line's cameras live from the home screen.** A
+  backup ↔ multi-cam toggle in the library head re-renders the same
+  plant/line folders as a grid of live Matrox tiles — each shows the
+  camera's current HMI frame (refreshed every 2 s; folded-away tiles and a
+  hidden window don't fetch), and clicking one goes straight into remote
+  operation (the MTX web-UI overlay). CV-X cameras aren't tiled — they have
+  no live frame to show; their screen mirror stays on the robot's photos
+  tab. A camera that stops answering says so on its tile and comes back on
+  its own; the lens choice persists across launches.
+- **Favorite stars.** Star a robot and it pins — nested cameras in tow — into
+  a ★ favorites strip above the plant tree, as full rows (checkbox included,
+  so star-select-backup works straight from the strip). Toggling is instant;
+  in the multi-cam lens a starred robot's cameras lead their line. The star
+  is a per-machine overlay flag (like hide): it survives rescans and never
+  touches robot.json, so a star click can't trigger a rescan.
+- **The library screen got a field-ask batch.** Notes are a real multi-line
+  editor, inline on the row (double-click to type where you are); edit moved
+  into the row's ⋯ menu, which also opens on right-click at the mouse;
+  auto-link cameras lives in manage backups now; the linked-robot picker is
+  the library tree, not a 2400-name dropdown; and only the rows on screen
+  are laid out, so a plant-scale library stays snappy while you type.
+
 ## v1.2 — the big merge
 - **Cameras self-name from their first backup and auto-link to their robot.**
   A camera the scan couldn't name live (no saved images yet, a flaky read)
