@@ -66,6 +66,12 @@ def probe(window):
         check("boot.effect_count", js(window, "BV.bgfx.EFFECTS.length") == 13,
               f"(got {js(window, 'BV.bgfx.EFFECTS.length')})")
         check("boot.defaults_off", js(window, "BV.bgfx.activeId") == "none")
+        # paint-order regression guard: the layers sit at z-index -1, which is
+        # above the ROOT background but below in-flow backgrounds — if body
+        # ever paints opaque again, every effect draws invisibly behind it
+        check("boot.body_transparent",
+              js(window, "getComputedStyle(document.body).backgroundColor")
+              in ("rgba(0, 0, 0, 0)", "transparent"))
         check("boot.no_layers",
               not js(window, "!!document.getElementById('bgfx-canvas') || !!document.getElementById('bgfx-css')"))
 

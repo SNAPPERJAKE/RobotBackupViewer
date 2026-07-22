@@ -54,13 +54,18 @@ html, body {
   margin: 0;
   padding: 0;
   height: 100%;
-  background: var(--bg);
   color: var(--text);
   font-family: var(--font);
   /* default sized for the shop floor, not just young eyes; adjustable via the aa menu */
   font-size: 15px;
   line-height: 1.45;
 }
+
+/* the page background lives on html ONLY. body must stay transparent: the
+   bgfx layers paint at z-index -1 — above the root background but below
+   in-flow backgrounds — so an opaque body would sandwich every effect into
+   invisibility (root bg → bgfx → body bg → content). */
+html { background: var(--bg); }
 
 /* the app fills the window exactly; only #view ever scrolls. body must never
    scroll or the header/footer un-staple. */
