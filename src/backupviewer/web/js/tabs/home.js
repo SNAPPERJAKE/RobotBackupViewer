@@ -966,11 +966,46 @@
     if (ip) {
       var img = BV.el("img", { class: "cam-live", alt: "" });
       img.dataset.ip = ip;
-      /* a camera that stops answering keeps its slot and says so; the next
-         tick that loads flips it back to live */
-      img.addEventListener("error", function () { tile.classList.add("cam-off"); });
-      img.addEventListener("load", function () { tile.classList.remove("cam-off"); });
-      img.src = camLiveUrl(ip);
+      /* the tile owns its own load lifecycle; the shared tick decides WHEN by
+         calling img._camLoad(), never by touching src (reassigning src aborts
+         an in-flight transfer and restarts it from byte 0 — a camera needing
+         >2s per frame could never complete a single load). No load happens at
+         creation: renders fire on every filter keystroke / library refresh,
+         and fetching every tile each time hammered the plant network. */
+      var pending = 0;       /* Date.now() when the in-flight load started */
+      var fails = 0;         /* consecutive failures, for retry backoff */
+      var slowTimer = null;
+      img._camDue = 0;       /* earliest next load; the tick reads this */
+      img._camLoad = function () {
+        var now = Date.now();
+        if (pending) {
+          if (now - pending < 30000) return false;  /* let it finish first */
+          fails++;                    /* hung past any TCP timeout: re-kick */
+          tile.classList.add("cam-off");
+        }
+        pending = now;
+        clearTimeout(slowTimer);
+        /* an ABORTED or hung load fires no error event, so honesty needs a
+           timer: still nothing after 8s -> say "not answering" (a frame that
+           lands later clears it) */
+        slowTimer = setTimeout(function () { tile.classList.add("cam-off"); }, 8000);
+        img.src = camLiveUrl(ip);
+        return true;
+      };
+      img.addEventListener("load", function () {
+        pending = 0; fails = 0;
+        clearTimeout(slowTimer);
+        tile.classList.remove("cam-off");
+        img._camDue = Date.now() + CAM_REFRESH_MS;
+      });
+      img.addEventListener("error", function () {
+        pending = 0; fails++;
+        clearTimeout(slowTimer);
+        tile.classList.add("cam-off");
+        /* 4s, 8s, 16s, then every 30s — a dead camera decays to a slow
+           retry instead of being re-polled at full rate forever */
+        img._camDue = Date.now() + Math.min(CAM_REFRESH_MS * Math.pow(2, fails), 30000);
+      });
       box.appendChild(img);
       box.appendChild(BV.el("div", { class: "cam-tile-note dim" }, "no image — not answering"));
     } else {
@@ -1002,22 +1037,39 @@
     return tile;
   }
 
-  /* one interval refreshes every visible live tile; folded tiles and a hidden
-     window don't fetch (gentle with the line's cameras). Self-stops when the
-     library leaves the screen or the lens flips back to backup. */
+  /* one shared tick drives every live tile through its _camLoad. Only tiles
+     actually showing fetch: folded lines, a hidden window, tiles far off the
+     viewport, and any open modal or remote-operation overlay all pause them —
+     while a tech is inside one camera's remote session the wall behind it
+     goes quiet. New loads are capped per beat so a plant-sized grid never
+     bursts every camera at once. Self-stops when the library leaves the
+     screen or the lens flips back to backup; tiles render unloaded, so first
+     fetches land here too. */
   function startCamRefresh() {
     if (_camTimer) return;
-    _camTimer = setInterval(function () {
+    function pass() {
       if (!_libWrap || !document.body.contains(_libWrap) || viewMode() !== "multicam") {
         clearInterval(_camTimer); _camTimer = null; return;
       }
       if (document.hidden) return;
+      /* the CV-X and MTX remote overlays share the cvx-remote class */
+      if (document.querySelector(".cvx-remote") || BV.modalOpen()) return;
       var imgs = _libWrap.querySelectorAll("img.cam-live");
-      for (var i = 0; i < imgs.length; i++) {
-        if (imgs[i].offsetParent === null) continue;   /* folded away */
-        imgs[i].src = camLiveUrl(imgs[i].dataset.ip);
+      var now = Date.now(), kicked = 0;
+      for (var i = 0; i < imgs.length && kicked < 6; i++) {   /* ≤6 new loads a beat */
+        var img = imgs[i];
+        if (now < img._camDue) continue;
+        /* folded/filtered: the house idiom — a raw offsetParent read inside a
+           content-visibility subtree forces layout (checklist.js has the
+           42-second receipt), and this loop runs forever on a timer */
+        if (!(img.checkVisibility ? img.checkVisibility() : img.offsetParent !== null)) continue;
+        var r = img.getBoundingClientRect();   /* on/near screen: within a viewport */
+        if (r.bottom < -window.innerHeight || r.top > window.innerHeight * 2) continue;
+        if (img._camLoad()) kicked++;
       }
-    }, CAM_REFRESH_MS);
+    }
+    _camTimer = setInterval(pass, CAM_REFRESH_MS);
+    setTimeout(pass, 150);   /* first tiles light up now-ish, not a beat later */
   }
 
   /* ---- selection ---- */
