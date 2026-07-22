@@ -21,7 +21,7 @@
   function helpOverlay() {
     var body = BV.el("div");
     var rows = [
-      ["1 – 9 · 0", "switch tab (0 = 3d view)"],
+      ["1 – 9 · 0 · - · =", "switch tab (the number row; 0 = 3d view)"],
       ["ctrl+k", "search whole backup"],
       ["backspace", "back (previous program / view)"],
       ["/", "focus tab filter"],
@@ -51,11 +51,19 @@
     }
     if (typing()) return;
 
-    if (e.key >= "1" && e.key <= "9" && !e.ctrlKey && !e.altKey) {
-      var idx = parseInt(e.key, 10) - 1;
-      var enabled = BV.tabs.filter(function (t) { return BV.tabEnabled(t); });
-      if (enabled[idx]) location.hash = "#" + enabled[idx].id;
-      return;
+    /* positional tabs follow the number row past 9: 1-9, then - and = (the
+       same list buildTabbar badges from, so key and badge always agree —
+       hidden always-on tabs like search/compare can never soak up a number) */
+    if (!e.ctrlKey && !e.altKey) {
+      var idx = -1;
+      if (e.key >= "1" && e.key <= "9") idx = parseInt(e.key, 10) - 1;
+      else if (e.key === "-") idx = 9;
+      else if (e.key === "=") idx = 10;
+      if (idx >= 0) {
+        var pos = BV.positionalTabs();
+        if (pos[idx]) location.hash = "#" + pos[idx].id;
+        return;
+      }
     }
     /* 0 is pinned to the 3d view (its tab badge shows 0), not positional */
     if (e.key === "0" && !e.ctrlKey && !e.altKey) {

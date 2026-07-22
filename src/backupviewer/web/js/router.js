@@ -23,19 +23,49 @@
     return !!(m.tabs && m.tabs[tab.id]);
   };
 
+  /* the positional key badges follow the keyboard's number row: 1-9, then -
+     and = (0 stays pinned to the 3d view). Shared with keys.js so the badge on
+     a tab and the key that opens it can never drift apart. */
+  BV.tabKeyBadge = function (i) {   /* i = 0-based position among positional tabs */
+    if (i < 9) return String(i + 1);
+    if (i === 9) return "-";
+    if (i === 10) return "=";
+    return "";                      /* out of keys: tab is click-only */
+  };
+  BV.positionalTabs = function () {
+    return BV.tabs.filter(function (t) {
+      return !t.hidden && t.id !== "view3d" && BV.tabEnabled(t);
+    });
+  };
+
   function buildTabbar() {
     tabbar.innerHTML = "";
     /* shell screens (home/backup) own the whole window - no viewer tabs in the
        bar until a robot is actually open */
     if (!BV.state.manifest) return;
+    /* display order = the keyboard's number row, exactly: 1..9, then 0 (the
+       pinned 3d view), then - and =. With ten-plus positional tabs the 3d tab
+       moves in FRONT of the tenth so its 0 badge sits between 9 and -; with
+       nine or fewer it stays at the end, right after the last digit. */
+    var tabs = BV.tabs.filter(function (t) { return !t.hidden; });
+    var v3 = tabs.find(function (t) { return t.id === "view3d"; });
+    if (v3) {
+      tabs = tabs.filter(function (t) { return t !== v3; });
+      var at = tabs.length, seen = 0;
+      for (var i = 0; i < tabs.length; i++) {
+        if (BV.tabEnabled(tabs[i])) {
+          if (++seen === 9) { at = i + 1; break; }
+        }
+      }
+      tabs.splice(at, 0, v3);
+    }
     var n = 0;
-    BV.tabs.forEach(function (tab) {
-      if (tab.hidden) return;
+    tabs.forEach(function (tab) {
       var enabled = BV.tabEnabled(tab);
       /* the 3d view is pinned to the 0 key, so its badge shows 0 and it
-         never consumes a positional 1-9 number */
+         never consumes a positional number-row slot */
       var badge = "";
-      if (enabled) badge = tab.id === "view3d" ? "0" : String(++n);
+      if (enabled) badge = tab.id === "view3d" ? "0" : BV.tabKeyBadge(n++);
       var b = BV.el("button", { class: "tab-btn", id: "tab-" + tab.id },
         (badge ? '<span class="tab-num">' + badge + "</span>" : "") + BV.esc(tab.label));
       b.disabled = !enabled;
@@ -171,15 +201,19 @@
 
     buildTabbar();
 
+    /* router-initiated redirects REPLACE the current history entry instead of
+       pushing one. A pushed redirect turns history.back() into a trap: on a
+       camera-only backup #overview isn't enabled, so back landed on #overview,
+       which instantly pushed #photos again — the screen flashed and never left */
     if (!BV.state.manifest) {
       /* no robot open: only shell screens are reachable, everything else -> home */
       if (!isShell(tab)) {
-        if (location.hash !== "#home") { location.hash = "#home"; return; }
+        if (location.hash !== "#home") { location.replace("#home"); return; }
         tab = BV.tabs.find(function (t) { return t.id === "home"; });
       }
     } else if (!isShell(tab) && (!tab || !BV.tabEnabled(tab))) {
       tab = BV.tabs.find(BV.tabEnabled) || BV.tabs[BV.tabs.length - 1];
-      if (("#" + tab.id) !== location.hash) { location.hash = "#" + tab.id; return; }
+      if (("#" + tab.id) !== location.hash) { location.replace("#" + tab.id); return; }
     }
     setActive(tab.id);
     setTopbarChrome(isShell(tab));
