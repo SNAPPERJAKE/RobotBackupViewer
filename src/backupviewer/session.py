@@ -23,6 +23,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Callable
 
+from .ftpbackup import long_path
 from .parsers import TAB_REQUIREMENTS
 from .parsers.common import read_text
 
@@ -136,20 +137,32 @@ def find_backup_roots(parent: Path, max_depth: int = 7, cap: int = 5000,
 class BackupSession:
     def __init__(self, root: Path):
         self.root = Path(root)
-        if not self.root.is_dir():
+        # The index walks the \\?\ extended-length form of the root: a deep
+        # library root + a Matrox SavedImages filename passes 260 chars easily,
+        # and with the OS long-path policy off (the Windows default) is_file()
+        # on such a path is a failed stat = False - the backup writer has
+        # landed those files via \\?\ since v0.99h, but this walk silently
+        # dropped them from the index (photos tab: "no photos" with the photos
+        # right there on disk). abspath first: \\?\ paths skip Win32
+        # normalization, so any ../ must be resolved before prefixing.
+        # self.root stays as given - it is the display path (manifest) and the
+        # compare cache key; every Path the session hands out carries the
+        # prefix, so downstream stat/open work at any depth.
+        self._walk_root = Path(long_path(os.path.abspath(self.root)))
+        if not self._walk_root.is_dir():
             raise NotADirectoryError(str(root))
 
         self.files: dict[str, Path] = {}             # UPPER posix relpath -> Path
         self.by_name: dict[str, list[Path]] = {}     # UPPER basename -> priority-sorted
         self.truncated_scan = False
-        for p in sorted(self.root.rglob("*")):
+        for p in sorted(self._walk_root.rglob("*")):
             if not p.is_file():
                 continue
             if len(self.files) >= MAX_SCAN_FILES:
                 self.truncated_scan = True
                 log.warning("scan capped at %d files under %s", MAX_SCAN_FILES, self.root)
                 break
-            self.files[p.relative_to(self.root).as_posix().upper()] = p
+            self.files[p.relative_to(self._walk_root).as_posix().upper()] = p
             self.by_name.setdefault(p.name.upper(), []).append(p)
         for lst in self.by_name.values():
             lst.sort(key=self._priority)
@@ -161,7 +174,7 @@ class BackupSession:
         self.backup_type = self._detect_type()
 
     def _priority(self, p: Path) -> tuple:
-        rel = p.relative_to(self.root)
+        rel = p.relative_to(self._walk_root)
         return (
             len(rel.parts),                                # shallowest first
             0 if p.parent.name.lower() == "mdb" else 1,    # controller dump dir next
@@ -178,7 +191,7 @@ class BackupSession:
         return hits[0] if hits else None
 
     def rel(self, p: Path) -> str:
-        return p.relative_to(self.root).as_posix()
+        return p.relative_to(self._walk_root).as_posix()
 
     def text(self, name: str) -> str | None:
         p = self.find(name)

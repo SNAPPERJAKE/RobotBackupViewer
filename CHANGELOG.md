@@ -1,6 +1,14 @@
 # Changelog
 
 ## Unreleased
+- **Deep backups read fully again.** The viewer's file index now walks a
+  backup through the same `\\?\` extended-length form the backup writer has
+  used since v0.99h. Before this, a tree whose paths passed Windows'
+  260-char MAX_PATH (a deep library root plus a Matrox SavedImages filename
+  is enough) would *back up* fine but *view* empty — the walk's stat failed
+  silently on machines without the OS long-path policy, so every photo (and
+  the deepest da/ files) quietly dropped out of the index and the photos tab
+  swore there was nothing to show. The photos were on disk the whole time.
 - **The 🎨 theme window.** A new topbar button (and `t`) opens a two-tab
   window that owns everything about how the app looks: **themes** is the
   familiar category accordion (hover previews, j/k/enter, custom-theme
