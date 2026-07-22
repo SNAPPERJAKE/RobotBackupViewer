@@ -16,9 +16,11 @@ How it works (all detail in the handoff doc):
     (wait for the op1 ack after an OPEN, the op6 response after a REQUEST), with
     the ctx fields patched in and the type7/method0x17 body pointed at the video
     ctx so frames get routed to 8504.
-  - Video: full 1024x768 JPEGs pushed on change on 8504 (accumulate message
-    bodies, scan FFD8..FFD9). Reply to the op5/method5 "please-ack" with the
-    frame-ack "16" message to keep frames flowing.
+  - Video: full 1024x768 JPEGs pushed on change on 8504 (accumulate the
+    op7/meth4 chunk + op5/meth5 end-of-frame bodies minus their 40-byte
+    sub-header - see _VIDEO_SUBHDR - then scan FFD8..FFD9). Reply to the
+    op5/method5 "please-ack" with the frame-ack "16" message to keep frames
+    flowing.
   - Mouse: 8502 type7 op5 method0x34, body [7, h1, h2, eventId, X, Y, h3].
 
 One session per controller (don't connect while the Keyence Terminal or an
@@ -58,6 +60,17 @@ EV_MOVE, EV_LDOWN, EV_LUP, EV_RDOWN, EV_RUP = 0, 1, 2, 3, 4
 _FRAME_ACK = bytes.fromhex(
     "160000000a0000000600000006000000050000000000000000000000140000"
     "0048e1526988c403600000000038110000" "01000100")
+
+# Video-data bodies (the op7/meth4 frame chunks and the op5/meth5 end-of-frame)
+# carry a 40-byte sub-header between the outer 32-byte header and the JPEG
+# bytes: [0:8] client handles (the _FRAME_ACK pair), [8:12] 0, [12:16] payload
+# len (bodyLen-16), [16:18]/[18:20] u16 not-first/last flags, [20:24] stream id,
+# [24:28] 3, [28:32] 0, [32:36] u16 width + u16 height, [36:40] chunk data len
+# (0 on the final chunk, so it can't be trusted - strip the fixed 40 and let
+# the SOI/EOI scan trim the final chunk's 8-byte zero trailer). Ground truth:
+# the 8504 rx stream in the capture behind CVX_REMOTE_HANDOFF.md - 13 op7/meth4
+# chunks + 1 op5/meth5, this exact layout byte-for-byte on every one.
+_VIDEO_SUBHDR = 40
 
 
 def _u32(b, o):
@@ -122,8 +135,11 @@ def _port_priority(port: int) -> int:
 
 def extract_jpegs(buf: bytearray) -> list[bytes]:
     """Pull complete JPEGs (SOI FFD8 .. EOI FFD9) out of an accumulating body
-    buffer, removing consumed bytes. Standard decoders tolerate the few
-    inter-chunk header bytes left between SOI/EOI."""
+    buffer, removing consumed bytes. The buffer must hold raw JPEG bytes only:
+    callers strip each chunk's sub-header (_VIDEO_SUBHDR) before appending -
+    stray bytes land inside the entropy-coded scan and decode as garbage
+    patches, and a sub-header that happens to contain FFD8/FFD9 tears the
+    frame."""
     frames = []
     while True:
         soi = buf.find(b"\xff\xd8")
@@ -284,9 +300,14 @@ class CvxRemoteSession:
                 self._resp6[VIDEO_PORT] += 1
             if op == 5 and meth == 5:            # end-of-frame: controller wants an ack
                 need_ack = True
-            if body_len > 0:
-                with self._img_lock:
-                    self._imgbuf += buf[32:total]
+            # only actual video-data bodies join the frame - op7/meth4 chunks
+            # and the op5/meth5 final chunk - minus their sub-header. Control
+            # traffic on 8504 (op1 acks, op6 responses) carries no image bytes;
+            # appending it corrupted the scan data (the old patchy artifacting).
+            if (op == 7 and meth == 4) or (op == 5 and meth == 5):
+                if body_len > _VIDEO_SUBHDR:
+                    with self._img_lock:
+                        self._imgbuf += buf[32 + _VIDEO_SUBHDR:total]
             del buf[:total]
         with self._img_lock:
             for jpg in extract_jpegs(self._imgbuf):

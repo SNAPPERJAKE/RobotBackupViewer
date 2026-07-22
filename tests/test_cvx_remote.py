@@ -166,6 +166,41 @@ def test_prepare_routes_video_using_type6_ctx_not_port():
 
 # -- video parse -> decode + reactive frame-ack ------------------------------
 
+def _subhdr(data_len, first=False, last=False):
+    """The 40-byte per-chunk sub-header exactly as the controller sends it
+    (layout documented at cx._VIDEO_SUBHDR): handles, payload len, not-first/
+    last flags, stream id, const 3, 1024x768, chunk data len (0 on the final
+    chunk - the real controller doesn't fill it there)."""
+    h = bytearray(cx._VIDEO_SUBHDR)
+    h[0:8] = bytes.fromhex("48e1526988c40360")
+    struct.pack_into("<I", h, 12, 24 + data_len)     # payload len = bodyLen-16
+    struct.pack_into("<H", h, 16, 0 if first else 1)
+    struct.pack_into("<H", h, 18, 1 if last else 0)
+    struct.pack_into("<I", h, 20, 0x73)
+    struct.pack_into("<I", h, 24, 3)
+    struct.pack_into("<H", h, 32, 1024)
+    struct.pack_into("<H", h, 34, 768)
+    struct.pack_into("<I", h, 36, 0 if last else data_len)
+    return bytes(h)
+
+
+def _video_frame_messages(jpg, chunk=4096, seq0=1, ctx=0x5151):
+    """Wrap a JPEG the way the controller ships one frame: op7/meth4 chunks,
+    then the tail bytes on the op5/meth5 end-of-frame message, every body led
+    by the 40-byte sub-header, the final one padded with the 8-byte trailer."""
+    chunks = [jpg[i:i + chunk] for i in range(0, len(jpg), chunk)]
+    out = b""
+    for i, part in enumerate(chunks):
+        seq = seq0 + i
+        if i == len(chunks) - 1:
+            body = _subhdr(len(part), first=(i == 0), last=True) + part + bytes(8)
+            out += _msg(seq, ctx, cx.VIDEO_TYPE, 5, 5, body)
+        else:
+            body = _subhdr(len(part), first=(i == 0)) + part
+            out += _msg(seq, ctx, cx.VIDEO_TYPE, 7, 4, body)
+    return out
+
+
 def test_parse_video_decodes_frame_and_acks_with_type6_ctx():
     s = _session()
     s._alive = True
@@ -174,9 +209,8 @@ def test_parse_video_decodes_frame_and_acks_with_type6_ctx():
     s._ctx[cx.VIDEO_TYPE] = 0x5151     # learned video ctx
 
     jpg = b"\xff\xd8" + b"IMAGE-DATA" + b"\xff\xd9"
-    # a video message carrying the JPEG, then the op5/meth5 "please ack" end-of-frame
-    buf = bytearray(_msg(1, 0x5151, cx.VIDEO_TYPE, 0, 0, jpg)
-                    + _msg(2, 0x5151, cx.VIDEO_TYPE, 5, 5))
+    # one chunk message carrying the whole JPEG (op5/meth5 = end-of-frame + ack ask)
+    buf = bytearray(_video_frame_messages(jpg))
     s._parse_video(buf)
 
     assert s.frames == 1
@@ -185,6 +219,40 @@ def test_parse_video_decodes_frame_and_acks_with_type6_ctx():
     assert len(fake.sent) == 52
     assert _u32(fake.sent, 4) == 0x5151
     assert _u32(fake.sent, 0) == 0x101   # _ack_seq starts at 0x101
+
+
+def test_parse_video_strips_subheaders_frame_is_byte_identical():
+    """The artifacting regression: a frame split across chunk messages must
+    come out byte-identical - no sub-header bytes left inside the scan data,
+    where every stray byte decodes as garbage until the next restart marker."""
+    s = _session()
+    s._socks[cx.VIDEO_PORT] = FakeSock()
+    # ~30 KB of scan-like payload with no accidental FFD8/FFD9 inside
+    payload = bytes(range(255)) * 120
+    jpg = b"\xff\xd8" + payload + b"\xff\xd9"
+    wire = _video_frame_messages(jpg, chunk=4408)   # the chunk size seen live
+    # arrives as arbitrary recv()-sized pieces, like the real reader sees it
+    buf = bytearray()
+    for i in range(0, len(wire), 1500):
+        buf += wire[i:i + 1500]
+        s._parse_video(buf)
+    assert s.frames == 1
+    assert s.latest_frame() == jpg
+
+
+def test_parse_video_ignores_non_video_bodies():
+    """Control traffic on 8504 (op1 acks, op6 responses) must never join the
+    frame - an op6 body carrying JPEG markers would previously have been
+    emitted as a phantom frame."""
+    s = _session()
+    s._socks[cx.VIDEO_PORT] = FakeSock()
+    buf = bytearray(_msg(1, 0x5151, cx.VIDEO_TYPE, 1, 0)
+                    + _msg(2, 0x5151, cx.VIDEO_TYPE, 6, 0,
+                           b"\xff\xd8not-really-a-frame\xff\xd9"))
+    s._parse_video(buf)
+    assert s.frames == 0
+    assert s.latest_frame() is None
+    assert s._acks[cx.VIDEO_PORT] == 1 and s._resp6[cx.VIDEO_PORT] == 1
 
 
 def test_parse_ctrl_learns_ctx_and_counts_acks():
