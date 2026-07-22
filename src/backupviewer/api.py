@@ -1835,9 +1835,8 @@ class Api:
 
     @_endpoint
     def lib_set_favorite(self, robot_id: str, favorite: bool = True):
-        """Star/unstar a robot (overlay-only; survives a rescan). The home
-        library pins favorites — with their nested cameras — to the top of
-        their line."""
+        """Star/unstar a robot (overlay-only, survives a rescan like hidden).
+        Favorites render pinned in a section at the top of the library."""
         e = library.set_favorite(robot_id, favorite)
         if e is None:
             raise ApiError("NOT_FOUND", "robot not in library")
