@@ -306,6 +306,108 @@ def test_send_mouse_clamps_to_screen():
     assert _u32(b, 52) == 0
 
 
+def test_mouse_event_ids_match_vendor_enum():
+    """The eventId values are Keyence's own VapiMouseEventId (reflected from
+    Vapi.Net.dll) - pin them so nobody 'tidies' the deliberate gap between
+    EV_MUP (6) and EV_WHEEL_UP (10; 7-9 are long-press variants we don't send)."""
+    assert (cx.EV_MOVE, cx.EV_LDOWN, cx.EV_LUP, cx.EV_RDOWN, cx.EV_RUP) == (0, 1, 2, 3, 4)
+    assert (cx.EV_MDOWN, cx.EV_MUP) == (5, 6)
+    assert (cx.EV_WHEEL_UP, cx.EV_WHEEL_DOWN) == (10, 11)
+    # drags are their own events - a held-button move sent as plain MOVE is
+    # ignored by the controller (the field's snap-at-release bug)
+    assert (cx.EV_DRAGGED, cx.EV_WHEEL_DRAGGED) == (14, 15)
+    # the wheel/middle ids ride the proven 60-byte message unchanged
+    s = _session()
+    s._alive = True
+    fake = FakeSock()
+    s._socks[cx.CTRL_PORT] = fake
+    s.send_mouse(cx.EV_WHEEL_DOWN, 512, 384)
+    assert len(fake.sent) == 60
+    assert _u32(fake.sent, 44) == 11
+    assert _u32(fake.sent, 48) == 512 and _u32(fake.sent, 52) == 384
+
+
+def _sent_events(fake):
+    """Decode the eventId + x of every 60-byte mouse message sendall'd."""
+    out = []
+    for off in range(0, len(fake.sent), 60):
+        out.append((_u32(fake.sent, off + 44), _u32(fake.sent, off + 48)))
+    return out
+
+
+def test_queue_mouse_reorders_bridge_arrivals():
+    """The frontend fires events without awaiting, so bridge calls can arrive
+    out of client order - queue_mouse must restore it before the socket."""
+    s = _session()
+    s._alive = True
+    fake = FakeSock()
+    s._socks[cx.CTRL_PORT] = fake
+    # arrival order 1, 0, 2 (x doubles as a label) -> wire order 0, 1, 2
+    s.queue_mouse(1, cx.EV_LDOWN, 101, 0)
+    assert _sent_events(fake) == []          # holds: seq 0 hasn't arrived
+    s.queue_mouse(0, cx.EV_MOVE, 100, 0)
+    s.queue_mouse(2, cx.EV_LUP, 102, 0)
+    assert _sent_events(fake) == [(cx.EV_MOVE, 100), (cx.EV_LDOWN, 101), (cx.EV_LUP, 102)]
+
+
+def test_queue_mouse_skips_a_dead_hole():
+    """A seq that never arrives (its bridge call died) must stall the stream
+    for at most ~150ms, not forever - later events skip past the hole."""
+    s = _session()
+    s._alive = True
+    fake = FakeSock()
+    s._socks[cx.CTRL_PORT] = fake
+    s.queue_mouse(0, cx.EV_MOVE, 100, 0)
+    s.queue_mouse(2, cx.EV_MOVE, 102, 0)     # 1 is missing -> stalls
+    assert _sent_events(fake) == [(cx.EV_MOVE, 100)]
+    s._mouse_gap_t0 -= 1.0                   # age the gap past the 150ms window
+    s.queue_mouse(3, cx.EV_MOVE, 103, 0)     # next arrival skips the hole
+    assert _sent_events(fake) == [(cx.EV_MOVE, 100), (cx.EV_MOVE, 102), (cx.EV_MOVE, 103)]
+    s.queue_mouse(4, cx.EV_MOVE, 104, 0)     # and the stream keeps flowing
+    assert _sent_events(fake)[-1] == (cx.EV_MOVE, 104)
+
+
+def test_console_keycodes_match_vendor_enum():
+    """VapiConsoleKeyCode from Vapi.Net.dll: KEY_0..KEY_8 are button indices
+    0..8 (NOT ascii digits), then the d-pad, plus the no-chord sentinel."""
+    assert (cx.KEY_0, cx.KEY_1, cx.KEY_2, cx.KEY_8) == (0, 1, 2, 8)
+    assert (cx.KEY_DOWN, cx.KEY_LEFT, cx.KEY_RIGHT) == (10, 11, 12)
+    assert (cx.KEY_RIGHTUP, cx.KEY_RIGHTDOWN, cx.KEY_LEFTDOWN, cx.KEY_LEFTUP) == (13, 14, 15, 16)
+    assert cx.SUB_KEY_NONE == 0xFFFFFFFF
+
+
+def test_send_key_disabled_until_wire_method_known():
+    """Keyboard must not fire guessed opcodes at a live controller: send_key is
+    a no-op returning False while _KBD_METHOD is None (the current state, until
+    the live capture recovers the id)."""
+    assert cx._KBD_METHOD is None
+    s = _session()
+    s._alive = True
+    fake = FakeSock()
+    s._socks[cx.CTRL_PORT] = fake
+    assert s.send_key(cx.KEY_2) is False
+    assert len(fake.sent) == 0          # nothing went on the wire
+
+
+def test_send_key_encodes_once_method_is_supplied(monkeypatch):
+    """When _KBD_METHOD is set, the frame reuses the proven 60-byte mouse
+    envelope: type7/op5, the given method, body [7,H1,H2,keycode,subcode,count,H3].
+    (Body layout is the capture-confirmed hypothesis; method id is patched in.)"""
+    monkeypatch.setattr(cx, "_KBD_METHOD", 0x2F)
+    s = _session()
+    s._alive = True
+    fake = FakeSock()
+    s._socks[cx.CTRL_PORT] = fake
+    s._ctx[cx.RD_TYPE] = 0x0202
+    assert s.send_key(cx.KEY_5, count=3) is True
+    b = fake.sent
+    assert len(b) == 60
+    assert _u32(b, 8) == cx.RD_TYPE and _u32(b, 12) == 5 and _u32(b, 16) == 0x2F
+    assert _u32(b, 44) == cx.KEY_5          # keycode
+    assert _u32(b, 48) == cx.SUB_KEY_NONE   # subcode default
+    assert _u32(b, 52) == 3                 # count
+
+
 def test_send_mouse_noop_when_not_alive():
     s = _session()
     fake = FakeSock()

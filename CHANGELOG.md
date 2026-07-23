@@ -1,6 +1,13 @@
 # Changelog
 
 ## Unreleased
+- **CV-X remote: full mouse.** The live Keyence remote now forwards the
+  scroll wheel (zoom), the middle button, real drags (pan — the controller
+  only pans on its dedicated drag events, so dragging used to snap at
+  release) and a reliable right-click (context menu). Event ids
+  ground-truthed against Keyence's own Vapi.Net.dll, events resequenced so
+  they reach the controller in gesture order, and hand jitter during a
+  click no longer reads as a drag.
 - **The 🎨 theme window.** A new topbar button (and `t`) opens a two-tab
   window that owns everything about how the app looks: **themes** is the
   familiar category accordion (hover previews, j/k/enter, custom-theme

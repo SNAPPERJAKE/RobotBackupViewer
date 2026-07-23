@@ -1,7 +1,9 @@
 /* cvxremote.js - live CV-X remote-desktop overlay (screen mirror + mouse).
 
    BV.openCvxRemote(ip, label) opens a fullscreen-capable panel that mirrors a
-   Keyence CV-X controller's live 1024x768 screen and forwards mouse input.
+   Keyence CV-X controller's live 1024x768 screen and forwards mouse input -
+   all three buttons plus the wheel, so the controller's own zoom (scroll),
+   pan (middle-drag) and context-menu (right-click) gestures work.
 
    The Python side (cvx_remote.py, via api.cvx_remote_*) speaks the controller's
    own TCP protocol and re-streams frames as MJPEG over a localhost HTTP server,
@@ -12,7 +14,24 @@
   "use strict";
 
   var SCREEN_W = 1024, SCREEN_H = 768;
-  var EV_MOVE = 0, EV_LDOWN = 1, EV_LUP = 2, EV_RDOWN = 3, EV_RUP = 4;
+  /* Keyence's own VapiMouseEventId values (Vapi.Net.dll): 5/6 are the wheel
+     BUTTON (middle), 10/11 wheel rotation (zoom). Moving with a button held
+     must be sent as the dedicated DRAG id, not MOVE - the controller ignores
+     plain MOVEs while pressed and the viewport would only snap at release. */
+  var EV_MOVE = 0, EV_LDOWN = 1, EV_LUP = 2, EV_RDOWN = 3, EV_RUP = 4,
+      EV_MDOWN = 5, EV_MUP = 6, EV_WHEEL_UP = 10, EV_WHEEL_DOWN = 11,
+      EV_DRAGGED = 14, EV_WHEEL_DRAGGED = 15;
+  var DOWN_EV = { 0: EV_LDOWN, 1: EV_MDOWN, 2: EV_RDOWN };
+  var UP_EV = { 0: EV_LUP, 1: EV_MUP, 2: EV_RUP };
+  var DRAG_EV = { 0: EV_DRAGGED, 1: EV_WHEEL_DRAGGED, 2: EV_DRAGGED };
+  /* VapiConsoleKeyCode: the CV-X console has no PC keyboard - KEY_0..KEY_8 are
+     button INDICES, not ascii digits. Forwarding is EXPERIMENTAL and OFF until
+     the remoteControl wire method id is recovered from a live capture; the
+     Python endpoint no-ops until then, so this can be flipped on for testing
+     without risk of half-working shipped UX. */
+  var KBD_ENABLED = false;
+  var KEY_CODE = { "0": 0, "1": 1, "2": 2, "3": 3, "4": 4,
+                   "5": 5, "6": 6, "7": 7, "8": 8 };
   var open = false;   /* one session at a time */
 
   BV.openCvxRemote = function (ip, label) {
@@ -22,6 +41,7 @@
     open = true;
 
     var sid = null, statusTimer = null, lastMove = 0, downBtn = null;
+    var pressPt = null, dragging = false, wheelAcc = 0;
     var closed = false;   /* so a connect that resolves AFTER teardown stops the session it made */
 
     /* --- overlay chrome ------------------------------------------------- */
@@ -65,6 +85,7 @@
       window.removeEventListener("resize", fit);
       window.removeEventListener("mouseup", onMouseUp);
       document.removeEventListener("keydown", onKey);
+      document.removeEventListener("keydown", onKeyCapture, true);
       img.src = "";                       /* drop the MJPEG connection */
       if (document.fullscreenElement) { try { document.exitFullscreen(); } catch (e) {} }
       overlay.remove();
@@ -88,6 +109,19 @@
     }
     document.addEventListener("keydown", onKey);
 
+    /* console-key forwarding (experimental). Capture phase so a digit never
+       leaks to keys.js and switches a tab behind the fullscreen remote -
+       correct even while KBD_ENABLED is off. Forwards only once the wire
+       method is known (the endpoint no-ops until then). */
+    function onKeyCapture(e) {
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      if (!(e.key in KEY_CODE)) return;
+      e.preventDefault(); e.stopPropagation();
+      if (!KBD_ENABLED || !sid) return;
+      BV.api.call("cvx_remote_key", sid, KEY_CODE[e.key]).catch(function () {});
+    }
+    document.addEventListener("keydown", onKeyCapture, true);
+
     /* --- mouse forwarding ----------------------------------------------- */
     function toScreen(e) {
       var r = screen.getBoundingClientRect();
@@ -95,32 +129,65 @@
       var y = (e.clientY - r.top) / r.height * SCREEN_H;
       return { x: Math.round(x), y: Math.round(y) };
     }
+    /* fire-and-forget with a client sequence number. pywebview runs each api
+       call on its own Python thread (util.js_bridge_call), so calls can
+       ARRIVE out of order (a press before its positioning move) - Python
+       reorders by seq before touching the socket. Don't chain input on the
+       bridge promises instead: one lost call would stall every later event. */
+    var seq = 0;
     function sendMouse(ev, p) {
       if (!sid) return;
-      BV.api.call("cvx_remote_mouse", sid, ev, p.x, p.y).catch(function () {});
+      BV.api.call("cvx_remote_mouse", sid, ev, p.x, p.y, seq++).catch(function () {});
     }
     screen.addEventListener("mousemove", function (e) {
       if (!sid) return;
+      var p = toScreen(e);
+      if (downBtn !== null && !dragging) {
+        /* click-vs-drag dead-zone: hand jitter while a button is held must
+           not read as a drag - a jittered right-click would drag-cancel the
+           controller's context menu instead of opening it. */
+        if (Math.abs(p.x - pressPt.x) < 4 && Math.abs(p.y - pressPt.y) < 4) return;
+        dragging = true;
+      }
       var now = Date.now();
       if (now - lastMove < 45) return;    /* throttle: ~22 moves/s */
       lastMove = now;
-      sendMouse(EV_MOVE, toScreen(e));
+      /* held button -> the button's DRAG id; the controller pans on those
+         and ignores plain MOVEs while pressed (hover stays MOVE) */
+      sendMouse(dragging && downBtn !== null ? DRAG_EV[downBtn] : EV_MOVE, p);
     });
     screen.addEventListener("mousedown", function (e) {
-      if (!sid) return;
+      if (!sid || !(e.button in DOWN_EV)) return;
       e.preventDefault();
       var p = toScreen(e);
+      downBtn = e.button; pressPt = p; dragging = false;
       sendMouse(EV_MOVE, p);              /* position the cursor, then press */
-      if (e.button === 2) { downBtn = 2; sendMouse(EV_RDOWN, p); }
-      else { downBtn = 0; sendMouse(EV_LDOWN, p); }
+      sendMouse(DOWN_EV[e.button], p);
     });
     function onMouseUp(e) {
       if (!sid || downBtn === null) return;
-      var p = toScreen(e);
-      if (downBtn === 2) sendMouse(EV_RUP, p); else sendMouse(EV_LUP, p);
-      downBtn = null;
+      var p = dragging ? toScreen(e) : pressPt;   /* a click releases where it pressed */
+      sendMouse(UP_EV[downBtn], p);
+      downBtn = null; dragging = false;
     }
     window.addEventListener("mouseup", onMouseUp);
+    screen.addEventListener("wheel", function (e) {
+      if (!sid) return;
+      e.preventDefault();
+      var d = e.deltaY;
+      if (e.deltaMode === 1) d *= 33;     /* lines -> px */
+      else if (e.deltaMode === 2) d *= 300;
+      if (wheelAcc !== 0 && (d > 0) !== (wheelAcc > 0)) wheelAcc = 0;
+      wheelAcc += d;
+      var p = toScreen(e), sent = 0;
+      while (Math.abs(wheelAcc) >= 100 && sent < 3) {   /* 100 px = one notch */
+        if (!sent) sendMouse(EV_MOVE, p);               /* zoom centers on the cursor */
+        sendMouse(wheelAcc > 0 ? EV_WHEEL_DOWN : EV_WHEEL_UP, p);
+        wheelAcc -= (wheelAcc > 0 ? 100 : -100);
+        sent++;
+      }
+      if (sent === 3) wheelAcc = 0;       /* a trackpad fling must not zoom forever */
+    }, { passive: false });
     screen.addEventListener("contextmenu", function (e) { e.preventDefault(); });
 
     /* --- connect + stream ----------------------------------------------- */
