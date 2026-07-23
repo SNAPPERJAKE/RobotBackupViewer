@@ -3,6 +3,36 @@
 (function () {
   "use strict";
 
+  /* solo mode: a popped-out backup window boots pinned to ONE session. The
+     sid rides the URL FRAGMENT (#sid=..., stamped by pop_out_backup -
+     WebView2 refuses file:// urls with a QUERY string outright); every
+     content call then names that session via the SID_POS injection below.
+     The router replaces the hash with a real route right after boot. */
+  var soloSid = null;
+  try {
+    var mq = /[?&]sid=([^&]+)/.exec(location.search) || /^#sid=(.+)$/.exec(location.hash);
+    if (mq) soloSid = decodeURIComponent(mq[1]);
+  } catch (e) { /* malformed marker - boot as the main window */ }
+  BV.solo = !!soloSid;
+  BV.soloSid = soloSid;
+  if (BV.solo) document.body.classList.add("solo");
+
+  /* method -> the 0-based argument position of `sid` (the slot IMMEDIATELY
+     before a trailing `side`, or last when there is no side). Solo windows
+     inject their pinned sid here. Drift between this table and api.py's
+     signatures fails LOUD (the arg-count assert below + the pytest
+     signature guard) instead of silently reading the wrong session; Python
+     folds None back to each optional's default where we pad over one. */
+  var SID_POS = {
+    get_frames: 0, get_io: 0, get_registers: 1, get_programs: 0,
+    get_program_variables: 1, get_macros: 0, get_dcs_files: 0, get_dcs: 1,
+    get_dcs_zones: 0, get_robot_pose: 0, get_sysvar_records: 0, get_sysvar: 1,
+    get_mhvalves: 0, get_magnet: 0, get_payloads: 0, search_backup: 1,
+    get_overview: 0, get_styles: 0, get_call_graph: 0, get_program: 1,
+    get_call_tree: 2, get_alarm_files: 0, get_alarms: 4, list_files: 0,
+    get_file: 1, get_photos: 0, get_image: 1,
+  };
+
   var readyResolve;
   var ready = new Promise(function (resolve) { readyResolve = resolve; });
 
@@ -37,6 +67,16 @@
 
     call: function (method) {
       var args = Array.prototype.slice.call(arguments, 1);
+      if (BV.solo && Object.prototype.hasOwnProperty.call(SID_POS, method)) {
+        var pos = SID_POS[method];
+        if (args.length > pos) {
+          /* the sid slot is occupied - the table and api.py disagree */
+          throw new Error("SID_POS drift: " + method + " got " + args.length +
+            " args but sid belongs at " + pos);
+        }
+        while (args.length < pos) args.push(null);
+        args.push(BV.soloSid);
+      }
       var slow = SLOW[method];
       var key = null;
       if (slow) {

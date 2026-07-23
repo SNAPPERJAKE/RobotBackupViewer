@@ -133,7 +133,7 @@
             vsBtn.classList.toggle("primary", vs);
             diffBtn.style.display = vs ? "" : "none";
             if (vs && !progsB) {
-              BV.api.call("get_programs", "b").then(function (pb) {
+              BV.api.call("get_programs", null, "b").then(function (pb) {
                 progsB = pb;
                 progsB.forEach(function (p) { p.star_rank = p.styles && p.styles.length ? 0 : 1; });
                 build();

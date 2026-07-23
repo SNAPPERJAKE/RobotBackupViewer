@@ -235,7 +235,18 @@
   function switchBackup(path) {
     var man = BV.state.manifest || {};
     if (!man.robot_id) return;
+    var oldSid = man.sid;
     BV.api.call("lib_open", man.robot_id, path).then(function (m) {
+      /* same TAB, different dated snapshot: the strip entry follows the new
+         sid, and the old snapshot's session is really closed - without this
+         a few date hops would quietly fill the session cap */
+      if (oldSid && oldSid !== m.sid) {
+        BV.session.retarget(oldSid, m);
+        BV.api.call("close_session", oldSid).catch(function () {});
+        BV.state.dropBucket(oldSid);
+      } else {
+        BV.session.open(m);
+      }
       BV.state.setManifest(m);
       BV.route();
     }).catch(function (e) { BV.toast(e.message); });
@@ -255,6 +266,7 @@
   }
 
   function buildDatePicker() {
+    if (BV.solo) return null;   /* a pop-out shows ONE snapshot, frozen */
     var man = BV.state.manifest || {};
     var backups = man.backups || [];
     if (!man.robot_id || backups.length < 2) return null;   // nothing to switch between

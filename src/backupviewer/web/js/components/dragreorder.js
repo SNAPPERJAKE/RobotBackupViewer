@@ -9,7 +9,10 @@
    immediately follows a sloppy drag can be ignored (isRecentDrag()).
 
    opts: { zones:[el], itemSelector, handleSelector, classes, onDrop, clickGuardMs,
-           autoScroll, onDragState }
+           autoScroll, onDragState, axis }
+           axis           - "y" (default, vertical lists) or "x" (horizontal
+                            strips - the backup tab bar); picks which pointer
+                            coordinate decides the insertion point
            zones          - the drop containers
            itemSelector   - selects a draggable item (".card[data-card-id]")
            handleSelector  - child selector for the grab handle, relative to an
@@ -34,6 +37,7 @@
     var AFTER = cls.dropAfter || "drop-after";
     var END = cls.dropEnd || "drop-end";
     var guardMs = opts.clickGuardMs || 250;
+    var axis = opts.axis || "y";
 
     var dragged = null;
     var lastDragEnd = 0;
@@ -53,16 +57,17 @@
       });
     }
 
-    /* the item we'd drop BEFORE for a pointer Y in this zone (null = append at the
-       end). One model for "onto a card" and "into empty space" alike, so the
-       marker always shows exactly where the card will land. */
-    function insertionPoint(zone, clientY) {
+    /* the item we'd drop BEFORE for a pointer coordinate in this zone (null =
+       append at the end). One model for "onto a card" and "into empty space"
+       alike, so the marker always shows exactly where the card will land. */
+    function insertionPoint(zone, coord) {
       var items = [].filter.call(zone.querySelectorAll(itemSel), function (it) {
         return it !== dragged && it.parentElement === zone;
       });
       for (var i = 0; i < items.length; i++) {
         var r = items[i].getBoundingClientRect();
-        if (clientY < r.top + r.height / 2) return items[i];
+        var mid = axis === "x" ? r.left + r.width / 2 : r.top + r.height / 2;
+        if (coord < mid) return items[i];
       }
       return null;
     }
@@ -123,7 +128,7 @@
         clearMarks();
         /* mark exactly where it lands: a line ABOVE the insertion-point card, or
            the whole zone's END when it appends past the last card / into empty */
-        var ref = insertionPoint(zone, lastClientY);
+        var ref = insertionPoint(zone, axis === "x" ? (e.clientX || 0) : lastClientY);
         if (ref) ref.classList.add(BEFORE);
         else zone.classList.add(END);
       });
@@ -132,7 +137,7 @@
         if (!dragged) return;
         e.preventDefault();
         var from = dragged.parentElement;
-        var ref = insertionPoint(zone, e.clientY || 0);
+        var ref = insertionPoint(zone, axis === "x" ? (e.clientX || 0) : (e.clientY || 0));
         if (ref) zone.insertBefore(dragged, ref);
         else zone.appendChild(dragged);
         clearMarks();

@@ -348,6 +348,7 @@
           (c.detail ? '<span class="hs-detail">' + BV.esc(c.detail) + "</span>" : ""));
         row.addEventListener("click", function () {
           BV.api.call("lib_open", r.robot_id, "latest").then(function (m) {
+            BV.session.open(m);
             BV.state.setManifest(m);
             modal.close(true);
             location.hash = sec && sec.query

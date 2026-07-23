@@ -140,7 +140,7 @@
         }
 
         if (vs) {
-          BV.api.call("get_registers", cur, "b").then(function (rb) {
+          BV.api.call("get_registers", cur, null, "b").then(function (rb) {
             var rowsB = rb;
             if (hideEmpty) {
               rowsB = rb.filter(function (r) {
