@@ -184,6 +184,9 @@
     if (s) s.classList.toggle("hidden", shell);
     if (c) c.classList.toggle("hidden", shell);
     if (tabbar) tabbar.classList.toggle("hidden", shell);
+    /* the SESSION tab strip stays through shell screens (browser behavior -
+       home is just a screen); it only un-highlights there */
+    if (BV.session) BV.session.setShell(shell);
   }
 
   function route() {
@@ -211,12 +214,19 @@
         if (location.hash !== "#home") { location.replace("#home"); return; }
         tab = BV.tabs.find(function (t) { return t.id === "home"; });
       }
+    } else if (BV.solo && isShell(tab)) {
+      /* a solo pop-out has no home/library - shell routes bounce to the
+         backup (the pass below redirects again if overview is disabled) */
+      location.replace("#overview");
+      return;
     } else if (!isShell(tab) && (!tab || !BV.tabEnabled(tab))) {
       tab = BV.tabs.find(BV.tabEnabled) || BV.tabs[BV.tabs.length - 1];
       if (("#" + tab.id) !== location.hash) { location.replace("#" + tab.id); return; }
     }
     setActive(tab.id);
     setTopbarChrome(isShell(tab));
+    /* remember where this backup's tab is, so switching back lands there */
+    if (!isShell(tab) && BV.session) BV.session.noteHash(location.hash);
     view.classList.remove("no-pad");
     /* drop any persist-scroll ownership before resetting: the scroll-to-0 below
        fires a scroll event, and without this the OUTGOING tab's key would catch
@@ -239,6 +249,7 @@
     BV.api.call("pick_backup_folder").then(function (path) {
       if (!path) return;
       return BV.api.call("open_backup", path).then(function (manifest) {
+        BV.session.open(manifest);
         BV.state.setManifest(manifest);
         buildTabbar();
         BV.toast(manifest.robot_name ? manifest.robot_name + " · " + manifest.file_count + " files" : "backup opened");
@@ -255,9 +266,10 @@
     else location.hash = "#home";
   };
 
-  /* the logo doubles as the home button (browser convention) */
+  /* the logo doubles as the home button (browser convention) - except in a
+     solo pop-out, which has no home: it shows exactly one backup */
   var logo = document.getElementById("logo");
-  if (logo) {
+  if (logo && !BV.solo) {
     logo.classList.add("clickable");
     logo.title = "home";
     logo.addEventListener("click", BV.goHome);
@@ -314,15 +326,26 @@
     }).then(function (settings) {
       BV.state.settings = settings || {};
       BV.uiPrefs.apply(BV.state.settings);
-      return BV.api.call("get_state");
+      /* a solo pop-out boots pinned to its sid; the main window asks for
+         whatever is active (or nothing) */
+      return BV.solo ? BV.api.call("get_state", BV.soloSid) : BV.api.call("get_state");
     }).then(function (manifest) {
-      if (manifest) BV.state.setManifest(manifest);
+      if (manifest) {
+        if (BV.solo) {
+          document.title = manifest.robot_name || manifest.name || "backupviewer";
+        } else {
+          BV.session.open(manifest);   /* seed the strip (e.g. --backup startup) */
+        }
+        BV.state.setManifest(manifest);
+      }
       buildTabbar();
       /* with a backup passed at startup, land in its viewer; otherwise the home
          menu. a deep-link hash (other than #home) is honoured when a backup is open. */
-      var want = manifest
-        ? ((location.hash && location.hash !== "#home") ? location.hash : "#overview")
-        : (location.hash || "#home");
+      var want = BV.solo
+        ? "#overview"
+        : manifest
+          ? ((location.hash && location.hash !== "#home") ? location.hash : "#overview")
+          : (location.hash || "#home");
       if (location.hash === want) route();   /* same hash fires no hashchange - route by hand */
       else location.hash = want;             /* hashchange -> route() */
     }).catch(function () {

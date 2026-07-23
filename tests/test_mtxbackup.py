@@ -127,6 +127,36 @@ def test_copy_over_max_path(tmp_path):
     assert not os.path.exists(ftpbackup.long_path(dest.with_name(dest.name + ".part")))
 
 
+def test_session_reads_over_max_path(tmp_path):
+    r"""The session walk survives MAX_PATH too. The writer lands SavedImages
+    past 260 chars via \\?\ (test above), but with the OS long-path policy off
+    a plain is_file() on such a path is a failed stat = False, so the index
+    silently dropped every photo - "no photos" with the photos right there on
+    disk. The session must index, rel() and read them, without the \\?\ walk
+    root leaking into the manifest path."""
+    src = tmp_path / "seed.jpg"
+    src.write_bytes(b"\xff\xd8seed")
+    root = tmp_path / "cell"
+    day = root / "CAM1" / "Documents" / "Matrox Design Assistant" / "SavedImages" / "2026-07-07"
+    name = "CELL-01RB172-R01CAM02-402-0-Pass-2026_07_07-" + "0" * 200
+    for ext in (".jpg", ".txt"):
+        dest = day / (name + ext)
+        assert len(str(dest)) > 260, len(str(dest))
+        mtxbackup._copy_file(src, dest)
+
+    s = BackupSession(root)
+    assert s.has_photos()
+    rel = "CAM1/Documents/Matrox Design Assistant/SavedImages/2026-07-07/" + name + ".jpg"
+    p = s.files.get(rel.upper())
+    assert p is not None, sorted(s.files)
+    assert p.read_bytes().startswith(b"\xff\xd8")
+    assert s.rel(p) == rel
+    m = s.manifest()
+    assert m["file_count"] == 2
+    assert m["tabs"]["photos"] is True
+    assert m["path"] == str(root)
+
+
 def test_backup_end_to_end(monkeypatch, tmp_path):
     _iso_lib(monkeypatch, tmp_path)
     home = _make_camera(tmp_path)

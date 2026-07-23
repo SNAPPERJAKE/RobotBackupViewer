@@ -40,7 +40,9 @@
         });
 
       function openRobot(robotId) {
+        if (BV.session.focusRobot(robotId)) { modal.close(true); return; }
         BV.api.call("lib_open", robotId, "latest").then(function (m) {
+          BV.session.open(m);
           BV.state.setManifest(m);
           modal.close(true);
           location.hash = "#overview";

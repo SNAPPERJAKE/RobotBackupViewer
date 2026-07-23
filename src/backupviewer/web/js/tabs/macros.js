@@ -48,7 +48,7 @@
           vsBtn.classList.toggle("primary", vs);
           hlWrap.style.display = vs ? "flex" : "none";
           if (vs && !macrosB) {
-            BV.api.call("get_macros", "b").then(function (mb) {
+            BV.api.call("get_macros", null, "b").then(function (mb) {
               macrosB = mb;
               build();
             }).catch(function (e) {

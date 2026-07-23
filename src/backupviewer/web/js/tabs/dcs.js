@@ -484,8 +484,8 @@
       host.innerHTML = "";
       if (vsOn && BV.state.compare) {
         Promise.all([
-          BV.api.call("get_dcs", curFile, "a"),
-          BV.api.call("get_dcs", curFile, "b").catch(function (e) { return { error: e.message }; }),
+          BV.api.call("get_dcs", curFile, null, "a"),
+          BV.api.call("get_dcs", curFile, null, "b").catch(function (e) { return { error: e.message }; }),
         ]).then(function (res) {
           var grid = BV.el("div", { style: "display:grid;grid-template-columns:1fr 1fr;gap:1.2rem;align-items:start" });
           grid.appendChild(column(res[0], BV.state.manifest.robot_name || BV.state.manifest.name));

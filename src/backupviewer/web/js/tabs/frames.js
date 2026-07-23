@@ -114,10 +114,10 @@
           hlWrap.style.display = vs ? "flex" : "none";
           if (vs && !frB) {
             Promise.all([
-              BV.api.call("get_frames", "b"),
+              BV.api.call("get_frames", null, "b"),
               /* payloads are a section of this tab too - a B side without
                  SYMOTN.VA shows empty payloads, not a broken vs */
-              BV.api.call("get_payloads", "b").catch(function () { return { groups: {} }; }),
+              BV.api.call("get_payloads", null, "b").catch(function () { return { groups: {} }; }),
             ]).then(function (res) {
               frB = res[0];
               frB.payloads = (res[1] && res[1].groups) || {};

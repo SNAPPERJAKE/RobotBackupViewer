@@ -29,6 +29,24 @@
   --edge: color-mix(in srgb, var(--accent) 45%, transparent);
   --edge-soft: color-mix(in srgb, var(--accent) 26%, transparent);
 
+  /* frosted surfaces: the theme window's frost slider drives these. The
+     rgba fills are computed in JS (BV.uiPrefs.apply) and set inline on
+     <html> whenever frost or the theme changes — NOT via
+     color-mix(calc(var())) here, because Chromium does not reliably
+     re-resolve that chain on existing elements when the var changes (fresh
+     elements got the new value, live ones kept the old — a real
+     invalidation quirk we hit). These defaults are the solid original, so
+     at frost 0 / with no JS override every theme renders exactly as before.
+     --panel skins content surfaces (rows, tables, cards) — translucency
+     only, no blur: dozens of blurred rows would crawl under software
+     rendering. --glass + --glass-blur are for the FEW sticky overlays
+     (library head, hero, modal) that need real backdrop blur to keep
+     content legible scrolling beneath. */
+  --frost: 0;
+  --panel: var(--bg2);
+  --glass: var(--bg);
+  --glass-blur: blur(calc(var(--frost) * 14px));
+
   --font-mono: "Cascadia Code", "Consolas", "JetBrains Mono", ui-monospace, monospace;
   /* UI font - the font picker (settings_ui.js) overrides this at runtime. Defaults to
      mono so the app is visually unchanged until a user opts in, and so chrome falls
@@ -115,13 +133,59 @@ body { overflow: hidden; }
 .logo-text { font-size: 1.05em; font-weight: 600; color: var(--text); letter-spacing: -0.02em; }
 .logo-accent { color: var(--accent); }
 
+/* the content tabs (overview/frames/io/…): a slim second row under the
+   topbar since the backup tabs took the topbar slot. Hidden by route on
+   shell screens (setTopbarChrome), like before. */
 #tabbar {
   display: flex;
-  flex-wrap: wrap;  /* tabs stack into a second row instead of scrolling away */
+  flex-wrap: wrap;  /* tabs stack into another row instead of scrolling away */
   gap: 0.1em 0.15em;
+  font-size: var(--chrome-fs, 15px);
+  padding: 0 1.1em 0.25em;
+  flex: none;
+}
+
+/* ---- the backup tab strip (backuptabs.js) ---- */
+#sessionbar {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
   flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;   /* many tabs shrink; the strip never wraps the topbar */
 }
+.stab {
+  display: flex; align-items: center; gap: 0.35em;
+  padding: 0.22em 0.3em 0.22em 0.7em;
+  border: 1px solid var(--edge-soft);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--sub);
+  cursor: pointer;
+  min-width: 0; max-width: 15em; flex: 0 1 auto;
+  user-select: none;
+  transition: color var(--trans), border-color var(--trans), background var(--trans);
+}
+.stab:hover { color: var(--text); }
+.stab.active { color: var(--text); border-color: var(--edge); }
+.stab.active .stab-label { color: var(--accent); }
+.stab-label {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 0.78em;
+}
+.stab-x {
+  appearance: none; background: none; border: none;
+  color: var(--sub); cursor: pointer;
+  padding: 0 0.32em; border-radius: 4px; font-size: 0.7em; line-height: 1.5;
+}
+.stab-x:hover { color: var(--error); background: color-mix(in srgb, var(--error) 14%, transparent); }
+.stab.dragging { opacity: 0.5; }
+.stab.drop-before { box-shadow: inset 2px 0 0 var(--accent); }
+#sessionbar.drop-end { box-shadow: inset -2px 0 0 var(--accent); }
+
+/* a solo pop-out window shows one backup: no tab strip, no compare, no
+   jobstrip - that's all main-window chrome */
+.solo #sessionbar, .solo #btn-compare, .solo #jobstrip { display: none !important; }
 
 .tab-btn {
   appearance: none;
@@ -210,7 +274,7 @@ body { overflow: hidden; }
   display: flex; align-items: center; gap: 0.9em;
   flex: none; padding: 0.5em 1.6em;
   border-top: 1px solid var(--edge-soft, transparent);
-  background: var(--bg2); font-size: calc(var(--chrome-fs, 15px) * 0.78);
+  background: var(--panel); font-size: calc(var(--chrome-fs, 15px) * 0.78);
   color: var(--sub);
 }
 #jobstrip .jobstrip-run {
@@ -226,7 +290,8 @@ body { overflow: hidden; }
   position: absolute; right: 1.6em; bottom: 100%; margin-bottom: 0.4em;
   width: min(34em, calc(100vw - 3.2em));
   max-height: 46vh; overflow-y: auto;
-  background: var(--bg2); border: 1px solid var(--edge);
+  background: var(--panel); backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--edge);
   border-radius: var(--radius); padding: 0.3em;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
   z-index: 40;
