@@ -1460,18 +1460,6 @@ class Api:
         return True
 
     @_endpoint
-    def cvx_remote_key(self, session_id: str, keycode: int, subcode: int = None,
-                       count: int = 1):
-        """Send a console key (VapiConsoleKeyCode) to the CV-X. Returns whether
-        it actually went out - keyboard is disabled until its wire method id is
-        recovered from a live capture, so this is a safe no-op until then."""
-        sess = self._cvx.get(session_id)
-        if sess is None:
-            raise ApiError("NO_SESSION", "unknown remote session")
-        sub = cvx_remote.SUB_KEY_NONE if subcode is None else int(subcode)
-        return sess.send_key(int(keycode), sub, int(count))
-
-    @_endpoint
     def cvx_remote_stop(self, session_id: str):
         sess = self._cvx.pop(session_id, None)
         if sess is not None:

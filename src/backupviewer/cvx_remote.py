@@ -69,25 +69,6 @@ EV_MDOWN, EV_MUP = 5, 6
 EV_WHEEL_UP, EV_WHEEL_DOWN = 10, 11
 EV_DRAGGED, EV_WHEEL_DRAGGED = 14, 15
 
-# VapiConsoleKeyCode - the CV-X has no PC keyboard; remoteControl() drives the
-# physical *console*. Ground truth reflected from Vapi.Net.dll: KEY_0..KEY_8 are
-# nine button INDICES (not the ascii digits), then a d-pad. SUB_KEY_NONE is the
-# "no chord" sub-key. Text/number entry into a field is a mouse job on the
-# on-screen keypad (already works) - these keys drive menus, enter/esc, trigger,
-# and cursor movement.
-KEY_0, KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8 = range(9)
-KEY_DOWN, KEY_LEFT, KEY_RIGHT = 10, 11, 12
-KEY_RIGHTUP, KEY_RIGHTDOWN, KEY_LEFTDOWN, KEY_LEFTUP = 13, 14, 15, 16
-SUB_KEY_NONE = 0xFFFFFFFF
-
-# remoteControl (keyboard) wire method - the ONE unknown. Mouse is type7/op5/
-# method0x34; the keyboard sibling's method id + exact body are being recovered
-# from a live control-channel capture (scratchpad/cvx_capture_proxy.py). Until
-# _KBD_METHOD is a real id, send_key() refuses to send - we never fire guessed
-# opcodes at a live controller. The body below mirrors the mouse frame and is a
-# HYPOTHESIS the capture will confirm or correct.
-_KBD_METHOD = None
-
 # op5/meth5 frame-ack "16" message (header + 20-byte body); [0:4]=seq, [4:8]=ctx[6]
 _FRAME_ACK = bytes.fromhex(
     "160000000a0000000600000006000000050000000000000000000000140000"
@@ -445,30 +426,6 @@ class CvxRemoteSession:
             s.sendall(b)
         except OSError:
             pass
-
-    def send_key(self, keycode: int, subcode: int = SUB_KEY_NONE, count: int = 1):
-        """Send one console key via remoteControl(keycode, subKeycode, count).
-        Refuses to send until _KBD_METHOD is a real wire method id - we don't
-        fire guessed opcodes at a live controller. Returns True if it actually
-        went out, False if keyboard is still disabled. The body layout mirrors
-        the mouse frame and is a HYPOTHESIS the live capture confirms."""
-        if _KBD_METHOD is None:
-            return False
-        s = self._socks.get(CTRL_PORT)
-        if s is None or not self.alive:
-            return False
-        with self._ctx_lock:
-            ctx = self._ctx.get(RD_TYPE, _NONE_CTX)
-        b = bytearray(60)
-        _put_u32(b, 0, next(self._ctrl_seq)); _put_u32(b, 4, ctx)
-        _put_u32(b, 8, RD_TYPE); _put_u32(b, 12, 5); _put_u32(b, 16, _KBD_METHOD); _put_u32(b, 28, 28)
-        _put_u32(b, 32, 7); _put_u32(b, 36, _H1); _put_u32(b, 40, _H2)
-        _put_u32(b, 44, keycode); _put_u32(b, 48, subcode); _put_u32(b, 52, count); _put_u32(b, 56, _H3)
-        try:
-            s.sendall(b)
-        except OSError:
-            return False
-        return True
 
     def queue_mouse(self, seq: int, event_id: int, x: int, y: int):
         """Put a client-sequenced mouse event on the wire in seq order. The

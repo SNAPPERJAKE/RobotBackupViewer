@@ -24,14 +24,10 @@
   var DOWN_EV = { 0: EV_LDOWN, 1: EV_MDOWN, 2: EV_RDOWN };
   var UP_EV = { 0: EV_LUP, 1: EV_MUP, 2: EV_RUP };
   var DRAG_EV = { 0: EV_DRAGGED, 1: EV_WHEEL_DRAGGED, 2: EV_DRAGGED };
-  /* VapiConsoleKeyCode: the CV-X console has no PC keyboard - KEY_0..KEY_8 are
-     button INDICES, not ascii digits. Forwarding is EXPERIMENTAL and OFF until
-     the remoteControl wire method id is recovered from a live capture; the
-     Python endpoint no-ops until then, so this can be flipped on for testing
-     without risk of half-working shipped UX. */
-  var KBD_ENABLED = false;
-  var KEY_CODE = { "0": 0, "1": 1, "2": 2, "3": 3, "4": 4,
-                   "5": 5, "6": 6, "7": 7, "8": 8 };
+  /* while the fullscreen remote is up, swallow the app's tab-switch keys so they
+     don't change the tab hidden behind it (keys.js maps digits / - / = to tabs).
+     the cv-x has no pc-keyboard input over its protocol - only mouse. */
+  var NAV_KEYS = "0123456789-=";
   var open = false;   /* one session at a time */
 
   BV.openCvxRemote = function (ip, label) {
@@ -109,16 +105,12 @@
     }
     document.addEventListener("keydown", onKey);
 
-    /* console-key forwarding (experimental). Capture phase so a digit never
-       leaks to keys.js and switches a tab behind the fullscreen remote -
-       correct even while KBD_ENABLED is off. Forwards only once the wire
-       method is known (the endpoint no-ops until then). */
+    /* capture phase so a nav key never leaks to keys.js and switches a tab
+       behind the fullscreen remote */
     function onKeyCapture(e) {
       if (e.ctrlKey || e.altKey || e.metaKey) return;
-      if (!(e.key in KEY_CODE)) return;
+      if (NAV_KEYS.indexOf(e.key) < 0) return;
       e.preventDefault(); e.stopPropagation();
-      if (!KBD_ENABLED || !sid) return;
-      BV.api.call("cvx_remote_key", sid, KEY_CODE[e.key]).catch(function () {});
     }
     document.addEventListener("keydown", onKeyCapture, true);
 

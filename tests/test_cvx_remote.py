@@ -367,47 +367,6 @@ def test_queue_mouse_skips_a_dead_hole():
     assert _sent_events(fake)[-1] == (cx.EV_MOVE, 104)
 
 
-def test_console_keycodes_match_vendor_enum():
-    """VapiConsoleKeyCode from Vapi.Net.dll: KEY_0..KEY_8 are button indices
-    0..8 (NOT ascii digits), then the d-pad, plus the no-chord sentinel."""
-    assert (cx.KEY_0, cx.KEY_1, cx.KEY_2, cx.KEY_8) == (0, 1, 2, 8)
-    assert (cx.KEY_DOWN, cx.KEY_LEFT, cx.KEY_RIGHT) == (10, 11, 12)
-    assert (cx.KEY_RIGHTUP, cx.KEY_RIGHTDOWN, cx.KEY_LEFTDOWN, cx.KEY_LEFTUP) == (13, 14, 15, 16)
-    assert cx.SUB_KEY_NONE == 0xFFFFFFFF
-
-
-def test_send_key_disabled_until_wire_method_known():
-    """Keyboard must not fire guessed opcodes at a live controller: send_key is
-    a no-op returning False while _KBD_METHOD is None (the current state, until
-    the live capture recovers the id)."""
-    assert cx._KBD_METHOD is None
-    s = _session()
-    s._alive = True
-    fake = FakeSock()
-    s._socks[cx.CTRL_PORT] = fake
-    assert s.send_key(cx.KEY_2) is False
-    assert len(fake.sent) == 0          # nothing went on the wire
-
-
-def test_send_key_encodes_once_method_is_supplied(monkeypatch):
-    """When _KBD_METHOD is set, the frame reuses the proven 60-byte mouse
-    envelope: type7/op5, the given method, body [7,H1,H2,keycode,subcode,count,H3].
-    (Body layout is the capture-confirmed hypothesis; method id is patched in.)"""
-    monkeypatch.setattr(cx, "_KBD_METHOD", 0x2F)
-    s = _session()
-    s._alive = True
-    fake = FakeSock()
-    s._socks[cx.CTRL_PORT] = fake
-    s._ctx[cx.RD_TYPE] = 0x0202
-    assert s.send_key(cx.KEY_5, count=3) is True
-    b = fake.sent
-    assert len(b) == 60
-    assert _u32(b, 8) == cx.RD_TYPE and _u32(b, 12) == 5 and _u32(b, 16) == 0x2F
-    assert _u32(b, 44) == cx.KEY_5          # keycode
-    assert _u32(b, 48) == cx.SUB_KEY_NONE   # subcode default
-    assert _u32(b, 52) == 3                 # count
-
-
 def test_send_mouse_noop_when_not_alive():
     s = _session()
     fake = FakeSock()
