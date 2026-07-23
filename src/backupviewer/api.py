@@ -243,6 +243,7 @@ class Api:
             threading.Thread(target=self._watch_library, name="libwatch", daemon=True).start()
         try:
             window.events.closing += self._confirm_close
+            window.events.closed += self._destroy_popouts
         except Exception:  # noqa: BLE001 - a GUI backend without the event still gets a working app
             log.exception("could not attach the close-confirmation handler")
 
@@ -489,6 +490,47 @@ class Api:
         self._entry(sid)  # an unknown sid is an error, never a silent no-op
         self._drop_session(sid)
         return True
+
+    @_endpoint
+    def pop_out_backup(self, sid: str):
+        """Move a session into its own OS window (solo mode: the new window
+        boots pinned to this sid via the ?sid= query and can't open other
+        robots). Ownership TRANSFERS - the strip's tab leaves without closing
+        the session; the pop-out window's close is what drops it."""
+        import webview
+
+        from .app import resource_path
+
+        e = self._entry(sid)
+        if e["owner"] == "popout":
+            if e.get("window") is not None:  # already out - just front it
+                try:
+                    e["window"].restore()
+                    e["window"].show()
+                except Exception:  # noqa: BLE001
+                    log.exception("could not front the pop-out for %s", sid)
+            return True
+        label = (e["manifest"] or {}).get("robot_name") \
+            or (e["manifest"] or {}).get("name") or "backup"
+        url = resource_path("web/index.html").as_uri() + "?sid=" + urllib.parse.quote(sid, safe="")
+        w = webview.create_window(
+            "backupviewer · " + label, url, js_api=self,
+            width=1150, height=800, min_size=(800, 560))
+        with self._sessions_lock:
+            e["owner"] = "popout"
+            e["window"] = w
+        # closing the pop-out is what really closes the backup
+        w.events.closed += (lambda: self._drop_session(sid))
+        return True
+
+    def _destroy_popouts(self):
+        """Main window closed = app closes: take every pop-out with it."""
+        for e in list(self._sessions.values()):
+            if e.get("window") is not None:
+                try:
+                    e["window"].destroy()
+                except Exception:  # noqa: BLE001 - already tearing down
+                    pass
 
     @_endpoint
     def list_open_sessions(self):
@@ -818,6 +860,7 @@ class Api:
     @_endpoint
     def get_call_tree(self, root: str, depth: int = 6, sid: str | None = None):
         """Expandable call tree rooted at a program; cycles marked, depth-limited."""
+        depth = depth or 6   # a solo-shim pad arrives as None
         graph = self._build_call_graph(sid)
         calls = graph["calls"]
 
@@ -858,6 +901,7 @@ class Api:
 
     @_endpoint
     def get_alarms(self, file_name: str, offset: int = 0, limit: int = 200, query: str = "", sid: str | None = None):
+        offset, limit, query = offset or 0, limit or 200, query or ""   # solo-shim pads
         parsed = self._alarms_for(file_name, sid)
         rows = parsed["rows"]
         if query:

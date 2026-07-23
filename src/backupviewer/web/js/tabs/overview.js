@@ -266,6 +266,7 @@
   }
 
   function buildDatePicker() {
+    if (BV.solo) return null;   /* a pop-out shows ONE snapshot, frozen */
     var man = BV.state.manifest || {};
     var backups = man.backups || [];
     if (!man.robot_id || backups.length < 2) return null;   // nothing to switch between

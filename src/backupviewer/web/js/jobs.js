@@ -110,9 +110,11 @@
   };
 
   /* boot seed: re-discover jobs after a reload (in-flight ones resume in the
-     strip; already-finished ones are old news, no toast) */
+     strip; already-finished ones are old news, no toast). Solo pop-outs skip
+     it entirely - jobs are main-window chrome, and a second 500ms poller
+     against the same server would just double the traffic. */
   BV.api.ready.then(function (ok) {
-    if (!ok) return;
+    if (!ok || BV.solo) return;
     BV.api.call("list_backup_jobs").then(function (res) {
       (res.jobs || []).forEach(function (p) {
         last[p.id] = p;

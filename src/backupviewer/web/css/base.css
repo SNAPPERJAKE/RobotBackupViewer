@@ -183,6 +183,10 @@ body { overflow: hidden; }
 .stab.drop-before { box-shadow: inset 2px 0 0 var(--accent); }
 #sessionbar.drop-end { box-shadow: inset -2px 0 0 var(--accent); }
 
+/* a solo pop-out window shows one backup: no tab strip, no compare, no
+   jobstrip - that's all main-window chrome */
+.solo #sessionbar, .solo #btn-compare, .solo #jobstrip { display: none !important; }
+
 .tab-btn {
   appearance: none;
   background: none;
