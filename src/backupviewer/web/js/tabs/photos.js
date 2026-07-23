@@ -422,16 +422,15 @@
             else BV.openMtxRemote(c.ips[0], c.name);
           });
           card.appendChild(rb);
-          if (!isCvx) {
-            var pb = BV.el("button", { class: "btn", style:
-              "margin:0 0 0.6rem;padding:0.18rem 0.5rem;font-size:0.76rem",
-              title: "live view on your phone (QR) — for focus work at the lens" }, "📱 phone");
-            pb.addEventListener("click", function (e) {
-              e.stopPropagation();
-              BV.openPhoneView(c.ips[0], c.name);
-            });
-            card.appendChild(pb);
-          }
+          var pb = BV.el("button", { class: "btn", style:
+            "margin:0 0 0.6rem;padding:0.18rem 0.5rem;font-size:0.76rem",
+            title: "share a screen area to your phone (QR) — frame this " +
+              "camera's live view, then watch it at the lens" }, "📱 phone");
+          pb.addEventListener("click", function (e) {
+            e.stopPropagation();
+            BV.openViewfinder();
+          });
+          card.appendChild(pb);
         }
         card.addEventListener("click", function () {
           location.hash = "#photos/" + encodeURIComponent(c.id);

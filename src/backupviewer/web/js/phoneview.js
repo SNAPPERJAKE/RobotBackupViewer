@@ -1,13 +1,20 @@
-/* phoneview.js - hand a phone the camera's live picture (QR handoff).
+/* phoneview.js - hand a phone a live picture over a QR handoff.
 
-   BV.openPhoneView(ip, label) starts (or rejoins) a share via the bridge and
-   opens a modal: a scannable QR of http://<this pc>:<port>/v/<token>, chips
-   to pick WHICH of this PC's addresses the QR dials (mobile-hotspot net
-   first - the usual answer when the laptop is wired to the robot network),
-   and a live status line that flips the moment a phone actually pulls a
-   frame. The share keeps serving when the modal closes; "stop sharing" ends
-   it. The PC relays the camera's HMI frame, so the phone only ever needs a
-   route to the PC - never to the camera VLAN. */
+   BV.openViewfinder() shares a user-picked rectangle of THIS PC's screen:
+   the bridge freezes the screen into a snip-style picker (drag a box over
+   the area - the DA operator page's live image, Design Assistant, anything),
+   then the phone streams that rect live. "pick area" moves the box any time.
+
+   BV.openPhoneView(ip, label) is the camera-direct variant (relays the MTX
+   HMI frame without touching the screen); the UI leads with the viewfinder
+   since it works regardless of what the camera publishes.
+
+   Both open the same modal: a scannable QR of http://<this pc>:<port>/v/
+   <token>, chips to pick WHICH of this PC's addresses the QR dials
+   (mobile-hotspot net first - the usual answer when the laptop is wired to
+   the robot network), and a live status line that flips the moment a phone
+   actually pulls a frame. The share keeps serving when the modal closes;
+   "stop sharing" ends it. The phone only ever needs a route to the PC. */
 (function () {
   "use strict";
 
@@ -28,11 +35,19 @@
 
   BV.openPhoneView = function (ip, label) {
     BV.api.call("phone_view_start", { ip: ip, label: label || "" }).then(function (d) {
-      show(label || ip, d);
+      show(label || ip, d, false);
     }).catch(function (e) { BV.toast("phone view: " + e.message); });
   };
 
-  function show(label, d) {
+  /* the screen share: the picker opens on the PC immediately; the modal
+     rides underneath it, QR ready for the phone */
+  BV.openViewfinder = function () {
+    BV.api.call("viewfinder_start").then(function (d) {
+      show("screen area", d, true);
+    }).catch(function (e) { BV.toast("phone view: " + e.message); });
+  };
+
+  function show(label, d, screen) {
     var urls = d.urls;
 
     var wrap = BV.el("div", { style:
@@ -78,10 +93,24 @@
     wrap.appendChild(BV.el("div", { class: "dim", style: "font-size:0.78rem" },
       "scan with the phone camera. the phone must reach <b>this pc</b>: same wifi, " +
       "or turn on windows <b>mobile hotspot</b>, join it from the phone, and pick the " +
-      "hotspot address above. the pc relays the camera, so the phone never needs the " +
-      "robot network. the first share may pop a windows firewall prompt — allow it."));
+      "hotspot address above. " +
+      (screen
+        ? "the pc streams the picked screen area, so whatever shows there — the " +
+          "camera page included — reaches the phone. "
+        : "the pc relays the camera, so the phone never needs the robot network. ") +
+      "the first share may pop a windows firewall prompt — allow it."));
 
     var row = BV.el("div", { style: "display:flex;gap:0.5rem;justify-content:flex-end" });
+    if (screen) {
+      var pickBtn = BV.el("button", { class: "btn",
+        title: "choose (or move) the screen area the phone sees" }, "▣ pick area");
+      pickBtn.addEventListener("click", function () {
+        BV.api.call("viewfinder_pick", { token: d.token })
+          .catch(function (e) { BV.toast("could not open the picker: " + e.message); });
+      });
+      row.appendChild(pickBtn);
+      row.appendChild(BV.el("span", { style: "margin-left:auto" }));
+    }
     var stopBtn = BV.el("button", { class: "btn" }, "stop sharing");
     var closeBtn = BV.el("button", { class: "btn" }, "close (keeps sharing)");
     row.appendChild(stopBtn);
@@ -104,16 +133,26 @@
       BV.api.call("phone_view_status").then(function (st) {
         var s = (st.sessions || []).filter(function (x) { return x.token === d.token; })[0];
         if (!s) { status.textContent = "share ended"; return; }
-        if (s.fetch_err) {
-          status.innerHTML = '<span style="color:var(--error)">camera not answering</span>' +
-            ' <span class="dim">· ' + BV.esc(s.fetch_err) + "</span>";
-        } else if (!s.phones || s.last_pull_ms === null || s.last_pull_ms > 15000) {
-          status.textContent = "no phone watching yet — scan the code";
+        var watching = s.phones && s.last_pull_ms !== null && s.last_pull_ms <= 15000;
+        var who = watching
+          ? '<span style="color:var(--ok)">' + s.phones +
+            (s.phones === 1 ? " phone" : " phones") + " watching</span>"
+          : "no phone watching yet — scan the code";
+        if (s.picking) {
+          status.innerHTML = who + ' <span class="dim">· drag the box on the pc screen</span>';
+        } else if (s.kind === "screen" && !s.area) {
+          status.innerHTML = who + ' <span class="dim">· no area picked yet — ▣ pick area</span>';
+        } else if (s.fetch_err) {
+          status.innerHTML = '<span style="color:var(--error)">' +
+            (s.kind === "screen" ? "screen capture failing" : "camera not answering") +
+            '</span> <span class="dim">· ' + BV.esc(s.fetch_err) + "</span>";
         } else {
-          status.innerHTML = '<span style="color:var(--ok)">' + s.phones +
-            (s.phones === 1 ? " phone" : " phones") + " watching</span>" +
-            (s.frame_age_ms !== null
+          status.innerHTML = who +
+            (watching && s.frame_age_ms !== null
               ? ' <span class="dim">· frame ' + (s.frame_age_ms / 1000).toFixed(1) + "s old</span>"
+              : "") +
+            (s.area
+              ? ' <span class="dim">· ' + s.area[2] + "×" + s.area[3] + " px</span>"
               : "");
         }
       }).catch(function () { /* keep the last status through a hiccup */ });

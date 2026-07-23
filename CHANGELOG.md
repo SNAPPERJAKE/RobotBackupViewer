@@ -1,17 +1,22 @@
 # Changelog
 
 ## Unreleased
-- **Phone view for Matrox cameras.** A 📱 phone button (in the MTX remote's
-  bar and on camera cards) shows a QR code; scan it and the phone's browser
-  gets a black page with nothing but the camera's live HMI frame — the
-  second pair of eyes for focus work at the lens. The PC relays the frame,
-  so the phone only needs to reach the PC (same wifi, or the Windows mobile
-  hotspot — the modal ranks the hotspot address first and shows a chip per
-  network adapter), never the robot network. Off by default, token-gated,
-  read-only; however many phones watch, the camera sees at most one gentle
-  fetch per beat (the same file its own wall page polls at 1 Hz). The QR
-  encoder is hand-rolled stdlib (the stack stays locked), ground-truthed
-  against an independent decoder across every version and mask it emits.
+- **Phone view: a window from your phone onto this PC's screen.** The 📱
+  phone button (MTX remote bar, camera cards) freezes the screen into a
+  snip-style picker — drag a box over the part that matters (the camera
+  page's live image, say) — and a QR code hands your phone a black page
+  showing exactly that rectangle, live. The second pair of eyes for focus
+  work at the lens: one person's at the camera, the phone is the screen.
+  **▣ pick area** moves the box any time; the phone follows. View-only —
+  the phone sends nothing back. The phone just needs to reach the PC (same
+  wifi, or the Windows mobile hotspot — the modal ranks the hotspot address
+  first with a chip per adapter). Off by default, token-gated; the share
+  stops with the app or the stop button. A camera-direct relay of the MTX
+  HMI frame ships alongside as the API-level variant. The QR encoder is
+  hand-rolled stdlib (the stack stays locked), ground-truthed against an
+  independent decoder across every version and mask it emits; the screen
+  grab is ctypes GDI + a hand-rolled PNG writer, so the exe gains zero
+  dependencies.
 - **Dialogs beat overlays.** Modals (and menus above them) now stack above
   the remote-operation overlay, so the phone-view QR can open from inside
   the MTX remote without vanishing behind it.

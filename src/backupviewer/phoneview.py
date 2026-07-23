@@ -22,6 +22,7 @@ Posture, deliberately narrow:
 from __future__ import annotations
 
 import html
+import json
 import logging
 import secrets
 import socket
@@ -62,13 +63,21 @@ class _QuietServer(ThreadingHTTPServer):
 
 
 class _Session:
-    __slots__ = ("token", "ip", "label", "created", "fetch_lock", "frame",
+    __slots__ = ("token", "ip", "label", "kind", "ctype", "fetch", "picking",
+                 "snapshot", "area", "created", "fetch_lock", "frame",
                  "frame_ts", "frame_mono", "fetch_err", "pulls", "last_pull", "phones")
 
-    def __init__(self, ip: str, label: str):
+    def __init__(self, ip: str, label: str, kind: str = "camera",
+                 ctype: str = "image/jpeg"):
         self.token = secrets.token_urlsafe(6)
-        self.ip = ip
+        self.ip = ip                # camera sessions; "" for screen sessions
         self.label = label
+        self.kind = kind            # "camera" | "screen"
+        self.ctype = ctype
+        self.fetch = None           # zero-arg frame source; None = camera default
+        self.picking = False        # screen: the area picker is on screen
+        self.snapshot = None        # screen: the picker's frozen full-shot (png)
+        self.area = None            # screen: (x, y, w, h) physical, for status
         self.created = time.time()
         self.fetch_lock = threading.Lock()
         self.frame: bytes | None = None
@@ -106,6 +115,49 @@ class PhoneShare:
             log.info("phone view sharing %s on port %s", ip, self.port)
             return {"token": s.token, "port": self.port}
 
+    def start_screen_session(self, label: str) -> dict:
+        """Begin (or rejoin) THE screen share - one per app: the phone mirrors
+        a user-picked rectangle of this PC's screen. The frame source arrives
+        later via set_screen_source (after the picker); until then /frame says
+        so honestly."""
+        with self._lock:
+            for s in self._sessions.values():
+                if s.kind == "screen":
+                    self._ensure_server()
+                    return {"token": s.token, "port": self.port}
+            s = _Session("", label, kind="screen", ctype="image/png")
+            self._sessions[s.token] = s
+            self._ensure_server()
+            log.info("phone view sharing a screen area on port %s", self.port)
+            return {"token": s.token, "port": self.port}
+
+    def set_picking(self, token: str, snapshot_png: bytes | None):
+        """The area picker just opened: freeze /frame on the last live frame
+        (the picker window itself now covers the screen) and stage the frozen
+        full-screen shot the picker displays."""
+        s = self._sessions.get(token)
+        if s is not None:
+            s.snapshot = snapshot_png
+            s.picking = True
+
+    def set_screen_source(self, token: str, fetch, area: tuple | None):
+        """The picker confirmed: frames now come from fetch() (a zero-arg
+        callable returning PNG bytes); area is the physical rect, for status."""
+        s = self._sessions.get(token)
+        if s is not None:
+            s.fetch = fetch
+            s.area = area
+            s.picking = False
+            s.snapshot = None
+            s.frame_mono = 0.0          # next pull refetches immediately
+
+    def cancel_picking(self, token: str):
+        """Picker dismissed without a choice: back to whatever was before."""
+        s = self._sessions.get(token)
+        if s is not None:
+            s.picking = False
+            s.snapshot = None
+
     def stop_session(self, token: str | None = None) -> int:
         """Drop one share (or all with token=None); last one out stops the
         server. Returns how many shares remain."""
@@ -122,7 +174,8 @@ class PhoneShare:
         now = time.time()
         with self._lock:
             sessions = [{
-                "token": s.token, "ip": s.ip, "label": s.label,
+                "token": s.token, "ip": s.ip, "label": s.label, "kind": s.kind,
+                "picking": s.picking, "area": list(s.area) if s.area else None,
                 "phones": len(s.phones), "pulls": s.pulls,
                 "last_pull_ms": int((now - s.last_pull) * 1000) if s.last_pull else None,
                 "frame_age_ms": int((now - s.frame_ts) * 1000) if s.frame_ts else None,
@@ -175,12 +228,17 @@ class PhoneShare:
     def frame_for(self, s: _Session) -> tuple[bytes | None, float, str | None]:
         """Newest frame for a session: (bytes, age_seconds, error). Fresh-enough
         cache is served as-is; one thread refreshes while any others ride the
-        cache, so the camera never sees a pileup."""
-        if s.frame is not None and time.monotonic() - s.frame_mono < MIN_FETCH_GAP:
-            return s.frame, time.time() - s.frame_ts, s.fetch_err
+        cache, so the source never sees a pileup. While the area picker is up
+        the last live frame is held (the picker window covers the screen - a
+        live grab would mirror the picker, not the desktop)."""
+        if s.picking or (s.frame is not None
+                         and time.monotonic() - s.frame_mono < MIN_FETCH_GAP):
+            return s.frame, time.time() - s.frame_ts if s.frame_ts else 0.0, s.fetch_err
+        if s.kind == "screen" and s.fetch is None:
+            return s.frame, 0.0, "no screen area picked yet"
         if s.fetch_lock.acquire(blocking=False):
             try:
-                data = self._fetch(s.ip)
+                data = s.fetch() if s.fetch is not None else self._fetch(s.ip)
                 s.frame = data
                 s.frame_ts = time.time()
                 s.frame_mono = time.monotonic()
@@ -308,23 +366,32 @@ class _Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         parts = [p for p in path.split("/") if p]
         sess = self.share._session_for(parts[1]) if len(parts) >= 2 and parts[0] == "v" else None
-        if sess is None or len(parts) > 3 or (len(parts) == 3 and parts[2] != "frame"):
+        if sess is None or len(parts) > 3 or \
+                (len(parts) == 3 and parts[2] not in ("frame", "pick.png")):
             self._send(404, "text/plain; charset=utf-8", b"not found")
             return
         if len(parts) == 2:
             page = _PAGE.replace("__LABEL__", html.escape(sess.label or sess.ip))
             self._send(200, "text/html; charset=utf-8", page.encode("utf-8"))
             return
+        if parts[2] == "pick.png":
+            # the area picker's frozen full-screen shot (loopback consumer)
+            if sess.snapshot is None:
+                self._send(404, "text/plain; charset=utf-8", b"no snapshot staged")
+                return
+            self._send(200, "image/png", sess.snapshot)
+            return
         sess.pulls += 1
         sess.last_pull = time.time()
         sess.phones.add(self.client_address[0])
         frame, age, err = self.share.frame_for(sess)
         if frame is None:
-            msg = f"no frame from the camera yet ({err or 'no fetch attempted'})"
+            what = "the camera" if sess.kind == "camera" else "the screen"
+            msg = f"no frame from {what} yet ({err or 'no fetch attempted'})"
             self._send(503, "text/plain; charset=utf-8", msg.encode("utf-8"),
                        {"Retry-After": "1"})
             return
-        self._send(200, "image/jpeg", frame, {"X-Frame-Age": str(int(age * 1000))})
+        self._send(200, sess.ctype, frame, {"X-Frame-Age": str(int(age * 1000))})
 
 
 # -- which of the laptop's addresses should the phone dial? ------------------------
@@ -351,9 +418,10 @@ def _in_172_private(ip: str) -> bool:
         and 16 <= int(parts[1]) <= 31
 
 
-def lan_urls(camera_ip: str, port: int, token: str) -> list[dict]:
+def lan_urls(camera_ip: str | None, port: int, token: str) -> list[dict]:
     """Every address this machine answers on, as ready-to-dial share URLs,
-    most-phone-reachable first: [{ip, url, kind}]."""
+    most-phone-reachable first: [{ip, url, kind}]. camera_ip=None (screen
+    shares) skips the which-adapter-faces-the-camera demotion."""
     addrs: set[str] = set()
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
@@ -361,17 +429,167 @@ def lan_urls(camera_ip: str, port: int, token: str) -> list[dict]:
     except OSError:
         pass
     facing = None
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    if camera_ip:
         try:
-            s.connect((camera_ip, 9))       # routing lookup only; nothing is sent
-            facing = s.getsockname()[0]
-            addrs.add(facing)
-        finally:
-            s.close()
-    except OSError:
-        pass
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect((camera_ip, 9))   # routing lookup only; nothing is sent
+                facing = s.getsockname()[0]
+                addrs.add(facing)
+            finally:
+                s.close()
+        except OSError:
+            pass
     addrs.discard("127.0.0.1")
     ranked = sorted(addrs, key=lambda a: (rank_ip(a, facing)[0], a))
     return [{"ip": a, "url": f"http://{a}:{port}/v/{token}",
              "kind": rank_ip(a, facing)[1]} for a in ranked]
+
+
+# -- the area picker (snip-style, shown in a fullscreen pywebview window) ----------
+# WebView2 can do neither transparent windows nor layered-window capture
+# exclusion (both spiked dead on Win11), so "drag a box over the screen" works
+# the way Snipping Tool does: freeze the monitor into a screenshot, pick a
+# rect on it, then stream that physical rect live.
+
+def css_rect_to_physical(rect: dict, dpr: float, origin: tuple[int, int]) -> tuple:
+    """Picker selection (CSS px inside the picker window) -> physical screen
+    rect. The picker window covers its monitor exactly, so physical = origin
+    + css * devicePixelRatio."""
+    x = origin[0] + round(rect["x"] * dpr)
+    y = origin[1] + round(rect["y"] * dpr)
+    w = max(1, round(rect["w"] * dpr))
+    h = max(1, round(rect["h"] * dpr))
+    return (x, y, w, h)
+
+
+_PICKER_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000;
+               cursor: crosshair; user-select: none;
+               font: 13px/1.4 system-ui, sans-serif; }
+  #shot { position: fixed; inset: 0; width: 100vw; height: 100vh; }
+  #dim { position: fixed; inset: 0; background: rgba(0,0,0,.45); }
+  #sel { position: fixed; display: none; border: 2px dashed #7ec384;
+         box-shadow: 0 0 0 100000px rgba(0,0,0,.45); cursor: move; }
+  #sel .size { position: absolute; right: 0; top: -1.6rem; color: #cfe8d2;
+               background: rgba(0,0,0,.65); padding: .1rem .45rem;
+               border-radius: 5px; white-space: nowrap; }
+  #hint { position: fixed; top: .8rem; left: 50%; transform: translateX(-50%);
+          color: #ddd; background: rgba(0,0,0,.65); padding: .4rem .9rem;
+          border-radius: 999px; pointer-events: none; white-space: nowrap; }
+  #bar { position: fixed; bottom: 1.2rem; left: 50%; transform: translateX(-50%);
+         display: none; gap: .6rem; }
+  #bar button { font: inherit; padding: .45rem 1rem; border-radius: 8px;
+                border: 1px solid #555; background: #1c1e21; color: #ddd;
+                cursor: pointer; }
+  #bar #ok { background: #2e5636; border-color: #7ec384; color: #dff2e1; }
+</style></head><body>
+<img id="shot" src="__SHOT__" alt="">
+<div id="dim"></div>
+<div id="sel"><span class="size"></span></div>
+<div id="hint">drag a box over the area your phone should see &middot;
+enter confirms &middot; esc cancels</div>
+<div id="bar"><button id="ok">use this area</button>
+<button id="no">cancel</button></div>
+<script>
+(function () {
+  "use strict";
+  var sel = document.getElementById("sel"), bar = document.getElementById("bar");
+  var dim = document.getElementById("dim"), size = sel.querySelector(".size");
+  var rect = null, mode = null, anchor = null, off = null;
+
+  var AREA = __AREA__, ORIGIN = __ORIGIN__;
+  if (AREA) {
+    var d = window.devicePixelRatio || 1;
+    rect = { x: (AREA[0] - ORIGIN[0]) / d, y: (AREA[1] - ORIGIN[1]) / d,
+             w: AREA[2] / d, h: AREA[3] / d };
+  }
+
+  function draw() {
+    if (!rect) { sel.style.display = "none"; bar.style.display = "none"; return; }
+    sel.style.display = "block";
+    sel.style.left = rect.x + "px";
+    sel.style.top = rect.y + "px";
+    sel.style.width = rect.w + "px";
+    sel.style.height = rect.h + "px";
+    var d = window.devicePixelRatio || 1;
+    size.textContent = Math.round(rect.w * d) + " \\u00d7 " + Math.round(rect.h * d) + " px";
+    bar.style.display = "flex";
+    dim.style.display = "none";       /* the selection's shadow dims instead */
+  }
+
+  function norm(r) {
+    return { x: Math.min(r.x, r.x + r.w), y: Math.min(r.y, r.y + r.h),
+             w: Math.abs(r.w), h: Math.abs(r.h) };
+  }
+
+  function down(e) {
+    if (e.target.closest("#bar")) return;
+    if (rect && (e.target === sel || sel.contains(e.target))) {
+      mode = "move";
+      off = { x: e.clientX - rect.x, y: e.clientY - rect.y };
+    } else {
+      mode = "draw";
+      anchor = { x: e.clientX, y: e.clientY };
+      rect = { x: e.clientX, y: e.clientY, w: 0, h: 0 };
+    }
+    e.preventDefault();
+  }
+  function move(e) {
+    if (!mode) return;
+    if (mode === "draw") {
+      rect = norm({ x: anchor.x, y: anchor.y,
+                    w: e.clientX - anchor.x, h: e.clientY - anchor.y });
+    } else {
+      rect.x = Math.max(0, Math.min(e.clientX - off.x, innerWidth - rect.w));
+      rect.y = Math.max(0, Math.min(e.clientY - off.y, innerHeight - rect.h));
+    }
+    draw();
+  }
+  function up() {
+    if (mode === "draw" && rect && (rect.w < 24 || rect.h < 24)) {
+      rect = null;                    /* a stray click is not an area */
+      dim.style.display = "block";
+      draw();
+    }
+    mode = null;
+  }
+
+  function confirm() {
+    if (!rect || rect.w < 24 || rect.h < 24) return;
+    if (window.pywebview && pywebview.api) {
+      pywebview.api.done({ x: rect.x, y: rect.y, w: rect.w, h: rect.h,
+                           dpr: window.devicePixelRatio || 1 });
+    }
+  }
+  function cancel() {
+    if (window.pywebview && pywebview.api) pywebview.api.cancel();
+  }
+
+  document.addEventListener("mousedown", down);
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", up);
+  document.addEventListener("dblclick", function (e) {
+    if (sel.contains(e.target) || e.target === sel) confirm();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") confirm();
+    else if (e.key === "Escape") cancel();
+  });
+  document.getElementById("ok").addEventListener("click", confirm);
+  document.getElementById("no").addEventListener("click", cancel);
+  draw();
+})();
+</script></body></html>
+"""
+
+
+def picker_page(shot_url: str, area: tuple | None, origin: tuple[int, int]) -> str:
+    """The area-picker HTML: shot_url is the frozen full-monitor PNG (served
+    off the share's loopback), area an optional physical rect to prefill,
+    origin the monitor's physical top-left."""
+    return (_PICKER_PAGE
+            .replace("__SHOT__", html.escape(shot_url, quote=True))
+            .replace("__AREA__", json.dumps(list(area) if area else None))
+            .replace("__ORIGIN__", json.dumps(list(origin))))

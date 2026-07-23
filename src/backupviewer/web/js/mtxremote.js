@@ -43,7 +43,8 @@
     var rlBtn = BV.el("button", { class: "btn", title: "reload this tab" }, "⟳ reload");
     var winBtn = BV.el("button", { class: "btn", title: "open this tab in a separate window" }, "open in window");
     var phBtn = BV.el("button", { class: "btn",
-      title: "live view on your phone (QR) — for focus work at the lens" }, "📱 phone");
+      title: "share a screen area to your phone (QR) — frame the live image, " +
+        "then watch it at the lens" }, "📱 phone");
     var fsBtn = BV.el("button", { class: "btn", title: "fullscreen" }, "fullscreen");
     var closeBtn = BV.el("button", { class: "btn", title: "close (esc)" }, "✕ close");
     bar.appendChild(title); bar.appendChild(tabStrip); bar.appendChild(status);
@@ -94,7 +95,7 @@
         BV.toast("opened in its own window");
       }).catch(function (e) { BV.toast("could not open window: " + e.message); });
     });
-    phBtn.addEventListener("click", function () { BV.openPhoneView(ip, label || ip); });
+    phBtn.addEventListener("click", function () { BV.openViewfinder(); });
 
     /* popups are only allowed on the home tab when no operator pages were
        captured (then a browser popup beats a dead link); with tabs in place
