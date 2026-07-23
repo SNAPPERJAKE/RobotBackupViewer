@@ -42,17 +42,20 @@
     return DEFAULT_CHROME;
   }
 
-  /* frosted surfaces: compute the --panel/--glass rgba fills in JS and set
-     them inline on <html>. The CSS-only route (color-mix over a calc of the
-     frost var) is NOT reliably re-resolved by Chromium on existing elements
+  /* frosted surfaces, TWO knobs: opacity (how see-through panels go, the
+     --panel/--glass rgba fills) and frost (how much backdrop BLUR the glass
+     surfaces get, via --frost -> --glass-blur). The fills are computed in JS
+     and set inline on <html>: the CSS-only route (color-mix over a calc of
+     a var) is NOT reliably re-resolved by Chromium on existing elements
      when the var changes - the slider looked dead. Runs on every
      uiPrefs.apply AND on theme switches (colors move under the fills). */
-  var _lastFrost = 0;
-  function applyFrost(frost) {
-    _lastFrost = frost;
+  var _lastOp = 0, _lastBlur = 0;
+  function applyGlass(op, blur) {
+    _lastOp = op;
+    _lastBlur = blur;
     var root = document.documentElement;
-    root.style.setProperty("--frost", String(frost));   /* drives --glass-blur */
-    if (!frost) {
+    root.style.setProperty("--frost", String(blur));   /* drives --glass-blur */
+    if (!op) {
       /* exactly the solid original: fall back to the stylesheet defaults */
       root.style.removeProperty("--panel");
       root.style.removeProperty("--glass");
@@ -66,11 +69,11 @@
       return "rgba(" + parseInt(h.slice(0, 2), 16) + "," + parseInt(h.slice(2, 4), 16) + ","
         + parseInt(h.slice(4, 6), 16) + "," + alpha.toFixed(3) + ")";
     }
-    root.style.setProperty("--panel", rgba("--bg2", 1 - frost * 0.6));
-    root.style.setProperty("--glass", rgba("--bg", 1 - frost * 0.55));
+    root.style.setProperty("--panel", rgba("--bg2", 1 - op * 0.6));
+    root.style.setProperty("--glass", rgba("--bg", 1 - op * 0.55));
   }
   /* theme switches (including the editor's live preview) move --bg/--bg2 */
-  BV.state.on("theme", function () { applyFrost(_lastFrost); });
+  BV.state.on("theme", function () { applyGlass(_lastOp, _lastBlur); });
 
   BV.uiPrefs = {
     /* the theme window (theme_ui.js) builds its rows from these */
@@ -95,8 +98,11 @@
       document.documentElement.style.removeProperty("--app-zoom");
       /* accent panel borders on by default; "off" flattens the UI (see base.css .no-edges) */
       document.documentElement.classList.toggle("no-edges", settings.edges === false);
-      /* frosted surfaces: 0 = the solid original; --panel/--glass derive from it */
-      applyFrost(Math.min(0.85, Math.max(0, Number(settings.frost) || 0)));
+      /* frosted surfaces: 0/0 = the solid original. A pre-split `frost`
+         value seeds opacity once, so an existing look carries over. */
+      var op = settings.glass_op != null ? Number(settings.glass_op) : (Number(settings.frost) || 0);
+      applyGlass(Math.min(0.85, Math.max(0, op || 0)),
+                 Math.min(1, Math.max(0, Number(settings.frost) || 0)));
       if (BV.bgfx) BV.bgfx.apply(settings);   /* idempotent - only reacts to changes */
       BV.state.emit("uiprefs", settings);
     },

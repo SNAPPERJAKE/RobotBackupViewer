@@ -114,7 +114,7 @@ def probe(window):
         js(window, "BV.bgfx.set('rain', false)")
         js(window, "BV.themeUI.open('themes')")
         nsliders = poll(window, "document.querySelectorAll('.modal.theme-win input[type=range]').length")
-        check("theme.bg_sliders_on_themes_tab", nsliders == 3, f"(got {nsliders})")
+        check("theme.bg_sliders_on_themes_tab", nsliders == 4, f"(got {nsliders})")
         check("theme.fx_button_names_current",
               (js(window, "document.querySelector('.modal .btn.fx-pick').textContent") or "").startswith("rain"))
         check("theme.credit_line",
@@ -137,9 +137,26 @@ def probe(window):
             time.sleep(0.25)
         check("theme.intensity_persists", saved_i == 0.4, f"(got {saved_i})")
 
-        # the frost slider (third) drives --frost and persists
+        # the opacity slider (third) drives the --panel fill and persists
         js(window, """(function(){
             var r = document.querySelectorAll('.modal.theme-win input[type=range]')[2];
+            r.value = '40';
+            r.dispatchEvent(new Event('input', {bubbles: true}));
+        })()""")
+        check("theme.opacity_live",
+              "0.760" in (js(window, "document.documentElement.style.getPropertyValue('--panel')") or ""))
+        deadline = time.time() + 4
+        saved_o = None
+        while time.time() < deadline:
+            saved_o = bv_settings.load().get("glass_op")
+            if saved_o == 0.4:
+                break
+            time.sleep(0.25)
+        check("theme.opacity_persists", saved_o == 0.4, f"(got {saved_o})")
+
+        # the frost slider (fourth) drives --frost (blur) and persists
+        js(window, """(function(){
+            var r = document.querySelectorAll('.modal.theme-win input[type=range]')[3];
             r.value = '40';
             r.dispatchEvent(new Event('input', {bubbles: true}));
         })()""")
@@ -153,6 +170,20 @@ def probe(window):
                 break
             time.sleep(0.25)
         check("theme.frost_persists", saved_f == 0.4, f"(got {saved_f})")
+
+        # REGRESSION (Jake, live): a glass slider must never change the
+        # background - the effect picked via the menu has to survive any
+        # pref re-apply (the settings mirror in bgfx.set/tune)
+        js(window, "BV.bgfx.set('petals', true)")
+        js(window, """(function(){
+            var r = document.querySelectorAll('.modal.theme-win input[type=range]')[2];
+            r.value = '60';
+            r.dispatchEvent(new Event('input', {bubbles: true}));
+        })()""")
+        time.sleep(0.3)
+        check("theme.glass_slider_keeps_effect",
+              js(window, "BV.bgfx.activeId") == "petals",
+              f"(got {js(window, 'BV.bgfx.activeId')})")
 
         # the effect dropdown lists every effect incl. off
         js(window, "document.querySelector('.modal .btn.fx-pick').click()")

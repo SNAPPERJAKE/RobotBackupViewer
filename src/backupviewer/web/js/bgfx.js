@@ -473,6 +473,13 @@
       syncTuning();
       if (!HAS_RAF || REDUCED) { if (_step) _step(); }   /* static frame keeps up too */
       if (persist) {
+        /* mirror into the live settings object FIRST: uiPrefs.apply re-runs
+           bgfx.apply(settings) on every pref change, and a stale mirror
+           would snap the effect/tuning back to boot-time values */
+        if (BV.state.settings) {
+          BV.state.settings.bgfx_intensity = BV.bgfx.intensity;
+          BV.state.settings.bgfx_size = BV.bgfx.size;
+        }
         if (!persistTune) persistTune = BV.debounce(function () {
           BV.api.call("set_setting", "bgfx_intensity", BV.bgfx.intensity).catch(function () {});
           BV.api.call("set_setting", "bgfx_size", BV.bgfx.size).catch(function () {});
@@ -505,7 +512,10 @@
         }
         BV.bgfx.activeId = t.id;
       }
-      if (persist) BV.api.call("set_setting", "bgfx", t.id).catch(function () {});
+      if (persist) {
+        if (BV.state.settings) BV.state.settings.bgfx = t.id;   /* keep the mirror honest */
+        BV.api.call("set_setting", "bgfx", t.id).catch(function () {});
+      }
     },
   };
 })();

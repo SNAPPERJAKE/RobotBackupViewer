@@ -141,8 +141,15 @@
           function (v) { BV.bgfx.tune({ intensity: v / 100 }, true); });
         sliderRow(into, "size", 50, 200, 10, Math.round(BV.bgfx.size * 100), pct,
           function (v) { BV.bgfx.tune({ size: v / 100 }, true); });
-        /* frost: 0 = the solid original; drives --frost -> --panel/--glass */
-        sliderRow(into, "frost", 0, 85, 5, Math.round((Number(settings.frost) || 0) * 100), pct,
+        /* two glass knobs: opacity = how see-through panels go (0 = the
+           solid original), frost = how much the glass surfaces BLUR */
+        var op0 = settings.glass_op != null ? Number(settings.glass_op) : (Number(settings.frost) || 0);
+        sliderRow(into, "opacity", 0, 85, 5, Math.round((op0 || 0) * 100), pct,
+          function (v) {
+            persist("glass_op", v / 100);
+            BV.uiPrefs.apply(settings);
+          });
+        sliderRow(into, "frost", 0, 100, 5, Math.round((Number(settings.frost) || 0) * 100), pct,
           function (v) {
             persist("frost", v / 100);
             BV.uiPrefs.apply(settings);
