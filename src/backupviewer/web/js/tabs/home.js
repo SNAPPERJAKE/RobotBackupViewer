@@ -907,7 +907,10 @@
       BV.toast("no backup yet — take one"); return;
     }
     if (r.stale) { BV.toast("backup folder missing on disk"); return; }
+    /* browser dedupe: a robot already on a tab gets focused, not rebuilt */
+    if (BV.session.focusRobot(r.id)) return;
     BV.api.call("lib_open", r.id, "latest").then(function (manifest) {
+      BV.session.open(manifest);
       BV.state.setManifest(manifest);
       BV.toast(manifest.robot_name
         ? manifest.robot_name + " · " + manifest.file_count + " files" : "opened");

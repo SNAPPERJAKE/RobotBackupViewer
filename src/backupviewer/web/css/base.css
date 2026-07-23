@@ -133,13 +133,55 @@ body { overflow: hidden; }
 .logo-text { font-size: 1.05em; font-weight: 600; color: var(--text); letter-spacing: -0.02em; }
 .logo-accent { color: var(--accent); }
 
+/* the content tabs (overview/frames/io/…): a slim second row under the
+   topbar since the backup tabs took the topbar slot. Hidden by route on
+   shell screens (setTopbarChrome), like before. */
 #tabbar {
   display: flex;
-  flex-wrap: wrap;  /* tabs stack into a second row instead of scrolling away */
+  flex-wrap: wrap;  /* tabs stack into another row instead of scrolling away */
   gap: 0.1em 0.15em;
+  font-size: var(--chrome-fs, 15px);
+  padding: 0 1.1em 0.25em;
+  flex: none;
+}
+
+/* ---- the backup tab strip (backuptabs.js) ---- */
+#sessionbar {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
   flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;   /* many tabs shrink; the strip never wraps the topbar */
 }
+.stab {
+  display: flex; align-items: center; gap: 0.35em;
+  padding: 0.22em 0.3em 0.22em 0.7em;
+  border: 1px solid var(--edge-soft);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--sub);
+  cursor: pointer;
+  min-width: 0; max-width: 15em; flex: 0 1 auto;
+  user-select: none;
+  transition: color var(--trans), border-color var(--trans), background var(--trans);
+}
+.stab:hover { color: var(--text); }
+.stab.active { color: var(--text); border-color: var(--edge); }
+.stab.active .stab-label { color: var(--accent); }
+.stab-label {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 0.78em;
+}
+.stab-x {
+  appearance: none; background: none; border: none;
+  color: var(--sub); cursor: pointer;
+  padding: 0 0.32em; border-radius: 4px; font-size: 0.7em; line-height: 1.5;
+}
+.stab-x:hover { color: var(--error); background: color-mix(in srgb, var(--error) 14%, transparent); }
+.stab.dragging { opacity: 0.5; }
+.stab.drop-before { box-shadow: inset 2px 0 0 var(--accent); }
+#sessionbar.drop-end { box-shadow: inset -2px 0 0 var(--accent); }
 
 .tab-btn {
   appearance: none;

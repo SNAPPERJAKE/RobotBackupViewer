@@ -3,10 +3,17 @@
   "use strict";
 
   var listeners = {};
+  /* per-backup UI-memory buckets, keyed by manifest.path. setManifest POINTS
+     tabData at the open backup's bucket instead of wiping, so switching
+     between session tabs restores each backup's scroll/sort/folds. A bucket
+     dies when its tab CLOSES (dropBucket) - the old "cleared per backup"
+     contract became "cleared per backup lifetime": re-open after close is
+     fresh, switch away and back is restored. */
+  var _buckets = {};
 
   BV.state = {
     manifest: null,        /* {path, name, file_count, robot_name, f_number, tabs:{}} */
-    tabData: {},           /* tabId -> parsed payload (frontend cache) */
+    tabData: {},           /* tabId -> parsed payload (the open backup's bucket) */
     settings: {},
 
     on: function (evt, fn) {
@@ -18,9 +25,13 @@
 
     setManifest: function (m) {
       BV.state.manifest = m;
-      BV.state.tabData = {};
+      BV.state.tabData = (m && m.path)
+        ? (_buckets[m.path] || (_buckets[m.path] = {}))
+        : {};
       BV.state.emit("manifest", m);
     },
+
+    dropBucket: function (path) { delete _buckets[path]; },
   };
 
   /* in-session per-tab UI state (scroll, expand/collapse, sort, filters). Stored
