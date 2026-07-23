@@ -1,6 +1,31 @@
 # Changelog
 
 ## Unreleased
+- **Browser-style backup tabs.** Every opened robot or camera lands on a tab
+  in the topbar (the content tabs drop to a slim second row): open several
+  backups at once, click to switch — every tab restores exactly where you
+  left it, scroll, sort, folds and its own compare pairing included — drag
+  to rearrange, ✕/middle-click to close, and re-opening a robot focuses its
+  existing tab instead of rebuilding it. Backed by a real per-session
+  registry (each backup's parse caches stay warm and independent; a hard
+  cap of six refuses honestly rather than quietly eating memory), with the
+  compare `side` parameter kept trailing-positional per the house rule.
+- **Pop-out windows.** Drag a tab out of the app (or right-click → pop out)
+  and that backup opens in its own OS window — pinned to the one backup, no
+  library or tabs of other robots, closing it really closes the backup.
+  The main window closing takes its pop-outs with it.
+- **Frosted glass on a slider.** The theme window's background block gains a
+  **frost** slider: content surfaces go translucent so the animated
+  backgrounds glow through, and the sticky library head / overview hero /
+  modals get real backdrop blur (rows stay legible scrolling beneath). At 0
+  the app renders exactly as the solid original. The library head no longer
+  paints an opaque slab over the background effects.
+- **Theme window layout.** The background block (effect + intensity / size /
+  frost) tops the **themes** tab with the color packs below it; text size
+  and chrome scale became live sliders on customize.
+- **The library remembers its folds.** Plant/line expand-collapse state and
+  the favorites strip survive closing the app, per lens (backup and
+  multi-cam remember separately).
 - **Deep backups read fully again.** The viewer's file index now walks a
   backup through the same `\\?\` extended-length form the backup writer has
   used since v0.99h. Before this, a tree whose paths passed Windows'

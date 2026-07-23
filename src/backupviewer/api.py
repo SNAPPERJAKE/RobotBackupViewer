@@ -13,6 +13,7 @@ import os
 import re
 import threading
 import time
+import urllib.parse
 import uuid
 from pathlib import Path
 
@@ -512,7 +513,11 @@ class Api:
             return True
         label = (e["manifest"] or {}).get("robot_name") \
             or (e["manifest"] or {}).get("name") or "backup"
-        url = resource_path("web/index.html").as_uri() + "?sid=" + urllib.parse.quote(sid, safe="")
+        # the sid rides a FRAGMENT, not a query: WebView2 refuses to load a
+        # file:// url with a query string (the page never booted - probed),
+        # while fragments never reach file resolution. api.js adopts it and
+        # the router immediately replaces the hash with a real route.
+        url = resource_path("web/index.html").as_uri() + "#sid=" + urllib.parse.quote(sid, safe="")
         w = webview.create_window(
             "backupviewer · " + label, url, js_api=self,
             width=1150, height=800, min_size=(800, 560))
@@ -2030,6 +2035,9 @@ class Api:
         # dict, so a tab switch or a solo boot keeps the identity fields.
         m = ent["manifest"]
         m["robot_id"] = e["id"]
+        # the library's display name beats a leaf-folder fallback (tab labels,
+        # pop-out titles); a robot_name parsed from the backup itself wins
+        m.setdefault("robot_name", e.get("name", ""))
         m["backups"] = e.get("backups", [])
         m["current_path"] = str(p)
         # a camera carries its brand + IP so the viewer can offer "remote" (a live

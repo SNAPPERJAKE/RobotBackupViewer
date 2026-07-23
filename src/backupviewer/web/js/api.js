@@ -4,13 +4,15 @@
   "use strict";
 
   /* solo mode: a popped-out backup window boots pinned to ONE session. The
-     ?sid= query is stamped by pop_out_backup; every content call then names
-     that session explicitly via the SID_POS injection below. */
+     sid rides the URL FRAGMENT (#sid=..., stamped by pop_out_backup -
+     WebView2 refuses file:// urls with a QUERY string outright); every
+     content call then names that session via the SID_POS injection below.
+     The router replaces the hash with a real route right after boot. */
   var soloSid = null;
   try {
-    var mq = /[?&]sid=([^&]+)/.exec(location.search);
+    var mq = /[?&]sid=([^&]+)/.exec(location.search) || /^#sid=(.+)$/.exec(location.hash);
     if (mq) soloSid = decodeURIComponent(mq[1]);
-  } catch (e) { /* malformed query - boot as the main window */ }
+  } catch (e) { /* malformed marker - boot as the main window */ }
   BV.solo = !!soloSid;
   BV.soloSid = soloSid;
   if (BV.solo) document.body.classList.add("solo");
