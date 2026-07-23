@@ -203,10 +203,22 @@ def _device_row(spec: dict) -> dict:
 
 
 class Api:
+    MAX_OPEN_SESSIONS = 6  # parse caches are per-session and never evicted -
+    #                        open tabs are real memory; closing one is the
+    #                        eviction story, so the cap refuses honestly
+
     def __init__(self):
         self._window = None
-        self._session: BackupSession | None = None
-        self._compare_session: BackupSession | None = None
+        # open viewer sessions, keyed by sid = str(session.root) - the display
+        # path, matching the compare cache key (`compare:{b.root}:{mode}`).
+        # Each entry owns its own compare session so every tab restores
+        # exactly how you left it.
+        # entry: {"session": BackupSession, "compare": BackupSession | None,
+        #         "manifest": dict, "owner": "tab" | "popout",
+        #         "window": webview.Window | None (popouts only)}
+        self._sessions: dict[str, dict] = {}
+        self._active_sid: str | None = None  # what the MAIN window is showing
+        self._sessions_lock = threading.Lock()  # registry mutations only
         self._jobs: dict[str, ftpbackup.BackupJob] = {}  # active/finished backup jobs
         self._scans: dict[str, discover._ScanJob] = {}  # folder + network scan jobs
         self._lib_sig: str | None = None  # tree signature at the last scan (None = never)
@@ -224,7 +236,7 @@ class Api:
         self._window = window
         if initial_backup:
             try:
-                self._session = BackupSession(Path(initial_backup))
+                self._open_session(Path(initial_backup))
             except Exception:
                 log.exception("could not open initial backup %s", initial_backup)
         if not os.environ.get("BV_NO_WATCHER"):
@@ -312,15 +324,61 @@ class Api:
     # second backup; caches live on the session object, so both sides cache
     # independently
 
-    def _need_session(self) -> BackupSession:
-        if self._session is None:
+    def _entry(self, sid: str | None = None) -> dict:
+        """The registry entry for `sid`, or the active one when sid is None.
+        Endpoints reach sessions ONLY through here / the helpers below."""
+        key = sid or self._active_sid
+        e = self._sessions.get(key) if key else None
+        if e is None:
             raise ApiError("NO_BACKUP", "No backup folder is open")
-        return self._session
+        return e
+
+    def _need_session(self, sid: str | None = None) -> BackupSession:
+        return self._entry(sid)["session"]
+
+    def _open_session(self, p: Path, owner: str = "tab") -> dict:
+        """Open (or refresh) a viewer session and make it active. Construction
+        happens outside the lock (it walks the whole tree); the registry swap
+        is atomic. An existing sid is replaced IN PLACE - same tab identity,
+        fresh caches - which is exactly what the compare tab's refresh does on
+        purpose. Only NEW sids count against the cap."""
+        sess = BackupSession(p)
+        sid = str(sess.root)
+        with self._sessions_lock:
+            e = self._sessions.get(sid)
+            if e is None:
+                if len(self._sessions) >= self.MAX_OPEN_SESSIONS:
+                    raise ApiError(
+                        "SESSION_CAP",
+                        "%d backups are already open — close one first" % self.MAX_OPEN_SESSIONS)
+                e = {"session": sess, "compare": None, "manifest": None,
+                     "owner": owner, "window": None}
+                self._sessions[sid] = e
+            else:
+                e["session"] = sess
+                e["compare"] = None
+            self._active_sid = sid
+        m = sess.manifest()
+        m["sid"] = sid
+        e["manifest"] = m
+        return e
+
+    def _drop_session(self, sid: str) -> None:
+        with self._sessions_lock:
+            e = self._sessions.pop(sid, None)
+            if self._active_sid == sid:
+                self._active_sid = next(iter(self._sessions), None)
+        if e and e.get("window") is not None:
+            try:
+                e["window"].destroy()
+            except Exception:  # noqa: BLE001 - window already tearing down
+                pass
 
     def _release_sessions_under(self, *folders):
-        """Drop any open session whose root is inside one of `folders`, so a
-        relocate/merge can move that tree (Windows blocks renaming a folder a
-        process holds a handle into)."""
+        """Drop any open session whose root (or loaded compare root) is inside
+        one of `folders`, so a relocate/merge can move that tree (Windows
+        blocks renaming a folder a process holds a handle into). The main
+        window hears about closed tabs via `sessions-released`."""
         roots = []
         for f in folders:
             if not f:
@@ -339,18 +397,31 @@ class Api:
                 sr = Path(sess.root)
             return any(sr == r or library._within(sr, r) for r in roots)
 
-        if _under(self._session):
-            self._session = None
-        if _under(self._compare_session):
-            self._compare_session = None
+        dropped = []
+        for sid, e in list(self._sessions.items()):
+            if _under(e["session"]):
+                dropped.append(sid)
+            elif _under(e.get("compare")):
+                e["compare"] = None
+        for sid in dropped:
+            self._drop_session(sid)
+        if dropped and self._window is not None:
+            try:
+                self._window.evaluate_js(
+                    "window.BV && BV.state && BV.state.emit && "
+                    "BV.state.emit('sessions-released', " + json.dumps(dropped) + ")")
+            except Exception:  # noqa: BLE001 - window mid-teardown at app exit
+                pass
 
-    def _side_session(self, side: str) -> BackupSession:
-        """'a' = the open backup, 'b' = the loaded comparison backup."""
+    def _side_session(self, side: str, sid: str | None = None) -> BackupSession:
+        """'a' = the open backup, 'b' = ITS loaded comparison backup (compare
+        is per-entry - a diff always pairs the two backups the user paired)."""
         if side == "b":
-            if self._compare_session is None:
+            b = self._entry(sid).get("compare")
+            if b is None:
                 raise ApiError("NO_COMPARE", "No comparison backup loaded")
-            return self._compare_session
-        return self._need_session()
+            return b
+        return self._need_session(sid)
 
     def _need_text(self, name: str, s: BackupSession | None = None) -> str:
         s = s or self._need_session()
@@ -378,17 +449,54 @@ class Api:
         p = Path(path)
         if not p.is_dir():
             raise ApiError("NOT_FOUND", f"Not a folder: {path}")
-        self._session = BackupSession(p)
-        self._compare_session = None  # a new primary invalidates any loaded compare
+        e = self._open_session(p)
         settings.set_value("last_folder", str(p))
-        return self._session.manifest()
+        return e["manifest"]
 
     @_endpoint
-    def get_state(self):
+    def get_state(self, sid: str | None = None):
         # called once by the frontend on boot - this log line doubles as proof
-        # that html/js loaded and the bridge works (useful for frozen builds)
-        log.info("ui booted; session=%s", self._session.root if self._session else None)
-        return self._session.manifest() if self._session else None
+        # that html/js loaded and the bridge works (useful for frozen builds).
+        # Solo pop-out windows pass their pinned sid.
+        log.info("ui booted; sid=%s active=%s", sid, self._active_sid)
+        if sid:
+            return self._entry(sid)["manifest"]
+        if self._active_sid is None:
+            return None
+        return self._entry()["manifest"]
+
+    # -- session tabs (the browser-style backup tabs) -------------------------
+
+    @_endpoint
+    def switch_session(self, sid: str):
+        """Make `sid` the main window's session (a tab click), or front its
+        pop-out window if that's where it lives - also the dedupe-focus path."""
+        e = self._entry(sid)
+        if e["owner"] == "popout" and e.get("window") is not None:
+            try:
+                e["window"].restore()
+                e["window"].show()
+            except Exception:  # noqa: BLE001 - window backend without restore
+                log.exception("could not front the pop-out for %s", sid)
+            return {"owner": "popout"}
+        with self._sessions_lock:
+            self._active_sid = sid
+        return {"owner": "tab", "manifest": e["manifest"],
+                "compare": e["compare"].manifest() if e.get("compare") else None}
+
+    @_endpoint
+    def close_session(self, sid: str):
+        self._entry(sid)  # an unknown sid is an error, never a silent no-op
+        self._drop_session(sid)
+        return True
+
+    @_endpoint
+    def list_open_sessions(self):
+        return [{"sid": sid, "owner": e["owner"],
+                 "label": (e["manifest"] or {}).get("robot_name")
+                 or (e["manifest"] or {}).get("name") or sid,
+                 "robot_id": (e["manifest"] or {}).get("robot_id")}
+                for sid, e in self._sessions.items()]
 
     # -- shared builders (used by endpoints and search) ---------------------------
 
@@ -478,16 +586,16 @@ class Api:
 
         return s.cached("progtext", build)
 
-    def _build_call_graph(self):
-        s = self._need_session()
+    def _build_call_graph(self, sid: str | None = None):
+        s = self._need_session(sid)
 
         def build():
             try:
                 macro_by_name = {m["name"]: m["prog_name"]
-                                 for m in self._build_macros() if m.get("prog_name")}
+                                 for m in self._build_macros(s) if m.get("prog_name")}
             except ApiError:
                 macro_by_name = {}
-            return callgraph.build_call_graph(self._program_texts(), macro_by_name)
+            return callgraph.build_call_graph(self._program_texts(s), macro_by_name)
 
         return s.cached("callgraph", build)
 
@@ -504,8 +612,8 @@ class Api:
     # -- tab data ---------------------------------------------------------------
 
     @_endpoint
-    def get_overview(self):
-        s = self._need_session()
+    def get_overview(self, sid: str | None = None):
+        s = self._need_session(sid)
 
         def build():
             ov = dict(self._build_summary(s))
@@ -525,24 +633,24 @@ class Api:
         return s.cached("overview", build)
 
     @_endpoint
-    def get_frames(self, side: str = "a"):
-        return self._build_frames(self._side_session(side))
+    def get_frames(self, sid: str | None = None, side: str = "a"):
+        return self._build_frames(self._side_session(side, sid))
 
     @_endpoint
-    def get_io(self, side: str = "a"):
-        return self._build_io(self._side_session(side))
+    def get_io(self, sid: str | None = None, side: str = "a"):
+        return self._build_io(self._side_session(side, sid))
 
     @_endpoint
-    def get_registers(self, kind: str, side: str = "a"):
-        return self._build_registers(kind, self._side_session(side))
+    def get_registers(self, kind: str, sid: str | None = None, side: str = "a"):
+        return self._build_registers(kind, self._side_session(side, sid))
 
     @_endpoint
-    def get_styles(self):
-        return self._build_styles()
+    def get_styles(self, sid: str | None = None):
+        return self._build_styles(self._need_session(sid))
 
     @_endpoint
-    def get_call_graph(self):
-        return self._build_call_graph()
+    def get_call_graph(self, sid: str | None = None):
+        return self._build_call_graph(sid)
 
     def _build_programs(self, s: BackupSession | None = None):
         s = s or self._need_session()
@@ -615,8 +723,8 @@ class Api:
         return s.cached("programs", build)
 
     @_endpoint
-    def get_programs(self, side: str = "a"):
-        return self._build_programs(self._side_session(side))
+    def get_programs(self, sid: str | None = None, side: str = "a"):
+        return self._build_programs(self._side_session(side, sid))
 
     @_endpoint
     def diff_program(self, file_a: str, file_b: str):
@@ -641,8 +749,8 @@ class Api:
         return out
 
     @_endpoint
-    def get_program(self, file_name: str):
-        s = self._need_session()
+    def get_program(self, file_name: str, sid: str | None = None):
+        s = self._need_session(sid)
         p = s.find(file_name)
         if p is None or p not in s.program_files:
             raise ApiError("NOT_FOUND", f"Program not found: {file_name}")
@@ -675,10 +783,10 @@ class Api:
         return s.cached(f"karel:{stem.upper()}", lambda: sysvars.records(read_text(kp["va"])))
 
     @_endpoint
-    def get_program_variables(self, stem: str, side: str = "a"):
+    def get_program_variables(self, stem: str, sid: str | None = None, side: str = "a"):
         """A KAREL (.PC) program's variables, as collapsible trees - shown
         instead of TP source when a PC program is opened."""
-        s = self._side_session(side)
+        s = self._side_session(side, sid)
         if stem.upper().endswith(".PC"):
             stem = stem[:-3]
         recs = self._karel_records(s, stem)
@@ -708,9 +816,9 @@ class Api:
                 "truncated": len(diff["rows"]) > len(rows)}
 
     @_endpoint
-    def get_call_tree(self, root: str, depth: int = 6):
+    def get_call_tree(self, root: str, depth: int = 6, sid: str | None = None):
         """Expandable call tree rooted at a program; cycles marked, depth-limited."""
-        graph = self._build_call_graph()
+        graph = self._build_call_graph(sid)
         calls = graph["calls"]
 
         def node(name: str, path: tuple[str, ...], d: int) -> dict:
@@ -735,22 +843,22 @@ class Api:
         return node(root.upper(), (), max(1, min(depth, 8)))
 
     @_endpoint
-    def get_alarm_files(self):
-        s = self._need_session()
+    def get_alarm_files(self, sid: str | None = None):
+        s = self._need_session(sid)
         out = []
         for p in s.alarm_files():
             parsed = self._alarms_for(p.name)
             out.append({"file": p.name, "rows": len(parsed["rows"]), "exported": parsed["exported"]})
         return out
 
-    def _alarms_for(self, name: str) -> dict:
-        s = self._need_session()
-        text = self._need_text(name)
+    def _alarms_for(self, name: str, sid: str | None = None) -> dict:
+        s = self._need_session(sid)
+        text = self._need_text(name, s)
         return s.cached(f"alarms:{name.upper()}", lambda: alarms.parse_alarm_file(text))
 
     @_endpoint
-    def get_alarms(self, file_name: str, offset: int = 0, limit: int = 200, query: str = ""):
-        parsed = self._alarms_for(file_name)
+    def get_alarms(self, file_name: str, offset: int = 0, limit: int = 200, query: str = "", sid: str | None = None):
+        parsed = self._alarms_for(file_name, sid)
         rows = parsed["rows"]
         if query:
             q = query.lower()
@@ -771,8 +879,8 @@ class Api:
         }
 
     @_endpoint
-    def get_macros(self, side: str = "a"):
-        return self._build_macros(self._side_session(side))
+    def get_macros(self, sid: str | None = None, side: str = "a"):
+        return self._build_macros(self._side_session(side, sid))
 
     # -- dcs ------------------------------------------------------------------
 
@@ -788,9 +896,9 @@ class Api:
         return s.cached(f"dcs:{name.upper()}", lambda: dcs.parse_dcs_report(text))
 
     @_endpoint
-    def get_dcs_files(self, side: str = "a"):
+    def get_dcs_files(self, sid: str | None = None, side: str = "a"):
         """Available DCS reports with their export dates (change history)."""
-        s = self._side_session(side)
+        s = self._side_session(side, sid)
         out = []
         for fname, kind in self._DCS_FILES:
             if not s.find(fname):
@@ -808,14 +916,14 @@ class Api:
         return out
 
     @_endpoint
-    def get_dcs(self, file_name: str = "DCSVRFY.DG", side: str = "a"):
-        return self._dcs_report(self._side_session(side), file_name)
+    def get_dcs(self, file_name: str = "DCSVRFY.DG", sid: str | None = None, side: str = "a"):
+        return self._dcs_report(self._side_session(side, sid), file_name or "DCSVRFY.DG")
 
     @_endpoint
-    def get_dcs_zones(self, side: str = "a"):
+    def get_dcs_zones(self, sid: str | None = None, side: str = "a"):
         """Zone geometry for the 3D view: DCSPOS.VA (authoritative) merged
         with the verify report's status/method/TCP; either may be absent."""
-        s = self._side_session(side)
+        s = self._side_session(side, sid)
 
         def build():
             pos_text = s.text("DCSPOS.VA")
@@ -848,13 +956,13 @@ class Api:
         return out
 
     @_endpoint
-    def get_robot_pose(self, side: str = "a"):
+    def get_robot_pose(self, sid: str | None = None, side: str = "a"):
         """Everything the 3D view needs to pose the arm: the backup's robot
         type (DCS verify report), the matching imported kinematics, the
         CURPOS.DG pose snapshot, and the flange correction measured from
         this backup's own numbers (see kinematics.measure_flange). All
         fields degrade to None - the view falls back honestly."""
-        s = self._side_session(side)
+        s = self._side_session(side, sid)
 
         robot_type = ""
         if s.find("DCSVRFY.DG"):
@@ -928,13 +1036,13 @@ class Api:
         return s.cached("sysvar_index", build)
 
     @_endpoint
-    def get_sysvar_records(self, side: str = "a"):
-        recs, _ = self._sysvar_index(self._side_session(side))
+    def get_sysvar_records(self, sid: str | None = None, side: str = "a"):
+        recs, _ = self._sysvar_index(self._side_session(side, sid))
         return [sysvars.summarize(r) for r in recs]
 
     @_endpoint
-    def get_sysvar(self, name: str, side: str = "a"):
-        _, by_name = self._sysvar_index(self._side_session(side))
+    def get_sysvar(self, name: str, sid: str | None = None, side: str = "a"):
+        _, by_name = self._sysvar_index(self._side_session(side, sid))
         rec = by_name.get(name.upper())
         if rec is None:
             raise ApiError("NOT_FOUND", f"System variable not found: {name}")
@@ -943,11 +1051,11 @@ class Api:
     # -- MH valves (GM material-handling grippers) -----------------------------------
 
     @_endpoint
-    def get_mhvalves(self, side: str = "a"):
+    def get_mhvalves(self, sid: str | None = None, side: str = "a"):
         # Each valve's *_SN field is a 1-based index into one of the four signal
         # tables stored in MHGRIPDT (VALVE_TAB/PARTP_TAB/CLAMP_TAB/VMADE_TAB); the
         # parser resolves them to real DI/DO (name + number). See parsers/mhvalves.
-        s = self._side_session(side)
+        s = self._side_session(side, sid)
         text = self._need_text("MHGRIPDT.VA", s)
         model = s.cached("mhvalves", lambda: mhvalves.build_mhvalves(text))
         # the full, untouched config as a nested tree (every field, headers on
@@ -963,9 +1071,9 @@ class Api:
         }
 
     @_endpoint
-    def get_magnet(self, side: str = "a"):
+    def get_magnet(self, sid: str | None = None, side: str = "a"):
         """Magnet end-effector detection + config (MAG*.PC programs, R[800s])."""
-        s = self._side_session(side)
+        s = self._side_session(side, sid)
 
         def build():
             numreg_text = s.text("NUMREG.VA")
@@ -977,8 +1085,8 @@ class Api:
     # -- payload schedules -----------------------------------------------------------
 
     @_endpoint
-    def get_payloads(self, side: str = "a"):
-        s = self._side_session(side)
+    def get_payloads(self, sid: str | None = None, side: str = "a"):
+        s = self._side_session(side, sid)
         text = self._need_text("SYMOTN.VA", s)
         return s.cached("payloads", lambda: payloads.build_payloads_model(text))
 
@@ -1007,16 +1115,19 @@ class Api:
 
     @_endpoint
     def open_compare(self, path: str):
-        self._need_session()  # comparing needs a primary first
+        e = self._entry()  # comparing needs a primary first
         p = Path(path)
         if not p.is_dir():
             raise ApiError("NOT_FOUND", f"Not a folder: {path}")
-        self._compare_session = BackupSession(p)
-        return self._compare_session.manifest()
+        e["compare"] = BackupSession(p)
+        return e["compare"].manifest()
 
     @_endpoint
     def close_compare(self):
-        self._compare_session = None
+        try:
+            self._entry()["compare"] = None
+        except ApiError:
+            pass  # closing compare with nothing open was always a no-op
         return True
 
     def _program_body(self, session: BackupSession, stem_upper: str) -> list[dict] | None:
@@ -1031,8 +1142,9 @@ class Api:
 
     @_endpoint
     def get_compare(self, mode: str = "all"):
-        a = self._need_session()
-        b = self._compare_session
+        e = self._entry()
+        a = e["session"]
+        b = e.get("compare")
         if b is None:
             raise ApiError("NO_COMPARE", "No comparison backup loaded")
         if mode not in ("all", "no_comments", "no_values"):
@@ -1184,10 +1296,10 @@ class Api:
     # -- backup-wide search --------------------------------------------------------
 
     @_endpoint
-    def search_backup(self, query: str, side: str = "a"):
+    def search_backup(self, query: str, sid: str | None = None, side: str = "a"):
         # side="b" searches the compare robot - clicking a signal in a vs-mode
         # pane must search THAT robot, not always the primary one.
-        return self._search_session(self._side_session(side), query)
+        return self._search_session(self._side_session(side, sid), query)
 
     def _search_session(self, s: BackupSession, query: str):
         # the composition behind backup-wide search, session-explicit so the
@@ -1223,8 +1335,8 @@ class Api:
     _BINARY_EXTS = {"TP", "VR", "SV", "PMC", "ZIP", "JPG", "JPEG", "PNG", "DAT", "DF", "IO", "MR", "PC", "BMP"}
 
     @_endpoint
-    def list_files(self):
-        s = self._need_session()
+    def list_files(self, sid: str | None = None):
+        s = self._need_session(sid)
 
         def build():
             out = []
@@ -1251,8 +1363,8 @@ class Api:
         return s.cached("files", build)
 
     @_endpoint
-    def get_file(self, name: str):
-        s = self._need_session()
+    def get_file(self, name: str, sid: str | None = None):
+        s = self._need_session(sid)
         p = s.find(name)
         if p is None:
             raise ApiError("NOT_FOUND", f"File not found: {name}")
@@ -1353,12 +1465,12 @@ class Api:
                 "data_uri": f"data:{mime};base64,{data}"}
 
     @_endpoint
-    def get_photos(self):
-        return self._photos_data(self._need_session())
+    def get_photos(self, sid: str | None = None):
+        return self._photos_data(self._need_session(sid))
 
     @_endpoint
-    def get_image(self, rel: str):
-        return self._image_data(self._need_session(), rel)
+    def get_image(self, rel: str, sid: str | None = None):
+        return self._image_data(self._need_session(sid), rel)
 
     # -- a robot's linked cameras (its Cameras tab) --------------------------------
 
@@ -1863,15 +1975,16 @@ class Api:
             raise ApiError("NOT_FOUND",
                            f"backup folder missing: {path or '(no backup on disk)'}")
         if side == "b":
-            self._need_session()  # comparing needs a primary first
-            self._compare_session = BackupSession(p)
-            return self._compare_session.manifest()
-        self._session = BackupSession(p)
-        self._compare_session = None
+            ent = self._entry()  # comparing needs a primary first
+            ent["compare"] = BackupSession(p)
+            return ent["compare"].manifest()
+        ent = self._open_session(p)
         settings.set_value("last_folder", str(p))
         # carry the robot's identity + dated history so the backup view can show
         # a date-picker timeline (a folder opened directly leaves these unset).
-        m = self._session.manifest()
+        # Enrich the STORED manifest: get_state/switch_session serve this same
+        # dict, so a tab switch or a solo boot keeps the identity fields.
+        m = ent["manifest"]
         m["robot_id"] = e["id"]
         m["backups"] = e.get("backups", [])
         m["current_path"] = str(p)

@@ -35,7 +35,7 @@
       ? (BV.state.compare.robot_name || BV.state.compare.name)
       : ((BV.state.manifest && (BV.state.manifest.robot_name || BV.state.manifest.name)) || "");
     view.innerHTML = '<div class="dim" style="padding:.5rem 0">searching…</div>';
-    BV.api.call("search_backup", query, side).then(function (res) {
+    BV.api.call("search_backup", query, null, side).then(function (res) {
       view.innerHTML = "";
       var head = BV.el("div", { class: "hero", style: "padding-bottom:.6rem" });
       head.innerHTML = '<span class="robot-name" style="font-size:1.2rem">' + BV.esc(res.canonical) + "</span>" +

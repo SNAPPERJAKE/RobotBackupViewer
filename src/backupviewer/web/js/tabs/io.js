@@ -161,7 +161,7 @@
             if (state.showIn && state.showOut) state.showOut = false; /* one direction at a time */
           }
           if (state.vs && !byTypeB) {
-            BV.api.call("get_io", "b").then(function (iob) {
+            BV.api.call("get_io", null, "b").then(function (iob) {
               byTypeB = {};
               iob.signals.forEach(function (s) { (byTypeB[s.type] = byTypeB[s.type] || []).push(s); });
               syncToolbar(); draw();
