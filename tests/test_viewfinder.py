@@ -16,6 +16,12 @@ PNG1 = screengrab.png_encode(1, 1, b"\x10\x20\x30\xff")
 PNG2 = screengrab.png_encode(1, 1, b"\x40\x50\x60\xff")
 
 
+@pytest.fixture(autouse=True)
+def _test_port_range(monkeypatch):
+    """Own port range for tests - see test_phone_view.py's twin fixture."""
+    monkeypatch.setattr(phoneview, "PORT_BASE", 18756)
+
+
 def _get(port, path):
     with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as r:
         return r.status, dict(r.headers), r.read()
@@ -165,6 +171,7 @@ def test_viewfinder_start_opens_picker_and_shares(api):
     title, kw = api._made_windows[0]
     assert title == "BV area picker"
     assert kw["frameless"] and kw["on_top"]
+    assert kw["hidden"] is True         # revealed already-fullscreen, no flash
     assert f"/v/{d['token']}/pick.png" in kw["html"]
     assert "var AREA = null" in kw["html"]
     st = api.phone_view_status()["data"]["sessions"][0]
@@ -185,11 +192,24 @@ def test_picker_done_goes_live_and_pick_again_prefills(api):
     assert "var AREA = [15, 30, 150, 120]" in api._made_windows[-1][1]["html"]
 
 
-def test_picker_cancel_restores(api):
-    d = api.viewfinder_start()["data"]
+def test_cancel_of_first_pick_ends_the_share(api):
+    """No QR modal is up before the first confirm - a cancelled first pick
+    must not leave an invisible share serving."""
+    api.viewfinder_start()
     api._made_windows[0][1]["js_api"].cancel()
+    st = api.phone_view_status()["data"]
+    assert st["sessions"] == [] and st["running"] is False
+
+
+def test_cancel_of_a_repick_keeps_the_share_live(api):
+    d = api.viewfinder_start()["data"]
+    api._made_windows[0][1]["js_api"].done({"x": 0, "y": 0, "w": 100, "h": 80, "dpr": 1})
+    api.viewfinder_pick({"token": d["token"]})
+    api._made_windows[-1][1]["js_api"].cancel()
     st = api.phone_view_status()["data"]["sessions"][0]
-    assert st["picking"] is False and st["area"] is None
+    assert st["picking"] is False and st["area"] == [0, 0, 100, 80]
+    status, headers, _ = _get(d["port"], f"/v/{d['token']}/frame")
+    assert status == 200 and headers["Content-Type"] == "image/png"
 
 
 def test_viewfinder_rejoin_and_stop_closes_picker(api):

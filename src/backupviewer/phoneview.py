@@ -189,6 +189,10 @@ class PhoneShare:
             s = self._sessions.get(token)
             if s and time.time() - s.created > SESSION_TTL:
                 self._sessions.pop(token, None)
+                if not self._sessions:
+                    # a forgotten app instance goes fully quiet once its last
+                    # share ages out - no eternal listener on a dev machine
+                    self._shutdown_server()
                 return None
             return s
 
@@ -466,11 +470,10 @@ def css_rect_to_physical(rect: dict, dpr: float, origin: tuple[int, int]) -> tup
 _PICKER_PAGE = """<!doctype html>
 <html><head><meta charset="utf-8"><style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #000;
-               cursor: crosshair; user-select: none;
+               cursor: move; user-select: none;
                font: 13px/1.4 system-ui, sans-serif; }
   #shot { position: fixed; inset: 0; width: 100vw; height: 100vh; }
-  #dim { position: fixed; inset: 0; background: rgba(0,0,0,.45); }
-  #sel { position: fixed; display: none; border: 2px dashed #7ec384;
+  #sel { position: fixed; border: 2px dashed #7ec384;
          box-shadow: 0 0 0 100000px rgba(0,0,0,.45); cursor: move; }
   #sel .size { position: absolute; right: 0; top: -1.6rem; color: #cfe8d2;
                background: rgba(0,0,0,.65); padding: .1rem .45rem;
@@ -479,88 +482,105 @@ _PICKER_PAGE = """<!doctype html>
           color: #ddd; background: rgba(0,0,0,.65); padding: .4rem .9rem;
           border-radius: 999px; pointer-events: none; white-space: nowrap; }
   #bar { position: fixed; bottom: 1.2rem; left: 50%; transform: translateX(-50%);
-         display: none; gap: .6rem; }
+         display: flex; gap: .6rem; align-items: center; }
   #bar button { font: inherit; padding: .45rem 1rem; border-radius: 8px;
                 border: 1px solid #555; background: #1c1e21; color: #ddd;
                 cursor: pointer; }
+  #bar button.preset { padding: .45rem .7rem; }
+  #bar button.preset.on { border-color: #7ec384; color: #dff2e1; }
   #bar #ok { background: #2e5636; border-color: #7ec384; color: #dff2e1; }
 </style></head><body>
 <img id="shot" src="__SHOT__" alt="">
-<div id="dim"></div>
 <div id="sel"><span class="size"></span></div>
-<div id="hint">drag a box over the area your phone should see &middot;
-enter confirms &middot; esc cancels</div>
-<div id="bar"><button id="ok">use this area</button>
+<div id="hint">drag the box where your phone should look &middot; arrows nudge
+&middot; enter confirms &middot; esc cancels</div>
+<div id="bar"><span id="presets"></span><button id="ok">use this area</button>
 <button id="no">cancel</button></div>
 <script>
 (function () {
   "use strict";
-  var sel = document.getElementById("sel"), bar = document.getElementById("bar");
-  var dim = document.getElementById("dim"), size = sel.querySelector(".size");
-  var rect = null, mode = null, anchor = null, off = null;
-
+  var sel = document.getElementById("sel"), size = sel.querySelector(".size");
+  var dpr = window.devicePixelRatio || 1;
+  /* the box is STATIC-SIZED: place it, don't draw it. Sizes are phone pixels
+     (physical); the chips resize about the box center. */
+  var PRESETS = [[600, 800], [800, 600], [1080, 810]];
   var AREA = __AREA__, ORIGIN = __ORIGIN__;
-  if (AREA) {
-    var d = window.devicePixelRatio || 1;
-    rect = { x: (AREA[0] - ORIGIN[0]) / d, y: (AREA[1] - ORIGIN[1]) / d,
-             w: AREA[2] / d, h: AREA[3] / d };
+  var box, off = null;
+
+  function clamp() {
+    box.w = Math.min(box.w, innerWidth - 8);
+    box.h = Math.min(box.h, innerHeight - 8);
+    box.x = Math.max(0, Math.min(box.x, innerWidth - box.w));
+    box.y = Math.max(0, Math.min(box.y, innerHeight - box.h));
+  }
+
+  function setSize(pw, ph) {
+    var cx = box ? box.x + box.w / 2 : innerWidth / 2;
+    var cy = box ? box.y + box.h / 2 : innerHeight / 2;
+    var w = pw / dpr, h = ph / dpr;
+    box = { x: cx - w / 2, y: cy - h / 2, w: w, h: h };
+    clamp();
+    draw();
   }
 
   function draw() {
-    if (!rect) { sel.style.display = "none"; bar.style.display = "none"; return; }
-    sel.style.display = "block";
-    sel.style.left = rect.x + "px";
-    sel.style.top = rect.y + "px";
-    sel.style.width = rect.w + "px";
-    sel.style.height = rect.h + "px";
-    var d = window.devicePixelRatio || 1;
-    size.textContent = Math.round(rect.w * d) + " \\u00d7 " + Math.round(rect.h * d) + " px";
-    bar.style.display = "flex";
-    dim.style.display = "none";       /* the selection's shadow dims instead */
+    sel.style.left = box.x + "px";
+    sel.style.top = box.y + "px";
+    sel.style.width = box.w + "px";
+    sel.style.height = box.h + "px";
+    var pw = Math.round(box.w * dpr), ph = Math.round(box.h * dpr);
+    size.textContent = pw + " \\u00d7 " + ph + " px";
+    var chips = document.querySelectorAll("#presets .preset");
+    for (var i = 0; i < chips.length; i++) {
+      chips[i].classList.toggle("on",
+        Math.abs(PRESETS[i][0] - pw) < 3 && Math.abs(PRESETS[i][1] - ph) < 3);
+    }
   }
 
-  function norm(r) {
-    return { x: Math.min(r.x, r.x + r.w), y: Math.min(r.y, r.y + r.h),
-             w: Math.abs(r.w), h: Math.abs(r.h) };
+  var presetsEl = document.getElementById("presets");
+  PRESETS.forEach(function (p) {
+    var b = document.createElement("button");
+    b.className = "preset";
+    b.textContent = p[0] + "\\u00d7" + p[1];
+    b.addEventListener("click", function () { setSize(p[0], p[1]); });
+    presetsEl.appendChild(b);
+  });
+
+  if (AREA) {
+    box = { x: (AREA[0] - ORIGIN[0]) / dpr, y: (AREA[1] - ORIGIN[1]) / dpr,
+            w: AREA[2] / dpr, h: AREA[3] / dpr };
+    clamp();
+    draw();
+  } else {
+    setSize(PRESETS[0][0], PRESETS[0][1]);
   }
 
   function down(e) {
     if (e.target.closest("#bar")) return;
-    if (rect && (e.target === sel || sel.contains(e.target))) {
-      mode = "move";
-      off = { x: e.clientX - rect.x, y: e.clientY - rect.y };
+    if (e.target === sel || sel.contains(e.target)) {
+      off = { x: e.clientX - box.x, y: e.clientY - box.y };
     } else {
-      mode = "draw";
-      anchor = { x: e.clientX, y: e.clientY };
-      rect = { x: e.clientX, y: e.clientY, w: 0, h: 0 };
+      /* grab from anywhere: the box jumps under the cursor and follows */
+      off = { x: box.w / 2, y: box.h / 2 };
+      box.x = e.clientX - off.x;
+      box.y = e.clientY - off.y;
+      clamp();
+      draw();
     }
     e.preventDefault();
   }
   function move(e) {
-    if (!mode) return;
-    if (mode === "draw") {
-      rect = norm({ x: anchor.x, y: anchor.y,
-                    w: e.clientX - anchor.x, h: e.clientY - anchor.y });
-    } else {
-      rect.x = Math.max(0, Math.min(e.clientX - off.x, innerWidth - rect.w));
-      rect.y = Math.max(0, Math.min(e.clientY - off.y, innerHeight - rect.h));
-    }
+    if (!off) return;
+    box.x = e.clientX - off.x;
+    box.y = e.clientY - off.y;
+    clamp();
     draw();
   }
-  function up() {
-    if (mode === "draw" && rect && (rect.w < 24 || rect.h < 24)) {
-      rect = null;                    /* a stray click is not an area */
-      dim.style.display = "block";
-      draw();
-    }
-    mode = null;
-  }
+  function up() { off = null; }
 
   function confirm() {
-    if (!rect || rect.w < 24 || rect.h < 24) return;
     if (window.pywebview && pywebview.api) {
-      pywebview.api.done({ x: rect.x, y: rect.y, w: rect.w, h: rect.h,
-                           dpr: window.devicePixelRatio || 1 });
+      pywebview.api.done({ x: box.x, y: box.y, w: box.w, h: box.h, dpr: dpr });
     }
   }
   function cancel() {
@@ -571,15 +591,21 @@ enter confirms &middot; esc cancels</div>
   document.addEventListener("mousemove", move);
   document.addEventListener("mouseup", up);
   document.addEventListener("dblclick", function (e) {
-    if (sel.contains(e.target) || e.target === sel) confirm();
+    if (e.target === sel || sel.contains(e.target)) confirm();
   });
   document.addEventListener("keydown", function (e) {
+    var step = e.shiftKey ? 10 : 1;
     if (e.key === "Enter") confirm();
     else if (e.key === "Escape") cancel();
+    else if (e.key === "ArrowLeft") { box.x -= step; clamp(); draw(); }
+    else if (e.key === "ArrowRight") { box.x += step; clamp(); draw(); }
+    else if (e.key === "ArrowUp") { box.y -= step; clamp(); draw(); }
+    else if (e.key === "ArrowDown") { box.y += step; clamp(); draw(); }
+    else return;
+    e.preventDefault();
   });
   document.getElementById("ok").addEventListener("click", confirm);
   document.getElementById("no").addEventListener("click", cancel);
-  draw();
 })();
 </script></body></html>
 """

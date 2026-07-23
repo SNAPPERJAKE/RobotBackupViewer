@@ -13,6 +13,14 @@ from backupviewer.phoneview import PhoneShare, lan_urls, rank_ip
 JPEG = b"\xff\xd8\xff\xe0FAKEJPEG\xff\xd9"
 
 
+@pytest.fixture(autouse=True)
+def _test_port_range(monkeypatch):
+    """Tests live in their own port range: a real app instance on this machine
+    holds 8756+, and a Windows wildcard listener SHADOWS a closed 127.0.0.1
+    bind on the same port - a stopped test server would look alive."""
+    monkeypatch.setattr(phoneview, "PORT_BASE", 18756)
+
+
 def _share(fetches=None, fail=False):
     def fetch(ip, timeout=3.0):
         if fetches is not None:
@@ -164,10 +172,15 @@ def test_status_counts_phones_and_pulls(share):
     assert sess["pulls"] >= 1 and sess["frame_age_ms"] is not None
 
 
-def test_expired_session_is_gone(share, monkeypatch):
+def test_expired_session_is_gone_and_server_stops(share, monkeypatch):
+    """TTL'd shares don't just 404 - when the LAST one ages out the server
+    stops listening, so a forgotten app instance goes fully quiet."""
     r = share.start_session("192.0.2.10", "cam")
+    port = share.port
     monkeypatch.setattr(phoneview, "SESSION_TTL", 0)
-    assert _get_err(share.port, f"/v/{r['token']}") == 404
+    assert _get_err(port, f"/v/{r['token']}") == 404
+    _wait_down(port)
+    assert share.status()["running"] is False
 
 
 def test_port_conflict_moves_up():

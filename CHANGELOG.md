@@ -1,18 +1,22 @@
 # Changelog
 
 ## Unreleased
-- **Phone view: a window from your phone onto this PC's screen.** The 📱
-  phone button (MTX remote bar, camera cards) freezes the screen into a
-  snip-style picker — drag a box over the part that matters (the camera
-  page's live image, say) — and a QR code hands your phone a black page
-  showing exactly that rectangle, live. The second pair of eyes for focus
-  work at the lens: one person's at the camera, the phone is the screen.
-  **▣ pick area** moves the box any time; the phone follows. View-only —
-  the phone sends nothing back. The phone just needs to reach the PC (same
-  wifi, or the Windows mobile hotspot — the modal ranks the hotspot address
-  first with a chip per adapter). Off by default, token-gated; the share
-  stops with the app or the stop button. A camera-direct relay of the MTX
-  HMI frame ships alongside as the API-level variant. The QR encoder is
+- **Phone view: a window from your phone onto this PC's screen.** Press 📱
+  (MTX remote bar, camera cards) and the screen dims into a fullscreen
+  picker with a fixed-size box already waiting — no drawing: drag it over
+  the part that matters (the camera page's live image, say), nudge with
+  arrows, switch size with the phone-pixel preset chips (600×800 out of
+  the box), confirm. Only then does the QR appear: scan it and your phone
+  gets a black page showing exactly that rectangle, live — one thing on
+  screen at a time, never a pile of windows. The second pair of eyes for
+  focus work at the lens: one person's at the camera, the phone is the
+  screen. **▣ pick area** moves the box any time; the phone follows.
+  View-only — the phone sends nothing back. The phone just needs to reach
+  the PC (same wifi, or the Windows mobile hotspot — the modal ranks the
+  hotspot address first with a chip per adapter). Off by default,
+  token-gated; the share stops with the app, the stop button, or on its
+  own when it ages out forgotten. A camera-direct relay of the MTX HMI
+  frame ships alongside as the API-level variant. The QR encoder is
   hand-rolled stdlib (the stack stays locked), ground-truthed against an
   independent decoder across every version and mask it emits; the screen
   grab is ctypes GDI + a hand-rolled PNG writer, so the exe gains zero

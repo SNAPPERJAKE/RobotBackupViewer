@@ -124,9 +124,17 @@ class _PickerBridge:
         return True
 
     def cancel(self):
+        """Backing out of a re-pick keeps the running share; backing out of
+        the FIRST pick ends it - otherwise an invisible share (no modal is up
+        yet, the QR only appears after a confirmed pick) would keep serving."""
         share = self._api._phone_share
         if share is not None:
-            share.cancel_picking(self._token)
+            had_area = any(s["token"] == self._token and s["area"]
+                           for s in share.status()["sessions"])
+            if had_area:
+                share.cancel_picking(self._token)
+            else:
+                share.stop_session(self._token)
         self._api._close_picker()
         return True
 
@@ -1817,9 +1825,12 @@ class Api:
             f"http://127.0.0.1:{share.port}/v/{token}/pick.png",
             area, (mon[0], mon[1]))
         import webview   # create_window works after start(); stubbed in tests
+        # born hidden: cover_window_on_monitor reveals it already covering the
+        # monitor (SWP_SHOWWINDOW), so the user sees the screen dim into pick
+        # mode - never a small window popping up and jumping fullscreen
         self._picker = webview.create_window(
             self._PICKER_TITLE, html=page, frameless=True, on_top=True,
-            js_api=_PickerBridge(self, token, mon))
+            hidden=True, js_api=_PickerBridge(self, token, mon))
         threading.Thread(
             target=screengrab.cover_window_on_monitor,
             args=(self._PICKER_TITLE, mon), daemon=True,

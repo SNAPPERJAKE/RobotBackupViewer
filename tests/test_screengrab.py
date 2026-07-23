@@ -48,7 +48,23 @@ def test_png_rejects_wrong_length():
         screengrab.png_encode(2, 2, b"\x00" * 15)
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="GDI capture is Windows-only")
+def _desktop_capturable() -> bool:
+    """GDI can't capture a locked/disconnected session - that's the machine's
+    state, not a code bug, so the live-capture smoke test skips honestly."""
+    if sys.platform != "win32":
+        return False
+    try:
+        screengrab.grab_rect_png(0, 0, 2, 2)
+        return True
+    except OSError:
+        return False
+
+
+needs_desktop = pytest.mark.skipif(
+    not _desktop_capturable(), reason="desktop not capturable (locked session?)")
+
+
+@needs_desktop
 def test_grab_rect_png_speaks_png():
     png = screengrab.grab_rect_png(0, 0, 6, 4)
     w, h, rgba = _decode_png(png)

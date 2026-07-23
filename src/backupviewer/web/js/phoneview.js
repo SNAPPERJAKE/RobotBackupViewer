@@ -39,11 +39,30 @@
     }).catch(function (e) { BV.toast("phone view: " + e.message); });
   };
 
-  /* the screen share: the picker opens on the PC immediately; the modal
-     rides underneath it, QR ready for the phone */
+  /* the screen share, one thing on screen at a time: 📱 dims the screen into
+     the picker; the QR modal appears only after the area is confirmed. While
+     the picker is up we just wait on status - picking done + area = show the
+     QR; session gone = the user cancelled a first pick. */
+  var waiting = false;
+
+  function awaitPick(d) {
+    if (waiting) return;
+    waiting = true;
+    (function poll() {
+      BV.api.call("phone_view_status").then(function (st) {
+        var s = (st.sessions || []).filter(function (x) { return x.token === d.token; })[0];
+        if (!s) { waiting = false; BV.toast("phone view cancelled"); return; }
+        if (s.picking || !s.area) { setTimeout(poll, 600); return; }
+        waiting = false;
+        show("screen area", d, true);
+      }).catch(function (e) { waiting = false; BV.toast("phone view: " + e.message); });
+    })();
+  }
+
   BV.openViewfinder = function () {
+    if (waiting) return;
     BV.api.call("viewfinder_start").then(function (d) {
-      show("screen area", d, true);
+      awaitPick(d);
     }).catch(function (e) { BV.toast("phone view: " + e.message); });
   };
 
@@ -103,10 +122,12 @@
     var row = BV.el("div", { style: "display:flex;gap:0.5rem;justify-content:flex-end" });
     if (screen) {
       var pickBtn = BV.el("button", { class: "btn",
-        title: "choose (or move) the screen area the phone sees" }, "▣ pick area");
+        title: "move the screen area the phone sees" }, "▣ pick area");
       pickBtn.addEventListener("click", function () {
-        BV.api.call("viewfinder_pick", { token: d.token })
-          .catch(function (e) { BV.toast("could not open the picker: " + e.message); });
+        BV.api.call("viewfinder_pick", { token: d.token }).then(function () {
+          modal.close();          /* the picker owns the screen; QR comes back after */
+          awaitPick(d);
+        }).catch(function (e) { BV.toast("could not open the picker: " + e.message); });
       });
       row.appendChild(pickBtn);
       row.appendChild(BV.el("span", { style: "margin-left:auto" }));
