@@ -1,7 +1,9 @@
 """Phone live view: the share server exercised over real HTTP on loopback with
 the camera fetch faked, plus the address-ranking logic. No camera, no network
 beyond 127.0.0.1."""
+import base64
 import time
+import types
 import urllib.error
 import urllib.request
 
@@ -269,3 +271,73 @@ def test_api_stop_and_status(api):
     assert api.phone_view_stop({"token": d["token"]})["data"] == 0
     assert api.phone_view_status()["data"]["running"] is False
     assert api.phone_view_stop()["data"] == 0            # idempotent, no share running
+
+
+# -- the firewall helper (powershell stubbed) --------------------------------------
+
+def test_firewall_command_shape(api):
+    """The copy/paste command must open the whole port range inbound on ALL
+    profiles - a Public-only rule is exactly what left the phone blocked on a
+    Private hotspot."""
+    cmd = api._fw_command()
+    assert "New-NetFirewallRule" in cmd and "-Direction Inbound" in cmd
+    assert "-Action Allow" in cmd and "-Protocol TCP" in cmd
+    assert "-Profile Any" in cmd
+    lo = phoneview.PORT_BASE
+    assert f"{lo}-{lo + phoneview.PORT_TRIES - 1}" in cmd
+
+
+def test_firewall_status_reads_rule_presence(api, monkeypatch):
+    import backupviewer.api as api_mod
+
+    def fake_run(args, **kw):
+        return types.SimpleNamespace(stdout="yes\n", returncode=0)
+    monkeypatch.setattr(api_mod.subprocess, "run", fake_run)
+    r = api.phone_view_firewall_status()
+    assert r["ok"] is True
+    assert r["data"]["rule_present"] is True
+    assert r["data"]["command"] == api._fw_command()
+
+
+def test_firewall_status_absent_and_failure_are_honest(api, monkeypatch):
+    import backupviewer.api as api_mod
+    monkeypatch.setattr(api_mod.subprocess, "run",
+                        lambda args, **kw: types.SimpleNamespace(stdout="no\n"))
+    assert api.phone_view_firewall_status()["data"]["rule_present"] is False
+
+    def boom(args, **kw):
+        raise OSError("powershell not found")
+    monkeypatch.setattr(api_mod.subprocess, "run", boom)
+    r = api.phone_view_firewall_status()
+    assert r["ok"] is True                       # still returns, just no rule
+    assert r["data"]["rule_present"] is False
+    assert r["data"]["command"]                  # command always offered
+
+
+def test_firewall_fix_launches_elevated(api, monkeypatch):
+    import backupviewer.api as api_mod
+    seen = {}
+
+    def fake_popen(args, **kw):
+        seen["args"] = args
+        seen["kw"] = kw
+        return types.SimpleNamespace()
+    monkeypatch.setattr(api_mod.subprocess, "Popen", fake_popen)
+    r = api.phone_view_firewall_fix()
+    assert r["ok"] is True and r["data"]["launched"] is True
+    outer = " ".join(seen["args"])
+    assert "RunAs" in outer and "-EncodedCommand" in outer
+    # the encoded payload really adds our rule (utf-16-le base64, PS convention)
+    enc = outer.split("-EncodedCommand','")[1].split("'")[0]
+    inner = base64.b64decode(enc).decode("utf-16-le")
+    assert "New-NetFirewallRule" in inner and api._FW_RULE_NAME in inner
+    assert "Remove-NetFirewallRule" in inner    # idempotent replace
+
+
+def test_firewall_fix_reports_launch_failure(api, monkeypatch):
+    import backupviewer.api as api_mod
+
+    def boom(args, **kw):
+        raise OSError("no shell")
+    monkeypatch.setattr(api_mod.subprocess, "Popen", boom)
+    assert api.phone_view_firewall_fix()["error"]["code"] == "PHONE_VIEW"

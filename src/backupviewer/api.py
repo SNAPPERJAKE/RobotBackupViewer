@@ -6,16 +6,20 @@ Every public method returns an envelope and never raises across the bridge:
 """
 from __future__ import annotations
 
+import base64
 import functools
 import json
 import logging
 import os
 import re
+import subprocess
 import threading
 import time
 import urllib.parse
 import uuid
 from pathlib import Path
+
+_CREATE_NO_WINDOW = 0x08000000  # keep helper powershell spawns off-screen
 
 from . import backuplog
 from . import compare
@@ -1767,6 +1771,62 @@ class Api:
         if self._phone_share is None:
             return {"running": False, "port": None, "sessions": []}
         return self._phone_share.status()
+
+    # -- the firewall helper ("server stopped responding" = blocked port) -------------
+    # When the phone reaches the laptop but the page times out, it's almost
+    # always the Windows Firewall dropping inbound TCP on the network profile
+    # the phone is on (e.g. a rule scoped to Public while the hotspot is
+    # Private). The fix is a one-time inbound-allow rule for the phone-view
+    # port range. The app can't self-elevate, so the "add" path spawns an
+    # elevated PowerShell (UAC); the command is also shown for copy/paste.
+
+    _FW_RULE_NAME = "BackupViewer phone view"
+
+    def _fw_port_range(self) -> str:
+        return f"{phoneview.PORT_BASE}-{phoneview.PORT_BASE + phoneview.PORT_TRIES - 1}"
+
+    def _fw_command(self) -> str:
+        """The exact rule-adding command, shown in the UI for copy/paste."""
+        return ("New-NetFirewallRule -DisplayName '" + self._FW_RULE_NAME +
+                "' -Direction Inbound -Action Allow -Protocol TCP -LocalPort " +
+                self._fw_port_range() + " -Profile Any")
+
+    @_endpoint
+    def phone_view_firewall_status(self):
+        """Whether our inbound-allow rule exists, plus the exact command to add
+        it (single source of truth for the UI's copy button). A non-elevated
+        read - no UAC."""
+        present = False
+        probe = ("if (Get-NetFirewallRule -DisplayName '" + self._FW_RULE_NAME +
+                 "' -ErrorAction SilentlyContinue) { 'yes' } else { 'no' }")
+        try:
+            r = subprocess.run(["powershell", "-NoProfile", "-Command", probe],
+                               capture_output=True, text=True, timeout=10,
+                               creationflags=_CREATE_NO_WINDOW)
+            present = "yes" in (r.stdout or "").lower()
+        except (OSError, subprocess.SubprocessError):
+            pass   # can't read it - the UI just offers the command anyway
+        return {"rule_present": present, "command": self._fw_command(),
+                "port_range": self._fw_port_range()}
+
+    @_endpoint
+    def phone_view_firewall_fix(self):
+        """Add the inbound-allow rule for the phone-view port range, elevating
+        via UAC (the app isn't admin). Spawns an elevated PowerShell that
+        replaces-then-adds the rule; the user approves the Windows prompt.
+        Returns {launched}; the UI re-checks status to confirm approval."""
+        inner = ("Remove-NetFirewallRule -DisplayName '" + self._FW_RULE_NAME +
+                 "' -ErrorAction SilentlyContinue; " + self._fw_command() +
+                 " | Out-Null")
+        enc = base64.b64encode(inner.encode("utf-16-le")).decode()
+        outer = ("Start-Process powershell -Verb RunAs -WindowStyle Hidden "
+                 "-ArgumentList '-NoProfile','-EncodedCommand','" + enc + "'")
+        try:
+            subprocess.Popen(["powershell", "-NoProfile", "-Command", outer],
+                             creationflags=_CREATE_NO_WINDOW)
+        except OSError as e:
+            raise ApiError("PHONE_VIEW", f"could not launch the admin prompt: {e}")
+        return {"launched": True}
 
     # -- themes & settings ------------------------------------------------------------
 

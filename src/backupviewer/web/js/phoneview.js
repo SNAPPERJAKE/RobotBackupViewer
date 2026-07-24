@@ -46,6 +46,59 @@
     }).catch(function (e) { BV.toast("phone view: " + e.message); });
   };
 
+  /* the firewall help panel, built once per modal and toggled by the "?".
+     Reads the live command + rule state from the bridge; offers copy and a
+     one-click elevated "add the rule" (UAC). */
+  function toggleFirewallHelp(wrap) {
+    if (wrap._fwPanel) {
+      wrap._fwPanel.style.display = wrap._fwPanel.style.display === "none" ? "block" : "none";
+      return;
+    }
+    var panel = BV.el("div", { style:
+      "margin-top:0.6rem;padding:0.7rem;border:1px solid var(--edge);border-radius:8px;" +
+      "background:var(--bg);font-size:0.82rem" });
+    panel.appendChild(BV.el("div", { style: "font-weight:600;margin-bottom:0.3rem" },
+      "phone says “server stopped responding”?"));
+    panel.appendChild(BV.el("div", { class: "dim", style: "margin-bottom:0.5rem" },
+      "the phone is reaching this pc, but <b>windows firewall</b> is blocking the " +
+      "port on this network. open it once (needs admin) — then reload the page on the phone:"));
+    var cmdBox = BV.el("div", { style:
+      "font-family:Consolas,monospace;font-size:0.74rem;white-space:pre-wrap;" +
+      "word-break:break-all;background:var(--bg2);border:1px solid var(--edge);" +
+      "border-radius:6px;padding:0.45rem;user-select:text;margin-bottom:0.45rem" }, "loading…");
+    var note = BV.el("div", { class: "dim", style: "margin-bottom:0.5rem" }, "");
+    var btns = BV.el("div", { style: "display:flex;gap:0.5rem;flex-wrap:wrap" });
+    var copyBtn = BV.el("button", { class: "btn" }, "copy command");
+    var runBtn = BV.el("button", { class: "btn" }, "add the rule (admin)");
+    btns.appendChild(copyBtn); btns.appendChild(runBtn);
+    panel.appendChild(cmdBox); panel.appendChild(note); panel.appendChild(btns);
+    wrap.appendChild(panel);
+    wrap._fwPanel = panel;
+
+    var cmd = "";
+    function loadStatus() {
+      BV.api.call("phone_view_firewall_status").then(function (fw) {
+        cmd = fw.command;
+        cmdBox.textContent = cmd;
+        note.innerHTML = fw.rule_present
+          ? '<span style="color:var(--ok)">✓ the firewall rule is already added</span> — ' +
+            "if the phone still can't connect, it's a network issue, not the firewall."
+          : "not added yet — click <b>add the rule</b> (approve the Windows prompt), " +
+            "or paste the command into an <b>admin</b> PowerShell.";
+      }).catch(function (e) {
+        cmdBox.textContent = "(could not read the firewall state: " + BV.esc(e.message) + ")";
+      });
+    }
+    copyBtn.addEventListener("click", function () { if (cmd) BV.copyText(cmd, "command copied"); });
+    runBtn.addEventListener("click", function () {
+      note.textContent = "approve the Windows admin prompt…";
+      BV.api.call("phone_view_firewall_fix").then(function () {
+        setTimeout(loadStatus, 3500);
+      }).catch(function (e) { note.textContent = "could not start: " + e.message; });
+    });
+    loadStatus();
+  }
+
   function show(label, d, windowMode) {
     var urls = d.urls;
 
@@ -110,6 +163,16 @@
     var modal = BV.modal("phone view · " + label, wrap, {
       onClose: function () { clearInterval(poll); },
     });
+
+    /* corner "?" — the firewall fix for "server stopped responding" (the phone
+       reaches the pc but Windows drops the port on this network profile) */
+    modal.el.style.position = "relative";
+    var helpBtn = BV.el("button", { class: "btn", title: "phone can't connect? (firewall help)",
+      style: "position:absolute;top:0.55rem;right:0.55rem;width:1.7rem;height:1.7rem;" +
+        "padding:0;border-radius:50%;line-height:1" }, "?");
+    modal.el.appendChild(helpBtn);
+    helpBtn.addEventListener("click", function () { toggleFirewallHelp(wrap); });
+
     closeBtn.addEventListener("click", function () { modal.close(); });
     stopBtn.addEventListener("click", function () {
       BV.api.call("phone_view_stop", { token: d.token }).then(function () {

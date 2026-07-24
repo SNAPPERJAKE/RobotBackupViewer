@@ -1,6 +1,15 @@
 # Changelog
 
 ## Unreleased
+- **Phone view firewall helper.** If a phone reaches the laptop but the page
+  times out with *"server stopped responding,"* that's the Windows Firewall
+  dropping the port on that network profile (a rule scoped to Public while
+  the phone's hotspot is Private is the classic case). The phone-view popup
+  now has a **?** in the corner that explains it and offers the exact
+  one-time fix: **copy command**, or **add the rule (admin)** — one click
+  that opens an elevated prompt and installs an inbound-allow rule for the
+  phone-view port range on every network profile. It reports back whether
+  the rule is already in place.
 - **Phone view: mirror the Matrox window to your phone.** Press 📱 (MTX
   remote bar, camera cards) and a QR appears immediately — scan it and your
   phone shows a black page mirroring the Matrox window (the app window, with
