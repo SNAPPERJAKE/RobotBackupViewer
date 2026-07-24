@@ -52,6 +52,10 @@ class VaRecord:
     access: str
     typedecl: str
     lines: list[str] = field(default_factory=list)
+    # which .VA file this record came from - the system-variable browser merges
+    # [*SYSTEM*] records out of ~two dozen SY*.VA chunks and shows the source so
+    # a var is traceable back to its file. "" for records read from a lone file.
+    source: str = ""
 
     @property
     def dims(self) -> tuple[int, ...]:

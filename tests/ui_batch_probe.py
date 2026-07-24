@@ -68,6 +68,94 @@ PNG_1PX = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
     "YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
 
+# tiny TP pair for the program-view section: labels + forward jump + a broken
+# jump + a commented-out jump + one CALL, so the navigator card, labels xref
+# and click-to-definition all have something real to chew on
+TESTMAIN_LS = """/PROG  TESTMAIN
+/ATTR
+OWNER\t\t= MNEDITOR;
+COMMENT\t\t= "NAV PROBE";
+PROG_SIZE\t= 400;
+CREATE\t\t= DATE 26-07-01  TIME 08:00:00;
+MODIFIED\t= DATE 26-07-20  TIME 09:30:00;
+LINE_COUNT\t= 10;
+PROTECT\t\t= READ_WRITE;
+/MN
+   1:  !setup ;
+   2:  LBL[1:TOP] ;
+   3:  IF DI[7]=ON,JMP LBL[2] ;
+   4:  CALL TESTSUB ;
+   5:  JMP LBL[1] ;
+   6:  LBL[2:DONE] ;
+   7:  ! JMP LBL[1] ;
+   8:  JMP LBL[99] ;
+   9:  LBL[3] ;
+  10:  DO[1:PartOk]=ON ;
+/POS
+/END
+"""
+
+TESTSUB_LS = """/PROG  TESTSUB
+/ATTR
+OWNER\t\t= MNEDITOR;
+COMMENT\t\t= "NAV PROBE SUB";
+LINE_COUNT\t= 2;
+/MN
+   1:  DO[2:SubDone]=ON ;
+   2:  R[1]=R[1]+1 ;
+/POS
+/END
+"""
+
+# one tool / one wired valve, mirroring real MHGRIPDT.VA record shapes - just
+# enough for the valve card to render its full setup kv (incl. the compound
+# "no / no" and "1500 ms" values whose wrapping the reflow checks pin down)
+MHGRIPDT_VA = """[MHGRIP]MH_TOOL  Storage: CMOS  Access: RW  : ARRAY[4] OF TOOL_DATA
+  Field: MH_TOOL[1].TOOL_NAME Access: RW: STRING[20] = 'EOAT1'
+  Field: MH_TOOL[1].TOOL_VALVES Access: RW: INTEGER = 1
+[MHGRIP]MH_GRIPPERS  Storage: CMOS  Access: RW  : ARRAY[4,16] OF GRIP_DATA
+  Field: MH_GRIPPERS[1,1].GRIP_NAME Access: RW: STRING[20] = 'CLAMP1'
+  Field: MH_GRIPPERS[1,1].GRIP_ID Access: RW: INTEGER = 1
+  Field: MH_GRIPPERS[1,1].GRIP_CLAMPS Access: RW: INTEGER = 2
+  Field: MH_GRIPPERS[1,1].GRIP_PARTPRS Access: RW: INTEGER = 1
+  Field: MH_GRIPPERS[1,1].CHK_OPENED Access: RW: BOOLEAN = TRUE
+  Field: MH_GRIPPERS[1,1].CHK_CLOSED Access: RW: BOOLEAN = TRUE
+  Field: MH_GRIPPERS[1,1].CLAMP_DELAY Access: RW: INTEGER = 1500
+  Field: MH_GRIPPERS[1,1].PARTPRS_CHK Access: RW: BOOLEAN = FALSE
+  Field: MH_GRIPPERS[1,1].TGL_GRP Access: RW: BOOLEAN = FALSE
+  Field: MH_GRIPPERS[1,1].TGL_REL Access: RW: BOOLEAN = FALSE
+  Field: MH_GRIPPERS[1,1].VALVETOA_SN Access: RW: INTEGER = 1
+  Field: MH_GRIPPERS[1,1].VALVETOB_SN Access: RW: INTEGER = 1
+  Field: MH_GRIPPERS[1,1].PART_PRES_SN Access: RW: ARRAY[8] OF INTEGER
+    [1] = 1
+  Field: MH_GRIPPERS[1,1].CLAMPOPEN_SN Access: RW: ARRAY[8] OF INTEGER
+    [1] = 1
+  Field: MH_GRIPPERS[1,1].CLAMPCLOSESN Access: RW: ARRAY[8] OF INTEGER
+    [1] = 1
+[MHGRIP]MH_GRIPPERS2  Storage: CMOS  Access: RW  : ARRAY[4,16] OF GRP_TGL_DATA
+  Field: MH_GRIPPERS2[1,1].OVRSTRKDELAY Access: RW: INTEGER = 200
+  Field: MH_GRIPPERS2[1,1].CNCL_RCVRGRP Access: RW: BOOLEAN = FALSE
+  Field: MH_GRIPPERS2[1,1].CNCL_RCVRREL Access: RW: BOOLEAN = FALSE
+[MHGRIP]VALVE_TAB  Storage: CMOS  Access: RW  : ARRAY[16] OF SIGAB_TAB
+  Field: VALVE_TAB[1].SIGTOA_N Access: RW: STRING[24] = 'CLAMP1 ADVANCE'
+  Field: VALVE_TAB[1].SIGTOA_T Access: RW: INTEGER = 2
+  Field: VALVE_TAB[1].SIGTOA_I Access: RW: INTEGER = 801
+  Field: VALVE_TAB[1].SIGTOB_N Access: RW: STRING[24] = 'CLAMP1 RETURN'
+  Field: VALVE_TAB[1].SIGTOB_T Access: RW: INTEGER = 2
+  Field: VALVE_TAB[1].SIGTOB_I Access: RW: INTEGER = 802
+[MHGRIP]PARTP_TAB  Storage: CMOS  Access: RW  : ARRAY[16] OF SIGNAL_TAB
+  Field: PARTP_TAB[1].SIGNAL_N Access: RW: STRING[24] = 'PART PRESENT 1'
+  Field: PARTP_TAB[1].SIGNAL_T Access: RW: INTEGER = 1
+  Field: PARTP_TAB[1].SIGNAL_I Access: RW: INTEGER = 813
+[MHGRIP]CLAMP_TAB  Storage: CMOS  Access: RW  : ARRAY[34] OF SIGOPEN_TAB
+  Field: CLAMP_TAB[1].SIGOPEN_N Access: RW: STRING[24] = 'CLAMP1 OPENED'
+  Field: CLAMP_TAB[1].SIGOPEN_T Access: RW: INTEGER = 1
+  Field: CLAMP_TAB[1].SIGOPEN_I Access: RW: INTEGER = 821
+  Field: CLAMP_TAB[1].SIGCLOSE_N Access: RW: STRING[24] = 'CLAMP1 CLOSED'
+  Field: CLAMP_TAB[1].SIGCLOSE_T Access: RW: INTEGER = 1
+  Field: CLAMP_TAB[1].SIGCLOSE_I Access: RW: INTEGER = 822
+"""
+
 
 def build_tree(lib: Path) -> None:
     line = lib / "FakePlant" / "LINE01"
@@ -79,6 +167,14 @@ def build_tree(lib: Path) -> None:
         snap = line / rb / "2026_01_01" / "12_00_00"
         snap.mkdir(parents=True)
         (snap / "SUMMARY.DG").write_text("x", encoding="utf-8")
+
+    # RB020 gets the TP pair so the program-view section has a real detail
+    # screen to probe (the other robots stay SUMMARY-only), plus the MH valve
+    # dump so the reflow section has a real valve card
+    snap = line / "RB020R01B01" / "2026_01_01" / "12_00_00"
+    (snap / "TESTMAIN.LS").write_text(TESTMAIN_LS, encoding="utf-8")
+    (snap / "TESTSUB.LS").write_text(TESTSUB_LS, encoding="utf-8")
+    (snap / "MHGRIPDT.VA").write_text(MHGRIPDT_VA, encoding="utf-8")
 
     snap = line / "CELL-01CAM01" / "2026_07_07" / "11_20_00"
     saved = snap / "Documents" / "Matrox Design Assistant" / "SavedImages" / "2026-07-07"
@@ -1041,6 +1137,215 @@ def probe(window):
         check("back.stays_home",
               js(window, "location.hash") == "#home",
               f"(hash={js(window, 'location.hash')!r})")
+
+        # ---- program view: navigator card, labels xref, editor-grade selection ----
+        js(window, """(function(){
+            var row=[...document.querySelectorAll('.lib-robot')].find(function(r){
+                return r.textContent.indexOf('RB020R01B01')>=0;});
+            row.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));
+            row.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+        })()""")
+        opened = poll(window, "(function(){var m=BV.state.manifest;"
+                              "return m && ((m.robot_name||m.name||'')+(m.path||''))"
+                              ".indexOf('RB020R01B01')>=0 ? 'y':'';})()")
+        check("prog.backup_opened", opened == "y",
+              f"(hash={js(window, 'location.hash')!r})")
+        js(window, "location.hash='#programs/TESTMAIN.LS'")
+        nlines = poll(window, "document.querySelectorAll('.viewer .code-line').length")
+        check("prog.viewer_lines", nlines == 10, f"(got {nlines})")
+
+        # selection mechanics: the whole box is selectable, text fills the row,
+        # line numbers stay out of copies
+        mech = json.loads(js(window, """(function(){
+            var v=document.querySelector('.viewer');
+            return JSON.stringify({
+              vsel:getComputedStyle(v).userSelect,
+              lnsel:getComputedStyle(v.querySelector('.code-line .ln')).userSelect,
+              grow:getComputedStyle(v.querySelector('.code-line .lc')).flexGrow,
+            });
+        })()""") or "{}")
+        check("prog.viewer_selectable", mech.get("vsel") == "text", f"({mech})")
+        check("prog.linenums_not_selectable", mech.get("lnsel") == "none", f"({mech})")
+        check("prog.text_fills_row", mech.get("grow") == "1", f"({mech})")
+
+        # releasing a text selection on a CALL token must NOT navigate
+        guard = json.loads(js(window, """(function(){
+            var before=location.hash;
+            var call=document.querySelector('#srcline-4 .tp-call');
+            if(!call) return JSON.stringify({err:'no tp-call on line 4'});
+            var sel=window.getSelection(), rg=document.createRange();
+            rg.selectNodeContents(document.querySelector('#srcline-4 .lc'));
+            sel.removeAllRanges(); sel.addRange(rg);
+            call.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+            var withSel=location.hash;
+            sel.removeAllRanges();
+            return JSON.stringify({before:before, withSel:withSel});
+        })()""") or "{}")
+        check("prog.selection_suppresses_hop",
+              "err" not in guard and guard.get("withSel") == guard.get("before"), f"({guard})")
+        # ...and a plain click still hops
+        js(window, "document.querySelector('#srcline-4 .tp-call')"
+                   ".dispatchEvent(new MouseEvent('click',{bubbles:true}))")
+        check("prog.call_token_hops",
+              poll(window, "location.hash==='#programs/TESTSUB.LS' ? 'y':''") == "y",
+              f"(hash={js(window, 'location.hash')!r})")
+        js(window, "history.back()")
+        poll(window, "location.hash==='#programs/TESTMAIN.LS' ? 'y':''")
+        poll(window, "document.querySelectorAll('.viewer .code-line').length")
+
+        # navigator card: three segments, call tree default, root + child drawn
+        poll(window, "document.querySelector('.prognav .ct-root') ? 'y':''")
+        nav = json.loads(js(window, """(function(){
+            var seg=[...document.querySelectorAll('.prognav .seg button')];
+            var act=seg.find(function(b){return b.classList.contains('active');});
+            return JSON.stringify({
+              n:seg.length,
+              active:act?act.textContent:'',
+              root:(document.querySelector('.prognav .ct-root > .ct-row .ct-name')||{}).textContent||'',
+              child:!!document.querySelector('.prognav .ct-node:not(.ct-root) .ct-name'),
+            });
+        })()""") or "{}")
+        check("nav.three_segments", nav.get("n") == 3, f"({nav})")
+        check("nav.tree_default", nav.get("active") == "call tree", f"({nav})")
+        check("nav.tree_root_and_child",
+              nav.get("root") == "TESTMAIN" and nav.get("child") is True, f"({nav})")
+
+        # labels segment: defs in program order, broken jump flagged, honest zeros
+        js(window, "[...document.querySelectorAll('.prognav .seg button')]"
+                   ".find(function(b){return b.textContent.indexOf('labels')>=0;}).click()")
+        lx = json.loads(js(window, """(function(){
+            var defs=[...document.querySelectorAll('.lblx-def')];
+            return JSON.stringify({
+              ids:defs.map(function(d){return d.querySelector('.lblx-id').textContent;}),
+              broken:document.querySelectorAll('.lblx-def.lblx-broken').length,
+              jumps:document.querySelectorAll('.lblx-jmp').length,
+              none:document.querySelectorAll('.lblx-none').length,
+            });
+        })()""") or "{}")
+        check("lbl.defs_listed",
+              lx.get("ids") == ["LBL[1]", "LBL[2]", "LBL[3]", "LBL[99]"], f"({lx})")
+        check("lbl.broken_flagged", lx.get("broken") == 1, f"({lx})")
+        check("lbl.jump_rows", lx.get("jumps") == 3, f"({lx})")
+        check("lbl.unjumped_honest", lx.get("none") == 1, f"({lx})")
+
+        # clicks land: jump row -> its line, def row -> the LBL line, and a
+        # LBL token in the source -> its definition
+        js(window, "document.querySelector('.lblx-jmp').click()")
+        check("lbl.jump_click_flashes",
+              bool(poll(window, "document.querySelector('#srcline-5.flash') ? 'y':''")))
+        js(window, "document.querySelector('.lblx-def').click()")
+        check("lbl.def_click_flashes",
+              bool(poll(window, "document.querySelector('#srcline-2.flash') ? 'y':''")))
+        js(window, "document.querySelector('#srcline-3 .tp-label')"
+                   ".dispatchEvent(new MouseEvent('click',{bubbles:true}))")
+        check("lbl.token_click_goes_to_def",
+              bool(poll(window, "document.querySelector('#srcline-6.flash') ? 'y':''")))
+
+        # the chosen segment survives leaving and reopening the program
+        js(window, "location.hash='#programs'")
+        poll(window, "location.hash==='#programs' ? 'y':''")
+        js(window, "location.hash='#programs/TESTMAIN.LS'")
+        poll(window, "document.querySelectorAll('.lblx-def').length")
+        seg2 = js(window, "(function(){var b=[...document.querySelectorAll("
+                          "'.prognav .seg button')].find(function(x){return "
+                          "x.classList.contains('active');});return b?b.textContent:'';})()")
+        check("nav.segment_remembered", (seg2 or "").startswith("labels"), f"(got {seg2!r})")
+
+        # attributes card folds (and the fold hides the kv body)
+        att = json.loads(js(window, """(function(){
+            var h=[...document.querySelectorAll('.split .card h3')].find(function(x){
+                return x.textContent.indexOf('attributes')>=0;});
+            var card=h.closest('.card');
+            var openBefore=card.classList.contains('open');
+            h.click();
+            var openAfter=card.classList.contains('open');
+            var bodyHidden=getComputedStyle(card.querySelector('.bv-collapse-body')).display==='none';
+            h.click();
+            return JSON.stringify({openBefore:openBefore,openAfter:openAfter,bodyHidden:bodyHidden});
+        })()""") or "{}")
+        check("attrs.collapsible",
+              att.get("openBefore") is True and att.get("openAfter") is False
+              and att.get("bodyHidden") is True, f"({att})")
+
+        # expand grows the card and uncaps the scroll body
+        ex = json.loads(js(window, """(function(){
+            var btn=document.querySelector('.prognav .icon-btn');
+            btn.click();
+            var card=document.querySelector('.prognav');
+            var big=card.classList.contains('expanded');
+            var mh=getComputedStyle(card.querySelector('.prognav-body')).maxHeight;
+            btn.click();
+            return JSON.stringify({big:big, mh:mh,
+              back:!card.classList.contains('expanded')});
+        })()""") or "{}")
+        check("nav.expand_toggles", ex.get("big") is True and ex.get("back") is True, f"({ex})")
+        check("nav.expanded_uncaps_body", ex.get("mh") == "none", f"({ex})")
+
+        # ---- mh valves: large-text reflow (the kv crush regression) ----
+        # the historic failure: at the grid's 19rem card minimum the nowrap
+        # max-content label starved the 1fr value track and word-break then
+        # shattered "no / no" one character per line. The fix floors the value
+        # (overflow-wrap + NBSP-joined pairs) and lets the LABEL wrap instead.
+        js(window, "location.hash='#mhvalves'")
+        nkv = poll(window, "document.querySelectorAll('.mhv-valve .kv dt').length")
+        check("mhv.card_renders", bool(nkv), f"(kv rows: {nkv})")
+
+        MEASURE = """(function(){
+            function lines(el){
+                var rg=document.createRange(); rg.selectNodeContents(el);
+                var rs=rg.getClientRects(), tops=[], i, t;
+                for(i=0;i<rs.length;i++){ if(!rs[i].width) continue;
+                    t=Math.round(rs[i].top); if(tops.indexOf(t)<0) tops.push(t); }
+                return tops.length||1;
+            }
+            var dts=[...document.querySelectorAll('.mhv-valve .kv dt')];
+            var tg=dts.find(function(d){return d.textContent.indexOf('toggle retry')===0;});
+            var ms=dts.find(function(d){return d.textContent.indexOf('operation timeout')===0;});
+            if(!tg||!ms) return JSON.stringify({err:'rows missing'});
+            var v=tg.nextElementSibling, mv=ms.nextElementSibling;
+            return JSON.stringify({
+                vLines:lines(v), vW:Math.round(v.getBoundingClientRect().width),
+                lLines:lines(tg), msLines:lines(mv),
+                nbsp:v.textContent.indexOf('\\u00A0/\\u00A0')>=0});
+        })()"""
+
+        m0 = json.loads(js(window, MEASURE) or "{}")
+        check("mhv.value_one_line_default",
+              m0.get("vLines") == 1 and m0.get("msLines") == 1, f"({m0})")
+        check("mhv.pair_nbsp_joined", m0.get("nbsp") is True, f"({m0})")
+
+        # 32px text in a card clamped to the 19rem grid minimum - the exact
+        # geometry that used to char-split. Values must hold one line; the
+        # long label is the one allowed to wrap.
+        js(window, """(function(){
+            document.documentElement.style.fontSize='32px';
+            document.body.style.fontSize='32px';
+            document.querySelector('.mhv-valve').style.maxWidth='19rem';
+        })()""")
+        m1 = json.loads(js(window, MEASURE) or "{}")
+        check("mhv.value_one_line_32px_min_card", m1.get("vLines") == 1, f"({m1})")
+        check("mhv.value_not_starved_32px", (m1.get("vW") or 0) >= 60, f"({m1})")
+        check("mhv.label_wraps_instead", 1 <= (m1.get("lLines") or 0) <= 3, f"({m1})")
+        check("mhv.ms_value_one_line_32px", m1.get("msLines") == 1, f"({m1})")
+
+        # dialogs grow with text size (the px-frozen modal fix): still at 32px
+        # root, .modal's max-width must resolve far beyond the old 640px cap
+        md = json.loads(js(window, """(function(){
+            var m=BV.modal('probe', BV.el('div', null, 'x'));
+            var mw=parseFloat(getComputedStyle(document.querySelector('.modal')).maxWidth);
+            m.close(true);
+            return JSON.stringify({mw:mw});
+        })()""") or "{}")
+        check("mhv.modal_grows_with_text", (md.get("mw") or 0) > 900, f"({md})")
+
+        js(window, """(function(){
+            document.documentElement.style.fontSize='';
+            document.body.style.fontSize='';
+            var c=document.querySelector('.mhv-valve'); if(c) c.style.maxWidth='';
+        })()""")
+
+        js(window, "BV.goHome()")
+        check("prog.returns_home", bool(poll(window, "location.hash==='#home' ? 'y':''")))
 
         # ---- tab hotkeys: badges and keys continue past 9 on the number row ----
         check("keys.badge_fn",

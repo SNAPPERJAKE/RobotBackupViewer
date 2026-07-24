@@ -347,8 +347,32 @@
       /* left: source with clickable io/register tokens + CALL/macro hops */
       var viewer = BV.el("div", { class: "viewer" });
       var hops = p.hops || {};
+      var labels = p.labels || [];
+      var pre = null;
+      /* label id -> definition line, for click-to-definition on LBL tokens */
+      var labelDef = {};
+      labels.forEach(function (L) {
+        if (L.line !== null && L.line !== undefined) labelDef[L.id] = L.line;
+      });
+
+      /* center + flash a source line - the one jump helper every navigator
+         (search anchor, labels xref, LBL tokens) shares. Manual scroll math,
+         not scrollIntoView: reading rects forces a sync reflow so the hidden
+         probe window (no rAF) scrolls + flashes too (same trick as pdiff). */
+      function revealLine(n) {
+        if (!pre) return;
+        var el = pre.querySelector("#srcline-" + n);
+        if (!el) return;
+        var vr = viewer.getBoundingClientRect();
+        var er = el.getBoundingClientRect();
+        viewer.scrollTop += (er.top - vr.top) - Math.max(0, (viewer.clientHeight - el.offsetHeight) / 2);
+        el.classList.remove("flash");
+        void el.offsetWidth; /* restart the animation */
+        el.classList.add("flash");
+      }
+
       if (p.body.length) {
-        var pre = BV.el("pre");
+        pre = BV.el("pre");
         var html = "";
         p.body.forEach(function (line) {
           html += '<div class="code-line" id="srcline-' + line.n + '"><span class="ln">' + line.n + '</span>' +
@@ -373,9 +397,19 @@
           });
         });
         pre.addEventListener("click", function (ev) {
+          /* releasing a drag-selection over a token is not a navigation
+             click - let text be copied without yanking the view away */
+          var sel = window.getSelection ? window.getSelection() : null;
+          if (sel && !sel.isCollapsed) return;
           var hop = ev.target.closest(".tp-call");
           if (hop && hop.dataset.hop) {
             location.hash = "#programs/" + encodeURIComponent(hop.dataset.hop + ".LS");
+            return;
+          }
+          var lbl = ev.target.closest(".tp-label");
+          if (lbl) {
+            var lm = /LBL\[\s*(\d+)/.exec(lbl.textContent);
+            if (lm && labelDef[lm[1]] !== undefined) revealLine(labelDef[lm[1]]);
             return;
           }
           var tok = ev.target.closest(".tp-io, .tp-reg");
@@ -389,9 +423,10 @@
       }
       split.appendChild(viewer);
 
-      /* right: attrs, calls, call tree, positions */
+      /* right: attrs (collapsible), navigator (call tree / calls / labels), positions */
       var side = BV.el("div", { style: "display:flex;flex-direction:column;gap:.9rem" });
       split.appendChild(side);
+      var pst = BV.tabState("programs");
 
       var a = p.attrs;
       var ac = BV.el("div", { class: "card" });
@@ -401,12 +436,82 @@
         ["protect", a.protect], ["file", p.name + ".LS"],
       ];
       if (p.appl.length) kv.push(["appl", p.appl.join(", ")]);
-      ac.innerHTML = "<h3>attributes</h3>" + BV.kv.html(kv);
+      var ah = BV.el("h3", null, "attributes");
+      var ab = BV.el("div");
+      ab.innerHTML = BV.kv.html(kv);
+      ac.appendChild(ah);
+      ac.appendChild(ab);
+      /* collapsible so a read-once block stops eating side-panel height;
+         fold state remembered per backup like everything else */
+      BV.collapsible(ac, ah, ab, {
+        open: pst.attrsOpen !== false,
+        onToggle: function (open) { pst.attrsOpen = open; },
+      });
       side.appendChild(ac);
 
-      /* calls / called by */
-      if ((p.calls && p.calls.length) || (p.called_by && p.called_by.length)) {
-        var cc = BV.el("div", { class: "card" });
+      /* navigator: call tree / calls+called-by / labels are three lenses on
+         the same question (where does control go?), so they share one card
+         behind a segmented switch instead of stacking boxes */
+      var hasCalls = (p.calls && p.calls.length) || (p.called_by && p.called_by.length);
+      if (hasCalls || labels.length) {
+        var nc = BV.el("div", { class: "card prognav" });
+        var navHead = BV.el("div", { class: "prognav-head" });
+        var navBody = BV.el("div", { class: "prognav-body scrollbody" });
+        var expandBtn = BV.el("button", {
+          class: "btn icon-btn", title: "expand to half-screen",
+        }, "⤢");
+        expandBtn.addEventListener("click", function () {
+          var big = nc.classList.toggle("expanded");
+          expandBtn.title = big ? "shrink" : "expand to half-screen";
+        });
+
+        var panes = {};
+        function showSeg(id) {
+          pst.navSeg = id;
+          navBody.innerHTML = "";
+          navBody.appendChild(panes[id] || (panes[id] = buildSeg(id)));
+        }
+        function buildSeg(id) {
+          if (id === "tree") return buildTreePane();
+          if (id === "labels") return buildLabelsPane();
+          return buildCallsPane();
+        }
+
+        var initial = pst.navSeg;
+        if (["tree", "calls", "labels"].indexOf(initial) < 0) {
+          initial = (p.calls && p.calls.length) ? "tree" : (hasCalls ? "calls" : "labels");
+        }
+        var seg = BV.segmented([
+          { id: "tree", label: "call tree" },
+          { id: "calls", label: "calls", count: (p.calls || []).length },
+          { id: "labels", label: "labels", count: labels.length },
+        ], { value: initial, onChange: showSeg });
+        navHead.appendChild(seg.el);
+        navHead.appendChild(expandBtn);
+        nc.appendChild(navHead);
+        nc.appendChild(navBody);
+        side.appendChild(nc);
+        showSeg(initial);
+      }
+
+      function buildTreePane() {
+        var holder = BV.el("div", { class: "calltree" });
+        if (!(p.calls && p.calls.length)) {
+          holder.innerHTML = '<div class="dim" style="font-size:.8rem">calls nothing — no tree to walk</div>';
+          return holder;
+        }
+        holder.innerHTML = '<div class="dim" style="font-size:.8rem">loading…</div>';
+        BV.api.call("get_call_tree", p.name).then(function (tree) {
+          holder.innerHTML = "";
+          holder.appendChild(renderTree(tree, true));
+        }).catch(function () {
+          holder.innerHTML = '<div class="dim">call tree unavailable</div>';
+        });
+        return holder;
+      }
+
+      function buildCallsPane() {
+        var box = BV.el("div");
         var ch = "<h3>calls</h3>";
         if (p.calls.length) {
           ch += '<div style="display:flex;flex-direction:column;gap:.15rem;margin-bottom:.6rem">';
@@ -434,32 +539,45 @@
         } else {
           ch += '<div class="dim" style="font-size:.8rem">nothing calls this (entry point?)</div>';
         }
-        cc.innerHTML = ch;
-        side.appendChild(cc);
+        box.innerHTML = ch;
+        return box;
       }
 
-      /* call tree */
-      if (p.calls && p.calls.length) {
-        var tc = BV.el("div", { class: "card" });
-        var th = BV.el("h3", null, "call tree");
-        var expandBtn = BV.el("button", {
-          class: "btn icon-btn", style: "float:right;margin-top:-.2rem;padding:.2rem .5rem",
-          title: "expand to half-screen",
-        }, "⤢");
-        expandBtn.addEventListener("click", function () {
-          var big = tc.classList.toggle("expanded");
-          expandBtn.title = big ? "shrink" : "expand to half-screen";
+      /* labels xref: every LBL definition with the lines that JMP to it -
+         the same caller/callee idea as the calls pane, scoped to one program */
+      function buildLabelsPane() {
+        var box = BV.el("div", { class: "lblxref" });
+        if (!labels.length) {
+          box.innerHTML = '<div class="dim" style="font-size:.8rem">no labels in this program</div>';
+          return box;
+        }
+        var textByLine = {};
+        p.body.forEach(function (l) { textByLine[l.n] = l.text; });
+        labels.forEach(function (L) {
+          var broken = L.line === null || L.line === undefined;
+          var def = BV.el("div", {
+            class: "lblx-def" + (broken ? " lblx-broken" : ""),
+            title: broken ? "JMP target that is never defined — broken jump" : "go to line " + L.line,
+          });
+          def.innerHTML = '<span class="lblx-id">LBL[' + L.id + "]</span>" +
+            (L.name ? '<span class="lblx-name">' + BV.esc(L.name) + "</span>" : "") +
+            (broken ? '<span class="lblx-miss">no such label</span>'
+                    : '<span class="lblx-line">line ' + L.line + "</span>");
+          if (!broken) def.addEventListener("click", function () { revealLine(L.line); });
+          box.appendChild(def);
+          if (L.jumps.length) {
+            L.jumps.forEach(function (jn) {
+              var j = BV.el("div", { class: "lblx-jmp", title: "go to line " + jn });
+              j.innerHTML = '<span class="lblx-jline">' + jn + "</span>" +
+                '<span class="lblx-jtext">' + BV.highlightTP((textByLine[jn] || "").trim()) + "</span>";
+              j.addEventListener("click", function () { revealLine(jn); });
+              box.appendChild(j);
+            });
+          } else {
+            box.appendChild(BV.el("div", { class: "lblx-none dim" }, "no jumps to this label"));
+          }
         });
-        th.appendChild(expandBtn);
-        tc.appendChild(th);
-        var holder = BV.el("div", { class: "calltree scrollbody" });
-        tc.appendChild(holder);
-        side.appendChild(tc);
-        BV.api.call("get_call_tree", p.name).then(function (tree) {
-          holder.appendChild(renderTree(tree, true));
-        }).catch(function () {
-          holder.innerHTML = '<div class="dim">call tree unavailable</div>';
-        });
+        return box;
       }
 
       if (p.positions.length) {
@@ -498,13 +616,7 @@
       }
 
       /* line anchor from search results: #programs/FILE.LS/L26 */
-      if (anchor && /^L\d+$/.test(anchor)) {
-        var el = document.getElementById("srcline-" + anchor.slice(1));
-        if (el) {
-          el.scrollIntoView({ block: "center" });
-          el.classList.add("flash");
-        }
-      }
+      if (anchor && /^L\d+$/.test(anchor)) revealLine(anchor.slice(1));
     }).catch(function (e) {
       view.innerHTML = '<div class="empty-state"><div class="big">program unavailable</div>' +
         '<div class="hint">' + BV.esc(e.message) + "</div></div>";

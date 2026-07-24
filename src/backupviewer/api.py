@@ -1077,11 +1077,24 @@ class Api:
     # -- system vars ----------------------------------------------------------
 
     def _sysvar_index(self, s: BackupSession):
-        """Cached (records list, name->record) for SYSTEM.VA."""
+        """Cached (records list, name->record) for the whole system-variable
+        dump - every [*SYSTEM*] record merged out of ALL the backup's .VA files,
+        not just SYSTEM.VA (which is only ~70% of them). Built once per session."""
         def build():
-            text = self._need_text("SYSTEM.VA", s)
-            recs = sysvars.records(text)
-            return recs, {r.name.upper(): r for r in recs}
+            recs = sysvars.merge_system_records(
+                (name, read_text(path)) for name, path in s.va_files())
+            if not recs:
+                raise ApiError("MISSING_FILE", f"No system variables found in {s.root.name}")
+            # first record wins a name clash (SYSTEM.VA leads va_files); in
+            # practice every [*SYSTEM*] $-name is unique across the dump, so this
+            # never fires - build the map BEFORE sorting so the precedence holds
+            by_name: dict[str, sysvars.VaRecord] = {}
+            for r in recs:
+                by_name.setdefault(r.name.upper(), r)
+            # one alphabetical run by $-name, like the pendant's system-var list -
+            # the source file is provenance (a tag), not a grouping key
+            recs = sorted(recs, key=lambda r: r.name.upper())
+            return recs, by_name
         return s.cached("sysvar_index", build)
 
     @_endpoint

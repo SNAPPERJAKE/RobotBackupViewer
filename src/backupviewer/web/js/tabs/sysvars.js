@@ -60,15 +60,29 @@
     return el;
   }
 
+  /* the source .VA file a top-level record came from (system vars are merged
+     out of ~two dozen SY*.VA chunks). A dim right-aligned tag, so every var is
+     traceable back to its file and the filter can match on it. */
+  function srcTag(source) {
+    return source
+      ? '<span class="sysvar-src">' + BV.esc(String(source).toLowerCase()) + "</span>"
+      : "";
+  }
+
   /* a top-level record row (lazy body). Returns {el, pending}: pending is the
      body fetch when the record was remembered open (so the caller can restore
      the scroll position only after the heights are real). */
   function recordNode(r, mem) {
-    if (!r.has_children) return { el: leafRow(r, "sysvar-node sysvar-leaf"), pending: null };
+    if (!r.has_children) {
+      var lel = leafRow(r, "sysvar-node sysvar-leaf");
+      lel.insertAdjacentHTML("beforeend", srcTag(r.source));
+      return { el: lel, pending: null };
+    }
     var el = BV.el("div", { class: "sysvar-node" });
     var head = BV.el("div", { class: "sysvar-head" });
     head.innerHTML = '<span class="sysvar-name">' + BV.esc(r.name) + "</span>" +
-      '<span class="sysvar-type">' + BV.esc(r.type) + "</span>";
+      '<span class="sysvar-type">' + BV.esc(r.type) + "</span>" +
+      srcTag(r.source);
     var body = BV.el("div");
     var loaded = false;
     el.appendChild(head);
@@ -111,6 +125,16 @@
       toolbar.appendChild(sb.el);
       BV.currentSearch = sb;
 
+      /* honest header: SYSTEM.VA is only part of the dump - say how many vars
+         and how many files fed the list */
+      var srcSet = {};
+      recs.forEach(function (r) { if (r.source) srcSet[r.source] = 1; });
+      var nFiles = Object.keys(srcSet).length;
+      var note = BV.el("div", { class: "sysvar-srcnote", style: "margin:0 1.25rem .4rem" });
+      note.textContent = recs.length + " system variable" + (recs.length === 1 ? "" : "s") +
+        " across " + nFiles + " file" + (nFiles === 1 ? "" : "s");
+      view.appendChild(note);
+
       var list = BV.el("div", { class: "sysvar-list", style: "margin:0 1.25rem 1rem" });
       view.appendChild(list);
 
@@ -122,15 +146,18 @@
       var nodes = recs.map(function (r) {
         var rn = recordNode(r, st);
         if (rn.pending) pendings.push(rn.pending);
-        return { el: rn.el, name: r.name.toLowerCase() };
+        return { el: rn.el, name: r.name.toLowerCase(),
+                 source: (r.source || "").toLowerCase() };
       });
       nodes.forEach(function (n) { list.appendChild(n.el); });
 
+      /* filter matches the var name OR its source file, so "sysspot" surfaces
+         every servo-gun-spot var, "twlogvar" every tip-wear var, etc. */
       function applyFilter(q) {
         q = (q || "").toLowerCase();
         var shown = 0;
         nodes.forEach(function (n) {
-          var hit = !q || n.name.indexOf(q) >= 0;
+          var hit = !q || n.name.indexOf(q) >= 0 || n.source.indexOf(q) >= 0;
           n.el.style.display = hit ? "" : "none";
           if (hit) shown++;
         });
