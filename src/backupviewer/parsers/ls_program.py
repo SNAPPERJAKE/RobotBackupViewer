@@ -39,6 +39,11 @@ _JOINT = re.compile(r"J(\d+)\s*=\s*(\S+)\s*deg")
 
 _INT_ATTRS = {"PROG_SIZE", "LINE_COUNT", "MEMORY_SIZE", "VERSION"}
 
+# a body line that IS a label definition: LBL[5] / LBL[5:HOME] (own statement)
+_LBL_DEF = re.compile(r"^LBL\[\s*(\d+)\s*(?::([^\]]*))?\]$")
+# a jump anywhere in a line: JMP LBL[5] (also mid-line: IF DI[1]=ON,JMP LBL[5])
+_JMP_REF = re.compile(r"\bJMP\s+LBL\[\s*(\d+)")
+
 
 def _pos_value(s: str):
     if s == MASKED:
@@ -86,6 +91,35 @@ def parse_ls_header(text: str) -> dict:
         else:
             out["attrs"][key.lower()] = val
     return out
+
+
+def label_xref(body: list[dict]) -> list[dict]:
+    """LBL definitions with the lines that JMP to them, in program order:
+    [{id, name, line, jumps: [line, ...]}]. A JMP whose label is never
+    defined becomes a trailing entry with line=None - a broken jump the UI
+    shows honestly instead of dropping. Commented-out lines (!) count for
+    neither side."""
+    defs: list[dict] = []
+    by_id: dict[int, dict] = {}
+    for ln in body:
+        m = _LBL_DEF.match(ln["text"].strip())
+        if m:
+            e = {"id": int(m.group(1)), "name": (m.group(2) or "").strip(),
+                 "line": ln["n"], "jumps": []}
+            defs.append(e)
+            # duplicate definitions each get listed; jumps credit the first
+            by_id.setdefault(e["id"], e)
+    broken: dict[int, dict] = {}
+    for ln in body:
+        if ln["text"].lstrip().startswith("!"):
+            continue
+        for m in _JMP_REF.finditer(ln["text"]):
+            i = int(m.group(1))
+            e = by_id.get(i)
+            if e is None:
+                e = broken.setdefault(i, {"id": i, "name": "", "line": None, "jumps": []})
+            e["jumps"].append(ln["n"])
+    return defs + [broken[k] for k in sorted(broken)]
 
 
 def parse_ls_program(text: str) -> dict:
@@ -159,4 +193,5 @@ def parse_ls_program(text: str) -> dict:
             if "joints" in g:
                 jd = g["joints"]
                 g["joints"] = [jd.get(k) for k in sorted(jd)]
+    out["labels"] = label_xref(out["body"])
     return out

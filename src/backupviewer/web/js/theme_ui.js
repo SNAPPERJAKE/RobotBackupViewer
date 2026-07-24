@@ -349,14 +349,18 @@
             P.apply(settings);
           });
 
-        section(wrap, "text & scale");
-        sliderRow(wrap, "text size", 12, 24, 1, settings.font_size || P.DEFAULT_FONT,
+        section(wrap, "text & size");
+        /* up to 32px: the accessibility knob for plant-floor eyes - content
+           reflows (labels wrap, dialogs grow) instead of shattering */
+        sliderRow(wrap, "text size", 12, 32, 1, settings.font_size || P.DEFAULT_FONT,
           function (v) { return v + "px"; },
           function (v) {
             persist("font_size", v);
             P.apply(settings);
           });
-        sliderRow(wrap, "chrome scale", 85, 160, 5, Math.round(P.chromeScale(settings) * 100), pct,
+        /* "toolbar size" in the UI (plainer than "chrome scale"); the persisted
+           key stays chrome_scale - no migration */
+        sliderRow(wrap, "toolbar size", 85, 160, 5, Math.round(P.chromeScale(settings) * 100), pct,
           function (v) {
             persist("chrome_scale", v / 100);
             P.apply(settings);

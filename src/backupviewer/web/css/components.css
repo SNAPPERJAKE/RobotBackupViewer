@@ -31,10 +31,15 @@
 }
 .card h3 .count { color: var(--sub-alt); margin-left: 0.4em; }
 
-/* key/value list */
-.kv { display: grid; grid-template-columns: max-content 1fr; gap: 0.18rem 1.1rem; font-size: 0.85rem; }
-.kv dt { color: var(--sub); white-space: nowrap; }
-.kv dd { margin: 0; color: var(--text); word-break: break-word; }
+/* key/value list. The label track can shrink (minmax 0) and labels WRAP under
+   pressure instead of crushing the value: word-break:break-word let the value
+   column collapse to one glyph per line at the card's minimum width ("n/o/…"
+   on mh valves), because it zeroes the track's min-content. overflow-wrap
+   floors the value at its longest word, so the grid starves the prose label
+   first - values are data, labels can take a second line. */
+.kv { display: grid; grid-template-columns: minmax(0, max-content) 1fr; gap: 0.18rem 1.1rem; font-size: 0.85rem; align-items: baseline; }
+.kv dt { color: var(--sub); user-select: text; }
+.kv dd { margin: 0; color: var(--text); overflow-wrap: break-word; }
 .kv dd.accent { color: var(--accent); }
 
 /* hero identity block */
@@ -224,7 +229,9 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
   backdrop-filter: var(--glass-blur);
   border: 1px solid var(--edge);
   border-radius: var(--radius);
-  min-width: 420px; max-width: 640px; max-height: 70vh;
+  /* rem-based shell (28/43rem = the old 420/640px at the default 15px root) so
+     dialogs GROW with the text-size setting; the vw caps keep them on screen */
+  min-width: min(28rem, 92vw); max-width: min(43rem, 94vw); max-height: 82vh;
   display: flex; flex-direction: column;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
   overflow: hidden;
@@ -337,6 +344,10 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
   font-size: 0.83rem; overflow: auto;
   padding: 0.7rem 0;
   height: 100%;
+  /* the whole code box is selectable like an editor: a drag can start from
+     padding, blank space past a line's text, or between lines - not just on
+     a glyph. Line numbers stay user-select:none so copies come out clean. */
+  user-select: text;
 }
 .viewer pre { margin: 0; font-family: var(--font-mono); }
 .code-line { display: flex; padding: 0 0.9rem; min-height: 1.4em; font-family: var(--font-mono); }
@@ -345,7 +356,9 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
   color: var(--sub-alt); text-align: right; min-width: 3.2em;
   margin-right: 1em; user-select: none; flex: none;
 }
-.code-line .lc { white-space: pre-wrap; word-break: break-all; }
+/* flex:1 fills the row so clicking just past the end of a line still lands
+   in the selectable text region (min-width:0 keeps long lines wrapping) */
+.code-line .lc { white-space: pre-wrap; word-break: break-all; flex: 1; min-width: 0; }
 
 /* TP syntax classes */
 .tp-comment { color: var(--sub); font-style: italic; }
@@ -367,13 +380,13 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .bv-collapsible.open > .bv-collapse-body { display: block; }
 .bv-caret { display: inline-block; width: 1em; color: var(--sub); font-size: 0.78em; flex: none; }
 
-/* call-tree card grown to ~half screen */
+/* navigator card grown to ~half screen */
 .card.expanded {
   position: fixed; top: 3.2rem; right: 1rem; bottom: 1rem;
   width: 48vw; z-index: 60; overflow: auto;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
 }
-.card.expanded .calltree { max-height: none; }
+.card.expanded .prognav-body { max-height: none; }
 
 /* detail split view */
 .split { display: grid; grid-template-columns: minmax(0, 5fr) minmax(15em, 3fr); gap: 0.9rem; height: 100%; min-height: 0; }
@@ -752,7 +765,9 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
   margin: 0.4rem 0 0.15rem; }
 .dcs-line { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem;
   padding: 0.12rem 0; font-size: 0.84rem; }
-.dcs-line > span { white-space: pre-wrap; word-break: break-word; min-width: 0; }
+/* overflow-wrap (not word-break): floors each span at its longest word so the
+   flex row can't crush a value to one character per line (same fix as .kv dd) */
+.dcs-line > span { white-space: pre-wrap; overflow-wrap: break-word; min-width: 0; }
 
 .dcs-raw-rows { font-size: 0.84rem; }
 
@@ -793,7 +808,7 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
    page: the cells show the FULL mastering table and every signature now, and a
    pinned bar that tall would squeeze the section list under it */
 .dcs-dash {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.7rem;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr)); gap: 0.7rem;
   background: var(--bg);
   margin: -0.75rem -1.25rem 0.5rem; padding: 0.85rem 1.45rem 0.7rem;
   border-bottom: 1px solid var(--edge);
@@ -838,10 +853,14 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .sysvar-type { color: var(--sub); font-size: 0.76rem; white-space: nowrap; }
 /* value sits right after the name/type instead of being pushed to the far edge
    - on a wide screen [1] and its value stay together and traceable (item 11) */
-.sysvar-val { color: var(--text); font-variant-numeric: tabular-nums; white-space: pre-wrap; word-break: break-word; min-width: 0; }
+.sysvar-val { color: var(--text); font-variant-numeric: tabular-nums; white-space: pre-wrap; overflow-wrap: break-word; min-width: 0; }
 .sysvar-tnode { padding-left: 1rem; border-left: 1px solid color-mix(in srgb, var(--sub-alt) 32%, transparent); margin-left: 0.5rem; }
 .sysvar-tnode .sysvar-head, .sysvar-tnode.sysvar-leaf { padding: 0.13rem 0.3rem; }
 .sysvar-tnode .sysvar-name { color: var(--text); font-weight: 500; }
+/* source .VA file on a top-level record - pinned to the right edge, dim, so it
+   reads as provenance not data (only top-level rows carry it; nested leaves don't) */
+.sysvar-src { margin-left: auto; color: var(--sub); font-size: 0.72rem; opacity: 0.8; white-space: nowrap; align-self: baseline; }
+.sysvar-srcnote { color: var(--sub); font-size: 0.78rem; }
 
 /* ---- selectability pass (item 3): chrome/controls keep user-select:none
    (set on their own rules above); these re-enable selection on the actual
@@ -849,8 +868,8 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
    collapse-head (variable names, DCS entry labels), which would otherwise
    inherit the head's user-select:none. */
 .tbl td, .vtable .vt-cell,
-.kv dt, .kv dd,
-.sysvar-name, .sysvar-type, .sysvar-val,
+.kv dd,
+.sysvar-name, .sysvar-type, .sysvar-val, .sysvar-src,
 .dcs-entry-label, .dcs-line > span, .dcs-pos-grid,
 .dcs-dash-line, .dcs-sig-name, .dcs-sig-vals, .dcs-sig-time,
 .code-line .lc, .pd-text,
@@ -892,23 +911,54 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
 .pd-void { color: var(--sub-alt); font-style: italic; }
 .pd-row.flash { animation: lineflash 1.6s ease-out; }
 
+/* ---- program navigator (one card: call tree / calls / labels) ---- */
+.prognav-head { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.55rem; }
+.prognav-head .icon-btn { margin-left: auto; padding: 0.2rem 0.5rem; flex: none; }
+
 /* ---- call tree ---- */
-.calltree { font-size: 0.85rem; }
-.ct-node { padding-left: 1.1rem; border-left: 1px solid color-mix(in srgb, var(--sub-alt) 45%, transparent); margin-left: 0.45rem; }
+.calltree { font-size: 0.85rem; --ct-indent: 1.1rem; }
+.ct-node { padding-left: var(--ct-indent); border-left: 1px solid color-mix(in srgb, var(--sub-alt) 45%, transparent); margin-left: 0.45rem; }
 .ct-node.ct-root { padding-left: 0; border-left: none; margin-left: 0; }
 .ct-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.12rem 0; }
+/* elbow tick from the guide line to each row, so branches read at a glance */
+.ct-node:not(.ct-root) > .ct-row { position: relative; }
+.ct-node:not(.ct-root) > .ct-row::before {
+  content: ""; position: absolute; top: 50%; left: calc(-1 * var(--ct-indent));
+  width: calc(var(--ct-indent) - 0.35rem); height: 1px;
+  background: color-mix(in srgb, var(--sub-alt) 45%, transparent);
+}
 .ct-row .ct-toggle {
   width: 1.1em; color: var(--sub); cursor: pointer; user-select: none; flex: none; text-align: center;
 }
-.ct-row .ct-name { color: var(--accent); cursor: pointer; }
+.ct-row .ct-name { color: var(--accent); cursor: pointer; font-family: var(--font-mono); }
 .ct-row .ct-name:hover { text-decoration: underline; }
 .ct-row .ct-name.missing { color: var(--sub); cursor: default; text-decoration: none; }
-.ct-row .ct-kind { font-size: 0.68rem; color: var(--sub); }
-.ct-row .ct-cycle { font-size: 0.68rem; color: var(--warn); }
+.ct-row .ct-kind { font-size: 0.8em; color: var(--sub); }
+.ct-row .ct-cycle { font-size: 0.8em; color: var(--warn); }
+/* expanded card: same tree, bigger type and rhythm so deep chains stay followable */
+.card.expanded .calltree { --ct-indent: 1.6rem; font-size: 0.95rem; }
+.card.expanded .ct-row { padding: 0.26rem 0; }
+
+/* ---- labels xref (LBL definitions + the lines that JMP to them) ---- */
+.lblxref { font-size: 0.82rem; font-family: var(--font-mono); }
+.lblx-def { display: flex; align-items: baseline; gap: 0.5rem; padding: 0.16rem 0; cursor: pointer; }
+.lblx-def:not(:first-child) { margin-top: 0.35rem; }
+.lblx-def:hover .lblx-id { text-decoration: underline; }
+.lblx-id { color: var(--warn); font-weight: 600; flex: none; }
+.lblx-name { color: var(--sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lblx-line { margin-left: auto; color: var(--sub); font-size: 0.9em; flex: none; }
+.lblx-def.lblx-broken { cursor: default; }
+.lblx-broken .lblx-id { color: var(--error); }
+.lblx-miss { color: var(--error); font-size: 0.9em; margin-left: auto; flex: none; }
+.lblx-jmp { display: flex; gap: 0.55rem; padding: 0.08rem 0 0.08rem 1.15rem; cursor: pointer; overflow: hidden; }
+.lblx-jmp:hover { background: color-mix(in srgb, var(--sub-alt) 18%, transparent); border-radius: 3px; }
+.lblx-jline { color: var(--sub-alt); min-width: 2em; text-align: right; flex: none; }
+.lblx-jtext { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lblx-none { padding: 0.05rem 0 0.1rem 1.15rem; font-size: 0.78rem; }
 
 /* clickable source tokens */
-.code-line .tp-io, .code-line .tp-reg { cursor: pointer; }
-.code-line .tp-io:hover, .code-line .tp-reg:hover { text-decoration: underline; }
+.code-line .tp-io, .code-line .tp-reg, .code-line .tp-label { cursor: pointer; }
+.code-line .tp-io:hover, .code-line .tp-reg:hover, .code-line .tp-label:hover { text-decoration: underline; }
 .code-line.flash { animation: lineflash 1.6s ease-out; }
 @keyframes lineflash {
   0% { background: color-mix(in srgb, var(--accent) 35%, transparent); }
@@ -975,7 +1025,7 @@ button.btn.primary:hover { color: var(--bg); filter: brightness(1.08); }
    fold rules — collapsed lines kept showing tiles while open ones stacked
    them full-width (the .open>block rule won). Folded = hidden, open = grid. */
 .lib-line-body.cam-grid {
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(16rem, 100%), 1fr));
   gap: 0.7rem; padding: 0.2rem 0 0.6rem 0.6rem;
 }
 .bv-collapsible.open > .lib-line-body.cam-grid { display: grid; }
@@ -1450,7 +1500,9 @@ text.v3-ax-z { fill: var(--accent); }
 .v3-cube-lab { font-size: 8.5px; fill: var(--sub); text-anchor: middle; pointer-events: none; }
 .v3-cube-hit { fill: transparent; stroke: none; cursor: pointer; pointer-events: auto; }
 .v3-cube-hit:hover { fill: color-mix(in srgb, var(--accent) 45%, transparent); }
-.v3-side { flex: 0 0 25%; min-width: 250px; max-width: 380px; overflow-y: auto; min-height: 0; }
+/* rem bounds so the panel scales with text size; the 40% guard keeps it from
+   eating the 3D canvas in a narrow window */
+.v3-side { flex: 0 0 25%; min-width: min(17rem, 40%); max-width: 26rem; overflow-y: auto; min-height: 0; }
 .v3-cat { display: flex; align-items: center; gap: 0.45rem; margin: 0.7rem 0 0.35rem; }
 .v3-cat:first-child { margin-top: 0; }
 .v3-cat-label { font-size: 0.78rem; color: var(--sub); }
@@ -1471,7 +1523,7 @@ text.v3-ax-z { fill: var(--accent); }
 .v3-swatch { width: 11px; height: 11px; border-radius: 3px; flex: none; }
 
 /* ---- theme window (theme_ui.js) ---- */
-.modal.theme-win { width: 640px; }
+.modal.theme-win { width: min(43rem, 94vw); }
 .theme-win .theme-tabs {
   display: inline-flex; align-self: flex-start;
   margin: 0.1rem 0.6rem 0.55rem;

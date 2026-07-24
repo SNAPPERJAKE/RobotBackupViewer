@@ -157,8 +157,17 @@ human-in-the-loop tier, and it lands last.
 
 - Persist settings via `set_setting` (→ `%APPDATA%`), **never**
   `localStorage` (private mode wipes it).
-- Anything positioned from `getBoundingClientRect` must live outside the
-  scaled body or its coordinates double-scale (see `BV.menu`).
+- No transforms/zoom on the body — the page-zoom era is over (v0.98 split
+  text size / chrome scale into plain font-size knobs). `BV.menu` appends to
+  `<html>` with plain fixed coords; reintroducing a body transform breaks
+  every `getBoundingClientRect` popup again.
+- Sizes in content CSS are rem/em, **never px** — px shells freeze while rem
+  content grows with the text-size setting (the mh-valves crush). Grid tracks
+  use `minmax(min(NNrem, 100%), 1fr)`. Values in a label/value row must never
+  char-split: `overflow-wrap: break-word` (floors at the longest word), not
+  `word-break: break-word` (floors at one glyph); short compound values are
+  NBSP-joined (the `\u00A0` escape in source, never the invisible literal)
+  so the label wraps instead.
 - Never write a literal-NUL escape through a tool/JSON layer — build NULs
   programmatically (`String.fromCharCode(0)`, `bytes([0])`).
 - A stray `*/` inside a JS block comment silently kills the whole file (the

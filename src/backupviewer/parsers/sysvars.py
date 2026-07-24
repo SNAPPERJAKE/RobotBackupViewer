@@ -1,5 +1,13 @@
-"""System-variable browser model over SYSTEM.VA (the controller's full $-var
-dump - ~769 top-level records).
+"""System-variable browser model over the controller's $-var dump.
+
+SYSTEM.VA holds the bulk (~769 records) but it is NOT the whole picture: the
+controller splits its system variables across ~two dozen SY*.VA chunks
+(SYSSPOT, SYSSVGN, SYNOSAVE, ...) and even a few oddly-named files (CELLIO,
+DCSIOC, DCSPOS, TWLOGVAR, ...). Every one of those records - and ONLY those -
+is tagged `[*SYSTEM*]` in its section header, so that tag, not the filename, is
+the true identity of a system variable. `merge_system_records()` gathers them
+all; the register headers ($NUMREG/$POSREG/$STRREG, which sit under their own
+[*NUMREG*]-style sections) and KAREL program vars are excluded for free.
 
 Each record is `[*SYSTEM*]$NAME  Storage: S  Access: A  : TYPEDECL` followed by
 an indentation-structured body:
@@ -17,8 +25,12 @@ rather than coerced - this is a browser, fidelity matters.
 from __future__ import annotations
 
 import re
+from typing import Iterable
 
 from .va import VaRecord, iter_records
+
+# the section tag every system variable carries, wherever its file lives
+SYSTEM_SECTION = "*SYSTEM*"
 
 # The field name is normally $-prefixed ($SYSTEM struct fields: .$FLD) but KAREL
 # program structs dump plain field names (DEF_GRIP.GRIP_ID, MH_GRIPPERS[1,1].GRIP_ID)
@@ -34,6 +46,28 @@ def records(text: str) -> list[VaRecord]:
     return list(iter_records(text))
 
 
+def merge_system_records(sources: Iterable[tuple[str, str]]) -> list[VaRecord]:
+    """Every `[*SYSTEM*]` record across (filename, text) pairs, each tagged with
+    its source file. Non-system sections (KAREL program vars, the [*NUMREG*]-style
+    register headers) are dropped - the section tag is the system-variable
+    identity, not the filename.
+
+    A cheap substring test skips the ~180 .VA files in a backup that carry no
+    system vars without tokenizing them; only the couple dozen carriers are
+    parsed. Records come out in input order (the caller sorts for display and
+    resolves name lookups) - in practice every [*SYSTEM*] $-name is unique
+    across the whole dump, so there is nothing to collide."""
+    out: list[VaRecord] = []
+    for name, text in sources:
+        if not text or SYSTEM_SECTION not in text:
+            continue
+        for rec in iter_records(text):
+            if rec.section == SYSTEM_SECTION:
+                rec.source = name
+                out.append(rec)
+    return out
+
+
 def _inline_value(rec: VaRecord) -> str | None:
     if "=" in rec.typedecl:
         return rec.typedecl.split("=", 1)[1].strip()
@@ -46,6 +80,7 @@ def summarize(rec: VaRecord) -> dict:
     item = {
         "name": rec.name,
         "section": rec.section,
+        "source": rec.source,
         "storage": rec.storage,
         "access": rec.access,
         "has_children": has_body,

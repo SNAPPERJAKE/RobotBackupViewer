@@ -31,6 +31,13 @@
 - **Dialogs beat overlays.** Modals (and menus above them) now stack above
   the remote-operation overlay, so the phone-view QR can open from inside
   the MTX remote without vanishing behind it.
+- **CV-X remote: full mouse.** The live Keyence remote now forwards the
+  scroll wheel (zoom), the middle button, real drags (pan — the controller
+  only pans on its dedicated drag events, so dragging used to snap at
+  release) and a reliable right-click (context menu). Event ids
+  ground-truthed against Keyence's own Vapi.Net.dll, events resequenced so
+  they reach the controller in gesture order, and hand jitter during a
+  click no longer reads as a drag.
 - **Browser-style backup tabs.** Every opened robot or camera lands on a tab
   in the topbar (the content tabs drop to a slim second row): open several
   backups at once, click to switch — every tab restores exactly where you
@@ -84,6 +91,17 @@
   static frame under prefers-reduced-motion or when requestAnimationFrame
   is missing (the probe environment). The choice persists like every other
   pref.
+
+- **Release check.** The app can now notice a newer release on GitHub: the
+  packaged exe pings the public releases feed once on boot (source runs and
+  probes never phone home) and shows a quiet toast plus a statusbar pill;
+  the about box grows a **check for updates** button that works anywhere
+  and answers honestly — up to date / newer on github (with an
+  open-the-release-page button) / this build is ahead of the newest
+  release / no releases yet / couldn't reach github. One 4-second attempt,
+  no retries: offline is a first-class outcome, not an error. A found
+  version can be skipped (silences the boot reminder for that one) and ⚙
+  settings gains a check-on-startup switch.
 
 ## v1.3 — the camera wall + six sharper scans
 - **Six new fleet-scan checks.** Two catch hand-edits left in programs:

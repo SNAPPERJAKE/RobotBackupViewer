@@ -197,6 +197,15 @@ class BackupSession:
         p = self.find(name)
         return read_text(p) if p else None
 
+    def va_files(self) -> list[tuple[str, Path]]:
+        """(basename, best-copy path) for every .VA in the backup - SYSTEM.VA
+        first, then alphabetical. This is the scan set for the system-variable
+        browser, which merges [*SYSTEM*] records out of ALL of them (they are
+        scattered across ~two dozen SY*.VA chunks, not just SYSTEM.VA)."""
+        out = [(n, ps[0]) for n, ps in self.by_name.items() if n.endswith(".VA")]
+        out.sort(key=lambda np: (np[0] != "SYSTEM.VA", np[0]))
+        return out
+
     def cached(self, key: str, builder: Callable[[], object]):
         if key in self._cache:
             return self._cache[key]

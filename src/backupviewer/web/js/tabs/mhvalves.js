@@ -9,7 +9,11 @@
   "use strict";
 
   var YN = function (b) { return b ? "yes" : "no"; };
-  var MS = function (n) { return (n === null || n === undefined) ? null : n + " ms"; };
+  /* NBSP-joined so compound values ("1500 ms", "no / no") are ONE unbreakable
+     token: its min-content then floors the .kv value column and the grid makes
+     the prose LABEL wrap instead - a value never splits across lines */
+  var MS = function (n) { return (n === null || n === undefined) ? null : n + "\u00A0ms"; };
+  var PAIR = function (a, b) { return YN(a) + "\u00A0/\u00A0" + YN(b); };
 
   /* one resolved signal as a link into the io tab (#io/jump/DI/813) */
   function sigRow(s) {
@@ -51,8 +55,8 @@
       ["operation timeout", MS(st.operation_timeout_ms)],
       ["over-stroke delay", MS(st.over_stroke_delay_ms)],
       ["continuous check", YN(st.continuous_check)],
-      ["toggle retry (grip / release)", YN(st.retry_grip) + " / " + YN(st.retry_release)],
-      ["cancel-recover (grip / release)", YN(st.cancel_recover_grip) + " / " + YN(st.cancel_recover_release)],
+      ["toggle retry (grip / release)", PAIR(st.retry_grip, st.retry_release)],
+      ["cancel-recover (grip / release)", PAIR(st.cancel_recover_grip, st.cancel_recover_release)],
     ]));
 
     var sigs = sigGroup("inputs", v.inputs || []) + sigGroup("outputs", v.outputs || []);

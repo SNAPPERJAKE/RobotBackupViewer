@@ -1085,11 +1085,24 @@ class Api:
     # -- system vars ----------------------------------------------------------
 
     def _sysvar_index(self, s: BackupSession):
-        """Cached (records list, name->record) for SYSTEM.VA."""
+        """Cached (records list, name->record) for the whole system-variable
+        dump - every [*SYSTEM*] record merged out of ALL the backup's .VA files,
+        not just SYSTEM.VA (which is only ~70% of them). Built once per session."""
         def build():
-            text = self._need_text("SYSTEM.VA", s)
-            recs = sysvars.records(text)
-            return recs, {r.name.upper(): r for r in recs}
+            recs = sysvars.merge_system_records(
+                (name, read_text(path)) for name, path in s.va_files())
+            if not recs:
+                raise ApiError("MISSING_FILE", f"No system variables found in {s.root.name}")
+            # first record wins a name clash (SYSTEM.VA leads va_files); in
+            # practice every [*SYSTEM*] $-name is unique across the dump, so this
+            # never fires - build the map BEFORE sorting so the precedence holds
+            by_name: dict[str, sysvars.VaRecord] = {}
+            for r in recs:
+                by_name.setdefault(r.name.upper(), r)
+            # one alphabetical run by $-name, like the pendant's system-var list -
+            # the source file is provenance (a tag), not a grouping key
+            recs = sorted(recs, key=lambda r: r.name.upper())
+            return recs, by_name
         return s.cached("sysvar_index", build)
 
     @_endpoint
@@ -1615,11 +1628,17 @@ class Api:
                 "handshake_done": sess.handshake_done, "error": sess.error}
 
     @_endpoint
-    def cvx_remote_mouse(self, session_id: str, event_id: int, x: int, y: int):
+    def cvx_remote_mouse(self, session_id: str, event_id: int, x: int, y: int,
+                         seq: int | None = None):
+        """seq (the overlay always sends it) reorders bridge calls back into
+        gesture order - pywebview runs each call on its own thread."""
         sess = self._cvx.get(session_id)
         if sess is None:
             raise ApiError("NO_SESSION", "unknown remote session")
-        sess.send_mouse(int(event_id), int(x), int(y))
+        if seq is None:
+            sess.send_mouse(int(event_id), int(x), int(y))
+        else:
+            sess.queue_mouse(int(seq), int(event_id), int(x), int(y))
         return True
 
     @_endpoint
@@ -1947,6 +1966,21 @@ class Api:
     @_endpoint
     def get_version(self):
         return __version__
+
+    @_endpoint
+    def check_update(self, auto=False):
+        """Newest GitHub release vs the running version (updatecheck.py).
+        auto=True is the boot path: the frozen/setting/env policy can turn it
+        into a no-op that answers "skipped" without touching the network
+        (source runs, probes, ⚙-toggled-off). The about box's manual button
+        calls without auto and always really checks."""
+        import sys
+
+        from . import updatecheck
+        if auto and not updatecheck.should_autocheck(
+                settings.load(), os.environ, getattr(sys, "frozen", False)):
+            return {"status": "skipped", "current": __version__}
+        return updatecheck.check(__version__)
 
     @_endpoint
     def get_settings(self):

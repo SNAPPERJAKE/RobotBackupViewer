@@ -14,7 +14,7 @@
 
   /* caps raised for the shop floor (v1.0): 18px text / 125% chrome wasn't
      enough on high-DPI laptops viewed at arm's length. The seg row wraps. */
-  var FONT_SIZES = [12, 13, 14, 15, 16, 18, 20, 22, 24];
+  var FONT_SIZES = [12, 13, 14, 15, 16, 18, 20, 22, 24, 26, 28, 30, 32];
   var CHROME_SCALES = [0.85, 1.0, 1.1, 1.25, 1.4, 1.6];
   var CHROME_BASE_PX = 15;
   /* shop-floor friendly defaults - old eyes and young eyes both read this */
@@ -173,6 +173,18 @@
           });
         }).catch(function (e) { BV.toast(e.message); });
       });
+
+      /* ---- updates ---- */
+      section("updates");
+      /* the boot-time github ping runs only in the packaged exe (source runs
+         stay offline); this switch turns even that off. The about box's
+         manual check works regardless. */
+      segRow("check on startup", [true, false], s.update_check !== false,
+        function (v) { return v ? "auto" : "off"; },
+        function (v) {
+          s.update_check = v;
+          BV.api.call("set_setting", "update_check", v).catch(function () {});
+        });
 
       BV.state.settings = s;
       BV.modal("settings", body);

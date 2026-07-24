@@ -22,6 +22,8 @@ How it works (all detail in the handoff doc):
     op5/method5 "please-ack" with the frame-ack "16" message to keep frames
     flowing.
   - Mouse: 8502 type7 op5 method0x34, body [7, h1, h2, eventId, X, Y, h3].
+    eventId is Keyence's VapiMouseEventId (see the EV_* constants) - wheel
+    rotation and the middle button ride the same message, no extra fields.
 
 One session per controller (don't connect while the Keyence Terminal or an
 operator is on it). `_connect` is injectable so the framing/handshake logic is
@@ -53,8 +55,19 @@ _NONE_CTX = 0xFFFFFFFF
 
 # mouse handles - client-side constants the controller just echoes (reuse as-is)
 _H1, _H2, _H3 = 0x244DF81C, 0x117A79E7, 0xA54AC70B
-# VapiMouseEventId
+# VapiMouseEventId - the eventId field's values. Ground truth: reflected out of
+# Keyence's own Vapi.Net.dll (Keyence.Ve.Interop.VapiMouseEventId, CV-X Terminal
+# install); 0-4 additionally proven live in the original capture. 5/6 are the
+# wheel BUTTON (middle), 10/11 are wheel rotation (zoom). Moving with a button
+# held is NOT a MOVE to the controller: it only pans on the dedicated drag ids
+# (14 for left/right, 15 for the wheel button) - plain MOVEs while pressed are
+# ignored and the viewport just snaps at release. The enum also defines
+# long-press (7-9) and click/double-click (12/13) variants the viewer doesn't
+# send.
 EV_MOVE, EV_LDOWN, EV_LUP, EV_RDOWN, EV_RUP = 0, 1, 2, 3, 4
+EV_MDOWN, EV_MUP = 5, 6
+EV_WHEEL_UP, EV_WHEEL_DOWN = 10, 11
+EV_DRAGGED, EV_WHEEL_DRAGGED = 14, 15
 
 # op5/meth5 frame-ack "16" message (header + 20-byte body); [0:4]=seq, [4:8]=ctx[6]
 _FRAME_ACK = bytes.fromhex(
@@ -181,6 +194,10 @@ class CvxRemoteSession:
         self.frames = 0
         self._ctrl_seq = itertools.count(0x51)   # mouse seq
         self._ack_seq = itertools.count(0x101)   # frame-ack seq
+        self._mouse_next = 0                     # next client seq to put on the wire
+        self._mouse_buf: dict[int, tuple] = {}   # out-of-order arrivals, seq -> (ev, x, y)
+        self._mouse_gap_t0 = 0.0                 # when we first stalled on a missing seq
+        self._mouse_lock = threading.Lock()
         self._stop = threading.Event()
         self._alive = False
         self.error = ""
@@ -409,6 +426,34 @@ class CvxRemoteSession:
             s.sendall(b)
         except OSError:
             pass
+
+    def queue_mouse(self, seq: int, event_id: int, x: int, y: int):
+        """Put a client-sequenced mouse event on the wire in seq order. The
+        frontend fires events without awaiting (chaining input on bridge
+        promises stalls under a continuous drag), but pywebview runs each
+        bridge call on its own thread, so calls can arrive here out of order -
+        buffer the early ones and drain contiguously. Sends happen inside the
+        lock: draining on two threads at once could re-scramble the order the
+        buffer just restored. A hole normally fills in milliseconds (the
+        missing call is mid-flight on another thread); one older than 150ms
+        means that call died - skip it, a frozen mouse is worse than one lost
+        event."""
+        with self._mouse_lock:
+            self._mouse_buf[seq] = (event_id, x, y)
+            now = time.monotonic()
+            if self._mouse_next not in self._mouse_buf:
+                if self._mouse_gap_t0 == 0.0:
+                    self._mouse_gap_t0 = now
+                elif now - self._mouse_gap_t0 > 0.15:
+                    self._mouse_next = min(self._mouse_buf)
+                    self._mouse_gap_t0 = 0.0
+            while self._mouse_next in self._mouse_buf:
+                ev, sx, sy = self._mouse_buf.pop(self._mouse_next)
+                self._mouse_next += 1
+                self._mouse_gap_t0 = 0.0
+                self.send_mouse(ev, sx, sy)
+            if self._mouse_buf and self._mouse_gap_t0 == 0.0:
+                self._mouse_gap_t0 = now
 
     def click(self, x: int, y: int):
         """A left click = move, down, up at the same point (spaced like the real client)."""
